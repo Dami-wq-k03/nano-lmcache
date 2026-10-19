@@ -8,6 +8,7 @@ def chunk_tokens(
     token_ids: Sequence[int],
     chunk_size: int,
 ) -> list[tuple[int, ...]]:
+    """Split token_ids into fixed-size chunks; the last chunk may be shorter."""
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be positive, got {chunk_size}")
 
@@ -22,5 +23,10 @@ def make_chunk_key(
     *,
     namespace: str,
 ) -> str:
+    """Derive a stable, content-addressed key for a token chunk.
+
+    namespace is mixed into the payload so the same tokens produce different
+    keys under different models/configs, avoiding false cache hits.
+    """
     payload = f"{namespace}:{','.join(str(t) for t in token_ids)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
