@@ -1,6 +1,7 @@
 """Token chunking and stable chunk-key derivation."""
 
 import hashlib
+import json
 from collections.abc import Sequence
 
 
@@ -22,11 +23,23 @@ def make_chunk_key(
     token_ids: Sequence[int],
     *,
     namespace: str,
+    prefix_key: str | None = None,
 ) -> str:
-    """Derive a stable, content-addressed key for a token chunk.
+    """Derive a stable key for a chunk within its prefix context.
 
-    namespace is mixed into the payload so the same tokens produce different
-    keys under different models/configs, avoiding false cache hits.
+    In a causal model, a token's KV state depends on everything before it,
+    so two chunks with identical tokens must not collide unless their
+    preceding context (prefix_key, typically the previous chunk's key)
+    also matches. JSON serialization keeps the key's input structure
+    unambiguous, instead of hand-concatenating strings.
     """
-    payload = f"{namespace}:{','.join(str(t) for t in token_ids)}"
+    payload = json.dumps(
+        {
+            "namespace": namespace,
+            "prefix_key": prefix_key,
+            "token_ids": list(token_ids),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
