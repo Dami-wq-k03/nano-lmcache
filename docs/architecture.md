@@ -196,10 +196,23 @@ the sum of recorded payload sizes to B bytes. Either limit can be omitted;
 when both are set, **both must be satisfied**. With neither, the cache is
 unbounded. `max_bytes` must be a positive integer.
 
+Byte capacity is currently exposed only by `MemoryKVCache`. Although
+`PrefixLRUIndex` is shared, `DiskKVCache` and `CPUOffloadKVCache` do not
+expose `max_bytes` and omit `size_bytes` when admitting entries. Their
+index sizes therefore default to zero; they enforce entry limits only.
+
 The injectable `size_fn(value) -> int` must return a non-negative integer
 (zero is allowed). It defaults to `sys.getsizeof`, which measures the
 shallow Python object size, not recursively referenced objects or a
-tensor's underlying storage. For bytes-only payloads, for example:
+tensor's underlying storage.
+
+**For tensors or containers of bytes, pass a custom `size_fn`.** The
+default may count only a small Python wrapper while ignoring a large
+backing buffer or referenced byte strings, so it cannot enforce the
+intended payload-memory budget for those values. A tensor size function
+can report `value.nelement() * value.element_size()`; a container size
+function should explicitly measure its contained payloads. For bytes-only
+payloads, for example:
 
 ```python
 def byte_payload_size(value: object) -> int:
@@ -218,6 +231,8 @@ limit. Payloads are measured on each `put`, not on reads. Do not resize
 cached payloads in place: their recorded sizes only change on another
 successful `put`. A size function exception or invalid result raises
 before any entries, recency, or counters change.
+Sizing intentionally runs before checking for a missing parent, so even
+a write that will be rejected for that reason pays the measurement cost.
 
 Chunk keys chain: each key is derived from the previous chunk's key, and
 a lookup walks the chain from its first chunk, stopping at the first

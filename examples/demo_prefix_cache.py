@@ -46,7 +46,8 @@ def serve_request(
     # Reuse cached payloads for hit chunks; pay compute only for the rest.
     reused = list(result.values)
     recomputed = [
-        compute_kv_payload(chunk) for chunk in complete[result.matched_chunks :]
+        compute_kv_payload(chunk)
+        for chunk in complete[result.matched_chunks :]
     ]
     cache.store(token_ids, reused + recomputed)
 

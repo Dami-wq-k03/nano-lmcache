@@ -20,8 +20,10 @@ class MemoryKVCache:
     strand them, since a prefix lookup could never reach them again.
 
     `size_fn` measures each payload on `put`, defaulting to the shallow
-    `sys.getsizeof` (not recursive or tensor storage size). Keys and cache
-    bookkeeping are excluded. Do not resize cached payloads in place;
+    `sys.getsizeof`. For tensors or containers of bytes, that measures the
+    wrapper, not the backing data: pass a custom `size_fn` to enforce a
+    meaningful payload budget. Keys and cache bookkeeping are excluded.
+    Do not resize cached payloads in place;
     sizes are snapshots, refreshed only when the payload is put again.
     """
 
@@ -77,6 +79,7 @@ class MemoryKVCache:
         parent_key: str | None = None,
     ) -> None:
         # Measure and validate before changing recency, values, or capacity.
+        # This also measures writes later rejected for a missing parent.
         decision = self._index.admit(key, parent_key, size_bytes=self._size_fn(value))
         for victim in decision.evicted:
             del self._values[victim]

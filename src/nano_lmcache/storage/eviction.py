@@ -35,7 +35,12 @@ class Admission:
 
 
 class PrefixLRUIndex:
-    """Tracks keys, their parents, and recency; decides what to evict."""
+    """Tracks keys, their parents, recency, and backend-reported sizes.
+
+    Byte accounting requires the backend to supply `size_bytes`; it
+    defaults to zero for entry-only backends. Currently only MemoryKVCache
+    exposes a byte limit. Disk and CPU-offload caches use entry limits.
+    """
 
     def __init__(
         self, max_entries: int | None = None, *, max_bytes: int | None = None
@@ -173,7 +178,9 @@ class PrefixLRUIndex:
         self._sizes[key] = size_bytes
         self._nbytes += size_bytes
         if parent_key is not None:
-            self._child_counts[parent_key] = self._child_counts.get(parent_key, 0) + 1
+            self._child_counts[parent_key] = (
+                self._child_counts.get(parent_key, 0) + 1
+            )
 
     def _remove(self, key: str) -> None:
         parent_key = self._parents.pop(key)
