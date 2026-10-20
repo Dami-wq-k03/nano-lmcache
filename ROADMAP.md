@@ -43,6 +43,12 @@ Done (pure Python, no GPU dependency):
       concrete backend (`storage/protocol.py`)
 - [x] Capacity limits and **prefix-safe eviction**: only leaves are
       evicted, so no unreachable suffix is ever left behind
+- [x] Shared prefix-safe eviction bookkeeping `PrefixLRUIndex`
+      (`storage/eviction.py`), used by every bounded backend
+- [x] Disk backend `DiskKVCache`: one file per entry, crash-safe writes,
+      survives restarts (`storage/disk.py`, M4)
+- [x] Write-through tiered storage `TieredStorage`, memory in front of
+      disk (`storage/tiered.py`, M5)
 - [x] Runnable demos (`examples/`) and architecture notes
       (`docs/architecture.md`)
 
@@ -54,9 +60,11 @@ Done (optional torch / GPU layer):
       against a from-scratch forward pass (`tensor/`, G1)
 - [x] CUDA 12.4 PyTorch wheels on Linux, so GPU tests run on common
       drivers (`tool.uv.sources` in `pyproject.toml`)
+- [x] GPU to pinned CPU memory offload `CPUOffloadKVCache`, with a copy
+      bandwidth benchmark (`tensor/offload.py`, G2)
+- [x] Safe tensor serialization for the disk tier, giving a full
+      GPU -> CPU -> disk hierarchy (`tensor/serializers.py`)
 
-Written by the maintainer and waiting for review: I2, I3, M1, D1. Please
-do not claim these.
 
 ## How to claim a task
 
@@ -78,17 +86,17 @@ open an issue to discuss it.
 | --- | --- | --- | --- | --- | --- |
 | **Infrastructure** | | | | | |
 | I1 | Optional dependency groups and GPU test markers | Medium | No | – | Done |
-| I2 | Issue and PR templates | Easy | No | – | In review |
-| I3 | Benchmark scaffolding | Easy | No | – | In review |
+| I2 | Issue and PR templates | Easy | No | – | Done |
+| I3 | Benchmark scaffolding | Easy | No | – | Done |
 | **Mini: cache behavior (pure Python)** | | | | | |
-| M1 | Eviction metrics | Easy | No | – | In review |
+| M1 | Eviction metrics | Easy | No | – | Done |
 | M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Open (needs rework, see below) |
 | M3 | Byte-based capacity | Medium | No | – | Open |
-| M4 | Local disk backend | Medium | No | – | Open |
-| M5 | Tiered memory + disk storage | Hard | No | M4 | Open |
+| M4 | Local disk backend | Medium | No | – | Done |
+| M5 | Tiered memory + disk storage | Hard | No | M4 | Done |
 | **GPU: real KV tensors** | | | | | |
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
-| G2 | GPU to CPU offload backend | Hard | Yes | G1 | Open |
+| G2 | GPU to CPU offload backend | Hard | Yes | G1 | Done |
 | G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Open |
 | **vLLM integration** | | | | | |
 | V0 | vLLM KV connector research notes | Medium | No | – | Open |
@@ -98,7 +106,7 @@ open an issue to discuss it.
 | V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Open |
 | V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Open |
 | **Teaching docs** | | | | | |
-| D1 | Architecture diagrams | Easy | No | – | In review |
+| D1 | Architecture diagrams | Easy | No | – | Done |
 | D2 | Step-by-step tutorial | Medium | No | – | Open |
 | D3 | Concept map: nano-lmcache ↔ LMCache ↔ vLLM | Medium | No | V0 | Open |
 | D4 | Animation: one `store` and one `lookup` step by step | Medium | No | D1 | Open |
@@ -111,6 +119,8 @@ open an issue to discuss it.
 | D11 | Chinese translation of README and docs | Easy | No | – | Open |
 
 **Good first contributions:** M3, D2, D9, D11, and V0 (reading source, no GPU).
+**Most wanted next:** G3 (all its prerequisites are done) and V0, which
+unblocks the whole vLLM track.
 
 Teaching material (animations, notebooks, exercises, translations) is as
 welcome as code. See the D tasks below.
@@ -204,7 +214,8 @@ alone can hide problems.
 
 ### M2: Make eviction cheaper than a linear scan
 
-`MemoryKVCache._find_victim` scans from the oldest entry looking for the
+`PrefixLRUIndex._find_victim` (shared by the memory, disk, and CPU
+offload backends) scans from the oldest entry looking for the
 first leaf, which is O(n) in the worst case.
 
 **This task needs a design decision first.** A plain recency-ordered
@@ -246,6 +257,10 @@ its whole ancestor chain stored) still holds, with tests proving it.
 
 ### M4: Local disk backend
 
+**Status: done** (`storage/disk.py`, `examples/demo_disk_cache.py`).
+Follow-up ideas: safe concurrent writers (today one process per
+directory), byte-based disk capacity (M3).
+
 Implement a `DiskKVCache` that satisfies the `CacheStorage` protocol,
 with one file per key.
 
@@ -265,6 +280,11 @@ What you learn: why a cache can be reused across processes and restarts,
 which vLLM's built-in prefix caching cannot do.
 
 ### M5: Tiered memory + disk storage
+
+**Status: done** (`storage/tiered.py`, `examples/demo_tiered_storage.py`).
+It is write-through; `docs/architecture.md` explains why write-back would
+break prefix safety. A write-back variant that solves that is an open,
+harder follow-up.
 
 Tiering is one of LMCache's core ideas: hot data lives in fast memory,
 cold data in larger, slower disk storage.
@@ -323,6 +343,10 @@ on every token before it, and on its position), which is exactly why the
 chunk key hashes in the prefix.
 
 ### G2: GPU to CPU offload backend
+
+**Status: done** (`tensor/offload.py`, `benchmarks/bench_offload.py`).
+On an RTX 4090, pinned memory copies at ~26 GB/s versus ~11 GB/s for
+pageable memory; see `docs/architecture.md`. G3 is now unblocked.
 
 To do: implement a backend that copies KV tensors from the GPU into CPU
 memory (pinned memory) for storage, and copies them back to the GPU on a
