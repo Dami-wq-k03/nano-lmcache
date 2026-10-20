@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.core.metrics import CacheMetrics
 from nano_lmcache.storage.memory import MemoryKVCache
+from nano_lmcache.storage.protocol import CacheStorage
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class ChunkedPrefixCache:
         *,
         chunk_size: int,
         namespace: str,
-        storage: MemoryKVCache | None = None,
+        storage: CacheStorage | None = None,
         metrics: CacheMetrics | None = None,
     ) -> None:
         if chunk_size <= 0:
@@ -63,6 +64,10 @@ class ChunkedPrefixCache:
                 f"for {len(complete_chunks)} complete chunks, "
                 f"got {len(chunk_values)}"
             )
+
+        # None 是存储层的 miss 标记，先整体校验再写入，避免写入一半失败。
+        if any(value is None for value in chunk_values):
+            raise ValueError("chunk_values must not contain None")
 
         prefix_key: str | None = None
         for chunk, value in zip(complete_chunks, chunk_values, strict=True):

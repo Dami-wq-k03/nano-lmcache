@@ -26,10 +26,13 @@ understood without a GPU or an inference engine.
 | `core/chunking.py` | Split tokens into chunks; derive prefix-aware keys |
 | `core/prefix_cache.py` | `ChunkedPrefixCache`: the store/lookup loop |
 | `core/metrics.py` | `CacheMetrics`: chunk-level hit/miss accounting |
+| `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
 | `storage/memory.py` | `MemoryKVCache`: dict-backed payload storage |
 
 Callers go through `ChunkedPrefixCache`, which owns a `CacheMetrics`
-instance and delegates storage to a backend.
+instance and depends only on the `CacheStorage` protocol, never on a
+concrete backend. `None` is reserved to mean "miss", so `store()`
+rejects `None` payloads.
 
 ### Why metrics count the way they do
 
@@ -40,13 +43,12 @@ reusable work was actually reused" rather than as a probe count.
 
 ## Mini: Extend the cache model
 
-The next stage introduces an explicit storage interface, so cache logic
-no longer depends on `MemoryKVCache` directly. That opens the door to
-file, CPU, GPU, or remote backends without touching the cache loop.
-Richer cache behavior (eviction, capacity limits) belongs here too.
+The storage interface is in place: cache logic depends on the
+`CacheStorage` protocol, so file, CPU, GPU, or remote backends can be
+added without touching the cache loop. Richer cache behavior (eviction,
+capacity limits) belongs in this stage next.
 
-Those backends are not implemented ahead of need; the interface comes
-first.
+Those backends are not implemented ahead of need.
 
 ## Inference integration
 
