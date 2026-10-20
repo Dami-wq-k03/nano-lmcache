@@ -114,6 +114,12 @@ def run_bounded() -> None:
 
     print_metrics(cache)
 
+    stats = storage.stats
+    print("=== Storage stats ===")
+    print(f"Evictions:                 {stats.evictions}")
+    print(f"Rejected (no room):        {stats.rejected_no_room}")
+    print(f"Rejected (missing parent): {stats.rejected_missing_parent}\n")
+
 
 def main() -> None:
     print("=== Nano-LMCache: Chunked Prefix Cache Demo ===\n")
