@@ -46,6 +46,18 @@ Done (pure Python, no GPU dependency):
 - [x] Runnable demos (`examples/`) and architecture notes
       (`docs/architecture.md`)
 
+Done (optional torch / GPU layer):
+
+- [x] Optional `torch` and `hf` extras, `torch` / `gpu` / `vllm` test
+      markers, and a core package that never imports torch (I1)
+- [x] Real KV tensors: prefix KV reuse with a HuggingFace model, verified
+      against a from-scratch forward pass (`tensor/`, G1)
+- [x] CUDA 12.4 PyTorch wheels on Linux, so GPU tests run on common
+      drivers (`tool.uv.sources` in `pyproject.toml`)
+
+Written by the maintainer and waiting for review: I2, I3, M1, D1. Please
+do not claim these.
+
 ## How to claim a task
 
 1. Pick a task from the table below and check that its prerequisites are
@@ -62,35 +74,35 @@ open an issue to discuss it.
 
 ## Task overview
 
-| ID | Task | Difficulty | Needs GPU | Prerequisites |
-| --- | --- | --- | --- | --- |
-| **Infrastructure** | | | | |
-| I1 | Optional dependency groups and GPU test markers | Medium | No | – |
-| I2 | Issue and PR templates | Easy | No | – |
-| I3 | Benchmark scaffolding | Easy | No | – |
-| **Mini: cache behavior (pure Python)** | | | | |
-| M1 | Eviction metrics | Easy | No | – |
-| M2 | Make eviction O(1) instead of O(n) | Medium | No | I3 |
-| M3 | Byte-based capacity | Medium | No | – |
-| M4 | Local disk backend | Medium | No | – |
-| M5 | Tiered memory + disk storage | Hard | No | M4 |
-| **GPU: real KV tensors** | | | | |
-| G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 |
-| G2 | GPU to CPU offload backend | Hard | Yes | G1 |
-| G3 | Measure recompute vs. load cost | Medium | Yes | G2 |
-| **vLLM integration** | | | | |
-| V0 | vLLM KV connector research notes | Medium | No | – |
-| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 |
-| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 |
-| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 |
-| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 |
-| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 |
-| **Teaching docs** | | | | |
-| D1 | Architecture diagrams | Easy | No | – |
-| D2 | Step-by-step tutorial | Medium | No | – |
-| D3 | Concept map: nano-lmcache ↔ LMCache ↔ vLLM | Medium | No | V0 |
+| ID | Task | Difficulty | Needs GPU | Prerequisites | Status |
+| --- | --- | --- | --- | --- | --- |
+| **Infrastructure** | | | | | |
+| I1 | Optional dependency groups and GPU test markers | Medium | No | – | Done |
+| I2 | Issue and PR templates | Easy | No | – | In review |
+| I3 | Benchmark scaffolding | Easy | No | – | In review |
+| **Mini: cache behavior (pure Python)** | | | | | |
+| M1 | Eviction metrics | Easy | No | – | In review |
+| M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Open (needs rework, see below) |
+| M3 | Byte-based capacity | Medium | No | – | Open |
+| M4 | Local disk backend | Medium | No | – | Open |
+| M5 | Tiered memory + disk storage | Hard | No | M4 | Open |
+| **GPU: real KV tensors** | | | | | |
+| G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
+| G2 | GPU to CPU offload backend | Hard | Yes | G1 | Open |
+| G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Open |
+| **vLLM integration** | | | | | |
+| V0 | vLLM KV connector research notes | Medium | No | – | Open |
+| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Open |
+| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Open |
+| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Open |
+| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Open |
+| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Open |
+| **Teaching docs** | | | | | |
+| D1 | Architecture diagrams | Easy | No | – | In review |
+| D2 | Step-by-step tutorial | Medium | No | – | Open |
+| D3 | Concept map: nano-lmcache ↔ LMCache ↔ vLLM | Medium | No | V0 | Open |
 
-**Good first contributions:** I2, M1, D1, I3.
+**Good first contributions:** M3, D2, and V0 (reading source, no GPU).
 
 **Dependencies:**
 
@@ -111,6 +123,9 @@ graph LR
 ## Infrastructure
 
 ### I1: Optional dependency groups and GPU test markers
+
+**Status: done.** The `vllm` extra is deliberately missing: add it together
+with the version pin in V0/V1.
 
 The core package has no runtime dependencies, and that must stay true:
 someone learning the cache concepts should never be forced to install
@@ -171,20 +186,35 @@ suffix does not fit".
 What you learn: tuning a cache requires observability; the hit rate
 alone can hide problems.
 
-### M2: Make eviction O(1) instead of O(n)
+### M2: Make eviction cheaper than a linear scan
 
 `MemoryKVCache._find_victim` scans from the oldest entry looking for the
 first leaf, which is O(n) in the worst case.
 
-To do: maintain a separate recency-ordered set of leaves so finding a
-victim is O(1). Keep it in sync whenever an entry switches between leaf
-and non-leaf (a child is added or removed).
+**This task needs a design decision first.** A plain recency-ordered
+leaf set gives O(1), but an entry that becomes a leaf (its last child was
+evicted) must slot into that order by its *last access time*, not at the
+end, or the eviction order changes. An `OrderedDict` cannot insert in the
+middle. Options to compare in your PR:
+
+- A heap of `(last_access_tick, key)` with lazy deletion: keeps today's
+  exact order, O(log n) amortized.
+- Treat a newly exposed leaf as most recently used: O(1), but a different,
+  documented policy. Existing tests may need to change; say why that is
+  acceptable.
+
+Measure before optimizing. With the I3 churn benchmark, eviction currently
+adds only a modest overhead for short chains, so the win is mainly for
+deep chains and large capacities. If the numbers do not justify the added
+complexity, closing this task with that evidence is a valid outcome.
 
 Acceptance criteria:
 
 - `tests/unit/test_bounded_memory.py` passes unchanged.
-- Before/after numbers from the I3 benchmark script.
-- Comments explain exactly when entries enter and leave the leaf set.
+- Before/after numbers from the I3 benchmark script, including a deep-chain
+  case.
+- Comments explain the chosen data structure and when entries enter and
+  leave it.
 
 ### M3: Byte-based capacity
 
@@ -242,6 +272,10 @@ payloads used so far with KV tensors produced by a real model.
 
 ### G1: Verify KV reuse correctness with a real model
 
+**Status: done** (`nano_lmcache/tensor/`, `examples/demo_kv_reuse.py`).
+Follow-ups welcome: models with sliding-window or linear-attention layers
+are rejected today, because a chunk stacks all layers into one tensor.
+
 **This is the single most important teaching milestone in the project**:
 proving that cache reuse is not just "it runs" but "the results are
 correct".
@@ -290,6 +324,13 @@ Acceptance criteria:
 
 Caching does not always pay off: for a short prefix, copying KV back from
 the CPU can be slower than recomputing it on the GPU.
+
+We already see this in `examples/demo_kv_reuse.py`: on an RTX 4090 with
+Qwen3-0.6B and a ~270 token prompt, reusing 256 cached tokens took about
+60 ms, while recomputing the whole prompt took about 45 ms. Logits matched,
+but the cache bookkeeping (stacking, cloning, rebuilding the HF cache)
+cost more than the skipped compute. Part of this task is to separate
+fixed overhead from per-token cost and find where reuse starts to win.
 
 To do: for a range of prefix lengths, measure prefill recompute time and
 load time from the G2 backend. Chart the crossover point in `docs/` and
@@ -417,6 +458,9 @@ reading the real systems.
 
 - The I, M, and D tasks, plus V0, need only an ordinary computer.
 - G1 can be done on a CPU; G2 and G3 need an NVIDIA GPU.
+- On Linux, `torch` comes from the CUDA 12.4 wheel index, which runs on
+  NVIDIA drivers >= 525. Check with
+  `uv run python -c "import torch; print(torch.cuda.is_available())"`.
 - V1 to V5 need an NVIDIA GPU that can run vLLM. A small model around
   0.5B parameters is enough, so memory requirements are modest.
 - Without a GPU you can still do V0 and D3, which are about reading
