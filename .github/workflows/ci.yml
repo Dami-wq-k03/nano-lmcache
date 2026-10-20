@@ -27,3 +27,20 @@ jobs:
 
       - name: Test
         run: uv run pytest
+
+  tensor-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install CPU tensor test dependencies
+        run: uv sync --locked --group tensor-test
+
+      - name: Test CPU tensor and Hugging Face support
+        run: uv run --locked --group tensor-test pytest -m "torch and not gpu"
