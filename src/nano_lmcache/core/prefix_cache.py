@@ -44,6 +44,11 @@ class ChunkedPrefixCache:
         self._metrics = metrics if metrics is not None else CacheMetrics()
 
     @property
+    def storage(self) -> CacheStorage:
+        """The backend holding this cache's payloads."""
+        return self._storage
+
+    @property
     def chunk_size(self) -> int:
         """Number of tokens in one complete chunk."""
         return self._chunk_size

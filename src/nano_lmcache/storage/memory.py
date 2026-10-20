@@ -2,6 +2,8 @@
 
 from collections import OrderedDict
 
+from nano_lmcache.storage.stats import StorageStats
+
 
 class MemoryKVCache:
     """Optionally bounded cache keyed by chunk key, storing opaque payloads.
@@ -28,11 +30,17 @@ class MemoryKVCache:
         self._entries: OrderedDict[str, object] = OrderedDict()
         self._parents: dict[str, str | None] = {}
         self._child_counts: dict[str, int] = {}
+        self._stats = StorageStats()
 
     @property
     def max_entries(self) -> int | None:
         """Entry limit, or None when the cache is unbounded."""
         return self._max_entries
+
+    @property
+    def stats(self) -> StorageStats:
+        """Eviction and rejection totals for this cache."""
+        return self._stats
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -52,6 +60,7 @@ class MemoryKVCache:
 
         # Without its parent this entry could never be reached, so drop it.
         if parent_key is not None and parent_key not in self._entries:
+            self._stats.rejected_missing_parent += 1
             return
 
         if (
@@ -62,6 +71,7 @@ class MemoryKVCache:
             victim = self._find_victim(protected=parent_key)
             if victim is None:
                 # No room: keep the existing prefix and drop this longer suffix.
+                self._stats.rejected_no_room += 1
                 return
             self._evict(victim)
 
@@ -89,6 +99,7 @@ class MemoryKVCache:
 
     def _evict(self, key: str) -> None:
         del self._entries[key]
+        self._stats.evictions += 1
         parent_key = self._parents.pop(key)
         self._child_counts.pop(key, None)
 

@@ -129,6 +129,7 @@ understood without a GPU or an inference engine.
 | `core/prefix_cache.py` | `ChunkedPrefixCache`: the store/lookup loop |
 | `core/metrics.py` | `CacheMetrics`: chunk-level hit/miss accounting |
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
+| `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
@@ -174,6 +175,20 @@ Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
 chain relation through `put(key, value, parent_key=...)`; the matching
 logic in `ChunkedPrefixCache` is unchanged and unaware of eviction.
+
+Eviction is observable through `MemoryKVCache.stats` (a `StorageStats`):
+
+- `evictions`: entries removed to make room.
+- `rejected_no_room`: writes dropped because the only evictable entry was
+  the new entry's own parent.
+- `rejected_missing_parent`: writes dropped because the parent was not
+  stored.
+
+These live in the storage layer rather than in `CacheMetrics`: only the
+storage knows when it evicts or refuses a write, while `CacheMetrics`
+counts lookup outcomes. Reading both together separates "the working set
+no longer fits" (evictions climbing) from "prompts stopped sharing
+prefixes" (hit rate falling with few evictions).
 
 The trade-off: shared prefixes are protected because they always have
 descendants, while the tails of long prompts are evicted first. After

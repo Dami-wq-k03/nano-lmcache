@@ -1,0 +1,32 @@
+"""Counters describing what a bounded storage backend did to its entries."""
+
+from dataclasses import dataclass
+
+
+@dataclass
+class StorageStats:
+    """Eviction and rejection totals kept by a storage backend.
+
+    These live next to the storage, not in `CacheMetrics`, because only the
+    storage knows when it evicts or refuses a write. `CacheMetrics` counts
+    lookup outcomes, which the prefix cache observes. Keeping both lets you
+    tell "hit rate fell because the working set is too big" (evictions
+    climbing) from "hit rate fell because prompts stopped sharing prefixes".
+
+    A write is rejected, rather than stored, for one of two reasons:
+
+    - `rejected_no_room`: the cache is full and the only evictable entry is
+      the new entry's own parent, so a longer chain cannot fit.
+    - `rejected_missing_parent`: the new entry's parent is not stored (for
+      example it was never stored, or an earlier chunk of the same prompt
+      was rejected), so the entry would be unreachable.
+    """
+
+    evictions: int = 0
+    rejected_no_room: int = 0
+    rejected_missing_parent: int = 0
+
+    @property
+    def rejected(self) -> int:
+        """Total writes that were dropped instead of stored."""
+        return self.rejected_no_room + self.rejected_missing_parent
