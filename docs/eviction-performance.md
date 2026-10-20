@@ -33,7 +33,12 @@ recovery, and maintain a heap of `(last_access_tick, key)` candidates:
 - Once the heap exceeds both 64 records and twice the stored entry
   count, it is rebuilt from current leaves. This bounds retained records
   by O(n), including repeated hits with no evictions. Rebuilding costs
-  O(n) but only follows enough added records to amortize that cost.
+  O(n): 64 is a slack floor to avoid rebuilding tiny heaps too frequently;
+  above 2n records, at least n are stale or duplicate since at most n
+  records are needed for current leaves. Charging the rebuild to the
+  preceding additions costs O(1)
+  amortized per addition, though the triggering operation can have a
+  latency spike. Individual heap operations remain O(log n).
 - Unbounded indexes do not maintain ticks or candidates.
 
 Heap operations are O(log n) amortized over the access/admission sequence;

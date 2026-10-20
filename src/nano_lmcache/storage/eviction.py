@@ -48,6 +48,10 @@ class PrefixLRUIndex:
         self._parents: OrderedDict[str, str | None] = OrderedDict()
         self._child_counts: dict[str, int] = {}
         self._clock = 0
+        # In bounded indexes, _last_access and _parents have the same keys
+        # at public-operation boundaries. Removing a key deletes its tick;
+        # stale heap records are identified by a missing or different tick.
+        # Unbounded indexes leave _last_access empty.
         self._last_access: dict[str, int] = {}
         # Bounded indexes keep leaf candidates ordered by access time. Hits
         # and becoming an internal node invalidate old heap records lazily.
@@ -152,9 +156,13 @@ class PrefixLRUIndex:
             return
         heapq.heappush(self._leaf_heap, (self._clock, key))
 
-        # Lazy deletion must not retain every hit forever. Rebuild after
-        # enough stale records accumulate to pay for this O(n) pass, keeping
-        # memory O(n) and candidate maintenance O(log n) amortized.
+        # 64 is a small-cache slack floor: avoid rebuilding a tiny heap on
+        # frequent hits. Above 2*n records, at most n records are needed
+        # for current leaves; stale/duplicate records justify an O(n)
+        # rebuild. Charging that rebuild
+        # to the preceding additions costs O(1) amortized per addition;
+        # heap operations remain O(log n). A rebuild can still cause a
+        # latency spike, while retained records stay O(n) overall.
         if len(self._leaf_heap) > 64 and len(self._leaf_heap) > 2 * len(self._parents):
             self._leaf_heap = [
                 (tick, candidate)

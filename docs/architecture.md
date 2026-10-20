@@ -226,6 +226,11 @@ Lazy records are periodically compacted once the heap exceeds both 64
 records and twice the number of stored entries. This keeps auxiliary
 memory O(n) and candidate maintenance O(log n) amortized. Individual
 operations can still discard many stale records or rebuild the heap.
+The 64-record floor avoids frequent rebuilds for tiny caches; above 2n
+records, at least n are stale or duplicate because at most n records are
+needed for current leaves. The O(n) rebuild costs O(1) per preceding addition
+when amortized,
+but the operation that triggers it can experience a latency spike.
 Unbounded indexes do not maintain candidates or access ticks. This avoids
 rescanning internal nodes on every eviction while keeping the exact
 existing policy, including after disk recovery replays recency.
