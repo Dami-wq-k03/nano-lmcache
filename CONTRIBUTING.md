@@ -116,6 +116,19 @@ Code should explain itself through clear names and docstrings. Add
 comments for the reasoning behind non-obvious decisions, for example why
 eviction must respect prefix chains.
 
+## Benchmarks
+
+Performance work (for example roadmap task M2) must come with numbers.
+Run the benchmark before and after your change, on the same machine, and
+paste both tables in the PR:
+
+```bash
+uv run python benchmarks/bench_prefix_cache.py
+uv run python benchmarks/bench_prefix_cache.py --chunks 100 1000 --capacity 64
+```
+
+Benchmarks are not part of CI, because timings vary between machines.
+
 ## Branches, commits, and pull requests
 
 - One pull request per feature. Keep changes small and focused.
