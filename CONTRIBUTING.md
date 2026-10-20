@@ -127,6 +127,12 @@ uv run python benchmarks/bench_prefix_cache.py
 uv run python benchmarks/bench_prefix_cache.py --chunks 100 1000 --capacity 64
 ```
 
+GPU work has its own benchmark, which needs a CUDA GPU:
+
+```bash
+uv run python benchmarks/bench_offload.py --device cuda:0
+```
+
 Benchmarks are not part of CI, because timings vary between machines.
 
 ## Branches, commits, and pull requests
