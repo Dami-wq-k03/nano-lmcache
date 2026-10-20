@@ -11,7 +11,13 @@ class DictStorage:
     def __init__(self) -> None:
         self.data: dict[str, object] = {}
 
-    def put(self, key: str, value: object) -> None:
+    def put(
+        self,
+        key: str,
+        value: object,
+        *,
+        parent_key: str | None = None,
+    ) -> None:
         self.data[key] = value
 
     def get(self, key: str) -> object | None:

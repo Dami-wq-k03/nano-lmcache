@@ -74,7 +74,7 @@ class ChunkedPrefixCache:
             key = make_chunk_key(
                 chunk, namespace=self._namespace, prefix_key=prefix_key
             )
-            self._storage.put(key, value)
+            self._storage.put(key, value, parent_key=prefix_key)
             prefix_key = key
 
     def lookup(self, token_ids: Sequence[int]) -> PrefixLookupResult:
