@@ -48,6 +48,55 @@ uv run mypy src/nano_lmcache
 - Ruff uses a line length of 88 with the `E`, `F`, `I`, `UP`, `B` rules.
 - mypy runs in `strict` mode; public code needs complete type hints.
 
+## Optional dependencies and GPU tests
+
+The core package has no runtime dependencies, and a plain `uv sync`
+installs only the dev tools. Heavy libraries are optional extras:
+
+```bash
+uv sync --extra torch   # PyTorch only
+uv sync --extra hf      # PyTorch + transformers
+```
+
+On Linux, `torch` is installed from PyTorch's CUDA 12.4 wheel index (see
+`[tool.uv.sources]` in `pyproject.toml`). PyPI's default Linux wheel targets
+CUDA 13 and needs a very recent NVIDIA driver, while CUDA 12 wheels run on
+drivers >= 525. `torch >= 2.6` is required by current transformers.
+Check that your GPU is visible with:
+
+```bash
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+(A `vllm` extra is added once a vLLM version is pinned; see roadmap V0.)
+
+Code that needs PyTorch lives in `src/nano_lmcache/tensor/`, and vLLM code
+will live in `src/nano_lmcache/integration/vllm/`. Never import torch or
+vllm from `nano_lmcache` itself, `core`, or `storage`; a test enforces
+this.
+
+Tests that need heavy dependencies carry a marker and are skipped, not
+failed, when the environment cannot run them:
+
+| Marker | Needs |
+| --- | --- |
+| `torch` | PyTorch installed |
+| `gpu` | PyTorch and a CUDA GPU |
+| `vllm` | vLLM and a CUDA GPU |
+
+```python
+import pytest
+
+
+@pytest.mark.gpu
+def test_copy_to_gpu():
+    import torch  # import inside, so collection works without torch
+    ...
+```
+
+CI runs CPU-only, so GPU tests only run on your machine. Run just them
+with `uv run pytest -m gpu`, and say in your PR which GPU you tested on.
+
 ## Development workflow
 
 This project is developed test-first:

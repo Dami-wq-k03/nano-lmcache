@@ -34,6 +34,12 @@ uv run python examples/demo_chunking.py       # chunk keys in isolation
 uv run python examples/demo_prefix_cache.py   # full cache loop + metrics
 ```
 
+With a real model (needs `uv sync --extra hf`):
+
+```bash
+uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
+```
+
 The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 
