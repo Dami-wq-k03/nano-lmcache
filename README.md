@@ -12,6 +12,7 @@ of [LMCache](https://github.com/LMCache/LMCache). It rebuilds the core
 ideas one concept at a time, each with tests and a runnable example, so
 that learners can later read production systems like LMCache and vLLM
 and understand why they are designed the way they are.
+
 ## Goals
 
 - Understand KV cache reuse and prefix matching.
@@ -29,6 +30,7 @@ uv run pytest
 uv run ruff check .
 uv run mypy src/nano_lmcache
 ```
+
 ## Try it
 
 ```bash
@@ -39,6 +41,7 @@ uv run python examples/demo_tiered_storage.py # memory in front of disk
 ```
 
 With a real model (needs `uv sync --extra hf`):
+
 ```bash
 uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
@@ -49,6 +52,7 @@ The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 
 New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for short definitions and beginner-friendly answers.
+
 ## Roadmap
 
 1. **Nano** (done): Token chunking, prefix-aware chunk keys, an
@@ -60,6 +64,7 @@ New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for shor
 
 See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
 contributors to claim.
+
 ## Scope
 
 The initial implementation prioritizes clarity and testability over
