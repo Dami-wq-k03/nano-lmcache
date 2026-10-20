@@ -10,6 +10,13 @@ Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
 we compare its logits with a from-scratch computation to show that reuse
 changes the cost, not the answer.
+
+The logits always match. Wall-clock time is another story: reuse only wins
+when the prefix is long enough that skipped computation outweighs the cost
+of rebuilding and storing the cache. On a fast GPU with a small model and a
+~270 token prompt it can even be slower than recomputing; try a longer
+document, a bigger model, or CPU to see the saving (roadmap task G3 studies
+this trade-off).
 """
 
 import argparse
@@ -61,6 +68,10 @@ def main() -> None:
     cache = ChunkedPrefixCache(
         chunk_size=args.chunk_size, namespace=args.model.replace("/", "-")
     )
+
+    # Warm up so one-time setup (CUDA context, kernel loading) is not timed.
+    with torch.no_grad():
+        model(torch.tensor([token_ids["A"][:8]], device=args.device))
 
     print(f"Model: {args.model} on {args.device}, chunk size {args.chunk_size}\n")
 

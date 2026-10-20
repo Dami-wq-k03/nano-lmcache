@@ -58,6 +58,16 @@ uv sync --extra torch   # PyTorch only
 uv sync --extra hf      # PyTorch + transformers
 ```
 
+On Linux, `torch` is installed from PyTorch's CUDA 12.4 wheel index (see
+`[tool.uv.sources]` in `pyproject.toml`). PyPI's default Linux wheel targets
+CUDA 13 and needs a very recent NVIDIA driver, while CUDA 12 wheels run on
+drivers >= 525. `torch >= 2.6` is required by current transformers.
+Check that your GPU is visible with:
+
+```bash
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
 (A `vllm` extra is added once a vLLM version is pinned; see roadmap V0.)
 
 Code that needs PyTorch lives in `src/nano_lmcache/tensor/`, and vLLM code
