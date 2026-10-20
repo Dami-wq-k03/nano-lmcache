@@ -1,4 +1,6 @@
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -91,3 +93,29 @@ def test_churn_without_capacity_keeps_everything():
     )
 
     assert result.entries == 20
+
+
+def test_cli_accepts_deep_chain_churn_parameters():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BENCH_PATH),
+            "--chunks",
+            "4",
+            "--capacity",
+            "2",
+            "--repeats",
+            "1",
+            "--churn-prompts",
+            "3",
+            "--churn-chunks",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "3 prompts x 5 chunks, capacity unbounded:" in result.stdout
+    assert "3 prompts x 5 chunks, capacity 2:" in result.stdout
+    assert "2 of 15 chunks kept" in result.stdout

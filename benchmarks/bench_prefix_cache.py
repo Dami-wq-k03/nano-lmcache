@@ -5,6 +5,8 @@ example when optimizing eviction:
 
     uv run python benchmarks/bench_prefix_cache.py
     uv run python benchmarks/bench_prefix_cache.py --chunks 100 1000 --capacity 64
+    uv run python benchmarks/bench_prefix_cache.py --capacity 8192 \
+        --churn-prompts 64 --churn-chunks 1024
 
 Timings are wall-clock seconds for one store or lookup of a whole prompt,
 taken as the best of several repeats to reduce noise. They are only
@@ -182,7 +184,21 @@ def main() -> None:
         help="entry limits to test; an unbounded run is always included",
     )
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--churn-prompts",
+        type=int,
+        default=2000,
+        help="number of unrelated prompts in each churn run",
+    )
+    parser.add_argument(
+        "--churn-chunks",
+        type=int,
+        default=8,
+        help="chunks per churn prompt; increase to measure deep chains",
+    )
     args = parser.parse_args()
+    if args.churn_prompts <= 0 or args.churn_chunks <= 0:
+        parser.error("--churn-prompts and --churn-chunks must be positive")
 
     capacities: list[int | None] = [None, *args.capacity]
     print(f"chunk_size={CHUNK_SIZE}, best of {args.repeats} repeats\n")
@@ -190,7 +206,11 @@ def main() -> None:
 
     print("\nEviction churn (many unrelated prompts):")
     for capacity in capacities:
-        print(format_churn(run_churn(2000, 8, capacity, args.repeats)))
+        print(
+            format_churn(
+                run_churn(args.churn_prompts, args.churn_chunks, capacity, args.repeats)
+            )
+        )
 
 
 if __name__ == "__main__":
