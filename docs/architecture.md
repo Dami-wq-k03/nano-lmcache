@@ -130,6 +130,8 @@ understood without a GPU or an inference engine.
 | `core/metrics.py` | `CacheMetrics`: chunk-level hit/miss accounting |
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
 | `storage/eviction.py` | `PrefixLRUIndex`: prefix-safe LRU bookkeeping shared by bounded backends |
+| `storage/disk.py` | `DiskKVCache`: one file per entry, survives restarts |
+| `storage/serializers.py` | `Serializer` protocol and the safe `JsonSerializer` default |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
@@ -220,6 +222,33 @@ tokens have identical K/V. The same tokens after a different prefix do
 not, which is why chunk keys hash the whole prefix. The tests check
 reused-prefix logits against a from-scratch forward pass, and check that a
 chunk with a different prefix has different K/V.
+
+### Disk storage
+
+`DiskKVCache(directory)` stores one file per entry, so cached chunks
+outlive the process that computed them. That is the main thing an
+external KV cache adds over an inference engine's own prefix cache, which
+lives in GPU memory and is lost on restart.
+
+- **File names** are the SHA-256 of the key, so no key can address a path
+  outside the directory. Each file starts with a JSON header recording the
+  key and its `parent_key`, which is what lets a new process rebuild the
+  prefix chains.
+- **Crash safety**: a write goes to a temporary file that is then renamed
+  into place. A rename within one directory is atomic, so a crash leaves
+  the old file, the new file, or a stray temp file, never half an entry.
+  Evicted entries are always leaves, so deleting them one at a time never
+  leaves an orphan behind.
+- **Recovery** on open deletes stray temp files, unreadable files, and
+  entries whose ancestors are missing, then rebuilds the `PrefixLRUIndex`
+  parents-first. File modification times record last use, so LRU order
+  also survives a restart.
+- **Serialization** is pluggable. The default is JSON, not `pickle`:
+  unpickling runs code chosen by whoever wrote the file, and a cache
+  directory is easy to share. Tensor payloads need a tensor serializer.
+
+Only one process should write to a directory at a time, since each keeps
+its own index.
 
 ## Mini: Extend the cache model
 
