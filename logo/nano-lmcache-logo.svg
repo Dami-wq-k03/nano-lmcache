@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1224"/>
+      <stop offset="100%" stop-color="#171E3A"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#62F0D6"/>
+      <stop offset="100%" stop-color="#22BFD2"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8D9BFF"/>
+      <stop offset="100%" stop-color="#6673F5"/>
+    </linearGradient>
+    <linearGradient id="diag" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#53E6D5"/>
+      <stop offset="100%" stop-color="#8D9BFF"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(42 42)">
+    <rect x="0" y="0" width="336" height="336" rx="78" fill="url(#bg)"/>
+    <circle cx="168" cy="160" r="105" fill="none" stroke="#35405F" stroke-width="2" opacity=".45"/>
+    <g>
+      <rect x="76" y="78" width="40" height="34" rx="10" fill="url(#teal)"/>
+      <rect x="76" y="128" width="40" height="34" rx="10" fill="url(#teal)" opacity=".88"/>
+      <rect x="76" y="178" width="40" height="34" rx="10" fill="url(#teal)" opacity=".74"/>
+      <rect x="220" y="78" width="40" height="34" rx="10" fill="url(#violet)" opacity=".78"/>
+      <rect x="220" y="128" width="40" height="34" rx="10" fill="url(#violet)" opacity=".9"/>
+      <rect x="220" y="178" width="40" height="34" rx="10" fill="url(#violet)"/>
+      <rect x="116" y="103" width="40" height="34" rx="10" fill="url(#diag)"/>
+      <rect x="148" y="128" width="40" height="34" rx="10" fill="url(#diag)"/>
+      <rect x="180" y="153" width="40" height="34" rx="10" fill="url(#diag)"/>
+    </g>
+    <path d="M 246 229 C 218 274, 118 274, 90 229" fill="none" stroke="#55E7D5" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 90 229 L 108 232 L 98 247 Z" fill="#55E7D5"/>
+  </g>
+  <text x="438" y="202" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif" font-size="82" font-weight="750" letter-spacing="-3">
+    <tspan fill="#334155">nano-</tspan><tspan fill="#111827">lmcache</tspan>
+  </text>
+  <rect x="443" y="232" width="58" height="5" rx="2.5" fill="#42D9CE"/>
+  <text x="520" y="244" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif" font-size="21" font-weight="600" letter-spacing="3.2" fill="#64748B">LLM KV CACHE  ·  PREFIX REUSE</text>
+</svg>

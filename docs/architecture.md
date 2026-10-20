@@ -9,17 +9,50 @@ GitHub renders the diagrams below directly. They describe the code in
 
 ```mermaid
 graph TD
-    Caller["Caller (demo, engine, tests)"] --> PC["ChunkedPrefixCache<br/>core/prefix_cache.py"]
-    PC --> CH["chunk_tokens, make_chunk_key<br/>core/chunking.py"]
-    PC --> MET["CacheMetrics<br/>core/metrics.py"]
-    PC -->|"put / get via CacheStorage"| ST["CacheStorage protocol<br/>storage/protocol.py"]
-    ST -.->|implemented by| MEM["MemoryKVCache<br/>storage/memory.py"]
+    Caller["Caller (demos, benchmarks, tests)"]
+    Model["HuggingFace causal LM<br/>(transformers)"]
+
+    subgraph tensor["tensor/ (optional: torch, hf extras)"]
+        HF["run_with_prefix_cache<br/>tensor/hf.py"]
+        KV["split_kv, join_kv<br/>tensor/kv_chunks.py"]
+    end
+
+    subgraph pure["core/ + storage/ (pure Python)"]
+        PC["ChunkedPrefixCache<br/>core/prefix_cache.py"]
+        CH["chunk_tokens, make_chunk_key<br/>core/chunking.py"]
+        MET["CacheMetrics<br/>core/metrics.py"]
+        ST["CacheStorage protocol<br/>storage/protocol.py"]
+        MEM["MemoryKVCache<br/>storage/memory.py"]
+        SS["StorageStats<br/>storage/stats.py"]
+    end
+
+    Caller -->|"token IDs + payloads"| PC
+    Caller -->|"token IDs + model"| HF
+    HF -->|"lookup / store chunk tensors"| PC
+    HF -->|"split / join KV tensors"| KV
+    HF -->|"forward with past_key_values"| Model
+    PC --> CH
+    PC --> MET
+    PC -->|"put / get via CacheStorage"| ST
+    ST -.->|implemented by| MEM
+    MEM --> SS
     ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
 ```
 
 `ChunkedPrefixCache` owns the matching logic and the metrics. It only
 knows the `CacheStorage` protocol, so storage backends can change without
 touching it.
+
+There are two ways in. A caller can use `ChunkedPrefixCache` directly
+with any payload, as the pure Python demos and tests do. Or it can call
+`run_with_prefix_cache`, which drives a real model: it looks up the
+cached prefix, turns the matched chunk tensors back into
+`past_key_values` with `join_kv`, runs the model over the remaining
+tokens, and stores the result split into chunks with `split_kv`.
+
+Dependencies only point from `tensor/` into `core/`, never back. To
+`ChunkedPrefixCache` and the storage a chunk tensor is just an opaque
+payload, which is why the core still runs without PyTorch installed.
 
 ### How a chunk key is built
 
@@ -135,7 +168,6 @@ understood without a GPU or an inference engine.
 | `storage/tiered.py` | `TieredStorage`: fast tier in front of a slow tier, write-through |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
-
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
 | `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
 | `tensor/serializers.py` | `TensorSerializer`: safe tensor encoding for `DiskKVCache` (needs torch) |
