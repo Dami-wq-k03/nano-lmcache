@@ -46,8 +46,7 @@ def serve_request(
     # Reuse cached payloads for hit chunks; pay compute only for the rest.
     reused = list(result.values)
     recomputed = [
-        compute_kv_payload(chunk)
-        for chunk in complete[result.matched_chunks :]
+        compute_kv_payload(chunk) for chunk in complete[result.matched_chunks :]
     ]
     cache.store(token_ids, reused + recomputed)
 
@@ -121,10 +120,41 @@ def run_bounded() -> None:
     print(f"Rejected (missing parent): {stats.rejected_missing_parent}\n")
 
 
+def encoded_payload_size(value: object) -> int:
+    """Count UTF-8 payload bytes, excluding Python string overhead."""
+    if not isinstance(value, str):
+        raise TypeError("this demo stores string payloads")
+    return len(value.encode("utf-8"))
+
+
+def run_byte_bounded() -> None:
+    storage = MemoryKVCache(max_bytes=20, size_fn=encoded_payload_size)
+    cache = ChunkedPrefixCache(
+        chunk_size=CHUNK_SIZE, namespace=NAMESPACE, storage=storage
+    )
+
+    print("=== Part 3: byte-bounded cache (max_bytes=20) ===\n")
+    requests = [
+        # Each string payload encodes to 10 bytes: only two chunks fit.
+        ("Request A (only its first 2 chunks fit)", [101, 205, 307, 409, 511, 613]),
+        # B's second chunk replaces A's leaf; neither chain can grow to 3 chunks.
+        ("Request B (shares first chunk)", [101, 205, 888, 777, 666, 555]),
+        ("Request A again (shared prefix reused)", [101, 205, 307, 409, 511, 613]),
+    ]
+    for label, token_ids in requests:
+        serve_request(cache, label, token_ids)
+        print(f"  payload bytes: {storage.nbytes}/{storage.max_bytes}\n")
+
+    print_metrics(cache)
+    print(f"Evictions:          {storage.stats.evictions}")
+    print(f"Rejected (no room): {storage.stats.rejected_no_room}\n")
+
+
 def main() -> None:
     print("=== Nano-LMCache: Chunked Prefix Cache Demo ===\n")
     run_unbounded()
     run_bounded()
+    run_byte_bounded()
 
 
 if __name__ == "__main__":
