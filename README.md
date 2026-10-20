@@ -48,3 +48,8 @@ The initial implementation prioritizes clarity and testability over
 production performance. Distributed caching, GPU-specific optimizations,
 and inference-engine integration are introduced only when the core
 concepts are established.
+
+## Contributing and license
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+workflow. nano-lmcache is released under the [MIT License](LICENSE).
