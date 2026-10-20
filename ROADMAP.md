@@ -101,8 +101,19 @@ open an issue to discuss it.
 | D1 | Architecture diagrams | Easy | No | – | In review |
 | D2 | Step-by-step tutorial | Medium | No | – | Open |
 | D3 | Concept map: nano-lmcache ↔ LMCache ↔ vLLM | Medium | No | V0 | Open |
+| D4 | Animation: one `store` and one `lookup` step by step | Medium | No | D1 | Open |
+| D5 | Animation: why eviction must be prefix-safe | Medium | No | D1 | Open |
+| D6 | Visualization: why only prefixes can be reused | Medium | No | – | Open |
+| D7 | Jupyter notebooks for each tutorial chapter | Medium | No | D2 | Open |
+| D8 | Exercises with hidden tests and reference solutions | Medium | No | D2 | Open |
+| D9 | Glossary and FAQ | Easy | No | – | Open |
+| D10 | Illustration: vLLM paged KV cache vs. nano-lmcache chunks | Medium | No | V0 | Open |
+| D11 | Chinese translation of README and docs | Easy | No | – | Open |
 
-**Good first contributions:** M3, D2, and V0 (reading source, no GPU).
+**Good first contributions:** M3, D2, D9, D11, and V0 (reading source, no GPU).
+
+Teaching material (animations, notebooks, exercises, translations) is as
+welcome as code. See the D tasks below.
 
 **Dependencies:**
 
@@ -116,6 +127,11 @@ graph LR
   M4 --> M5
   I3 --> M2
   V0 --> D3
+  D1 --> D4
+  D1 --> D5
+  D2 --> D7
+  D2 --> D8
+  V0 --> D10
 ```
 
 ---
@@ -451,6 +467,83 @@ For each nano-lmcache concept, list the corresponding module or class in
 the LMCache and vLLM source, and explain what nano-lmcache deliberately
 simplifies. This lets people who finish the project go straight to
 reading the real systems.
+
+### D4: Animation: one `store` and one `lookup` step by step
+
+Make the data flow in `docs/architecture.md` move. Show a prompt being
+split into chunks, each chunk getting its prefix-aware key, and then the
+entries appearing in storage (`store`) or being matched one after another
+until the first miss (`lookup`).
+
+Format is open, as long as it can be viewed without installing anything
+heavy: a self-contained HTML/JS page, an animated SVG, or a GIF generated
+by a script kept in the repo (for example with Manim or matplotlib). Put
+it under `docs/animations/` and embed or link it from the README or
+architecture doc.
+
+Acceptance criteria: the animation uses the real chunking function (or
+data produced by it), not hand-drawn numbers that could drift from the
+code, and the source that generates it is committed.
+
+### D5: Animation: why eviction must be prefix-safe
+
+Show a chain of chunks `A → B → C → D` and what goes wrong if the oldest
+entry (`A`) is evicted first: `B`, `C`, `D` stay in storage but can never
+be matched. Then show the leaf-only policy, step by step, with capacity
+pressure. Same format and placement rules as D4.
+
+Acceptance criteria: the final frame states the invariant ("every stored
+entry has its whole ancestor chain stored") and links to the test that
+enforces it.
+
+### D6: Visualization: why only prefixes can be reused
+
+Explain visually that a token's KV depends on every earlier token and on
+its position, so the same tokens after a different prefix produce
+different KV. A heatmap or arrow diagram of causal attention works well.
+It could also be an interactive page where the reader edits the first
+token and sees which chunk keys change.
+
+Acceptance criteria: ties back to the negative test in G1 and to why the
+chunk key hashes in the parent key.
+
+### D7: Jupyter notebooks for each tutorial chapter
+
+For each D2 chapter, add a notebook under `notebooks/` that runs the real
+code cell by cell with printed intermediate values (chunks, keys, hit
+counts, cache contents). Notebooks must run on CPU, use only the core
+package unless the chapter is about tensors, and have outputs cleared in
+git (or be checked by CI with `nbmake`/`nbval`).
+
+### D8: Exercises with hidden tests and reference solutions
+
+Turn the "small hands-on exercise" at the end of each D2 chapter into a
+real exercise: a stub file with `TODO`s, tests the learner can run, and a
+separate reference solution. Exercises must not break the main test
+suite (for example by living under `exercises/` and being excluded from
+default collection).
+
+### D9: Glossary and FAQ
+
+Write `docs/glossary.md` (KV cache, prefill, decode, TTFT, chunk, prefix,
+leaf, eviction, paged attention, ...) and an FAQ for questions newcomers
+keep asking ("Why not cache by full prompt?", "Why is reuse sometimes
+slower?"). Each entry should be short and link to the code or chapter
+that explains it.
+
+### D10: Illustration: vLLM paged KV cache vs. nano-lmcache chunks
+
+Draw how a request's tokens map onto vLLM blocks, block tables, and slot
+mapping, and how those relate to nano-lmcache chunks, including the
+`chunk_size` vs. `block_size` alignment question. Complements the V0
+notes and prepares readers for V2 to V4.
+
+### D11: Chinese translation of README and docs
+
+Translate the README, architecture doc, and tutorial into Chinese (for
+example `README.zh-CN.md`, `docs/zh-CN/`). Keep the English version the
+source of truth: each translated file should state which English commit
+it was translated from, so drift is easy to spot.
 
 ---
 
