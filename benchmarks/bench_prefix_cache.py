@@ -11,6 +11,9 @@ example when optimizing eviction:
 Timings are wall-clock seconds for one store or lookup of a whole prompt,
 taken as the best of several repeats to reduce noise. They are only
 comparable on the same machine, so always record a baseline first.
+Every invocation also runs a fixed deep-chain churn case: 64 prompts of
+1024 chunks against an 8192-entry cache, forcing repeated leaf selection
+through mostly internal nodes in the original linear scan.
 """
 
 import argparse
@@ -88,6 +91,18 @@ def run_churn(
         capacity=capacity,
         seconds=best,
         entries=entries,
+    )
+
+
+def run_deep_chain_churn(repeats: int = 5) -> ChurnResult:
+    """Exercise victim selection with deep chains and a large working set.
+
+    Eight chains fill the cache; the remaining prompts force eviction.
+    Keep this case fixed so it can be compared across implementations,
+    independently of the caller's short-chain churn parameters.
+    """
+    return run_churn(
+        prompts=64, chunks_per_prompt=1024, capacity=8192, repeats=repeats
     )
 
 
@@ -211,6 +226,9 @@ def main() -> None:
                 run_churn(args.churn_prompts, args.churn_chunks, capacity, args.repeats)
             )
         )
+
+    print("\nDeep-chain eviction churn (large capacity):")
+    print(format_churn(run_deep_chain_churn(args.repeats)))
 
 
 if __name__ == "__main__":

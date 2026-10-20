@@ -129,6 +129,14 @@ uv run python benchmarks/bench_prefix_cache.py --capacity 8192 \
   --churn-prompts 64 --churn-chunks 1024
 ```
 
+Every benchmark invocation now additionally prints a fixed deep-chain
+case via `run_deep_chain_churn`: 64 prompts of 1024 chunks with capacity
+8192. It fills the cache with eight chains, then forces eviction for the
+remaining prompts. This is the same workload as the last row of the depth
+sweep, whose original paired measurements are retained above. The fixed
+case runs independently of custom short-chain churn options, so the
+default command always exposes the large-capacity scan cost.
+
 ## Correctness checks
 
 `tests/unit/test_leaf_eviction.py` covers original access times on newly
@@ -142,3 +150,8 @@ policy (12 scenarios, 600 operations each).
 A deep-chain test counts entry iteration rather than asserting noisy
 timing thresholds. The existing bounded-memory, disk-recovery, and
 backend-contract tests remain unchanged.
+
+`tests/unit/test_benchmarks.py` runs the fixed deep-chain workload and
+checks that its 65536 inserted chunks exceed capacity while exactly 8192
+entries remain. Its CLI test also checks that the fixed case is printed
+alongside custom churn parameters. Neither test asserts elapsed time.
