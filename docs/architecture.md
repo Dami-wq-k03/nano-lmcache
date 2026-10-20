@@ -271,6 +271,34 @@ its ancestors cannot fit, the old payload and all other entries remain
 unchanged. A successful overwrite refreshes recency; shrinking frees
 bytes for later writes.
 
+Victim selection uses a min-heap of `(last_access_tick, key)` leaf
+candidates in bounded indexes (either `max_entries` or `max_bytes` set). A new entry enters as a leaf; a hit or
+overwrite records a new tick. Old records are discarded lazily when a
+key is gone, has children, or has a newer tick. After a last child is
+evicted, its parent enters the heap using its **original last access
+tick**, so becoming a leaf does not change LRU order. The protected parent
+is skipped only for that admission and remains eligible for later writes.
+
+Lazy records are periodically compacted once the heap exceeds both 64
+records and twice the number of stored entries. This keeps auxiliary
+memory O(n) and candidate maintenance O(log n) amortized. Individual
+operations can still discard many stale records or rebuild the heap.
+The 64-record floor avoids frequent rebuilds for tiny caches; above 2n
+records, at least n are stale or duplicate because at most n records are
+needed for current leaves. The O(n) rebuild costs O(1) per preceding addition
+when amortized,
+but the operation that triggers it can experience a latency spike.
+Unbounded indexes do not maintain candidates or access ticks. This avoids
+rescanning internal nodes on every eviction while keeping the exact
+existing policy, including after disk recovery replays recency.
+
+A simple FIFO-style leaf list could update in O(1), but appending a newly
+exposed parent would treat it as most recently used and change eviction
+order. The heap keeps current behavior, at the cost of extra bookkeeping
+on bounded writes and leaf hits. The
+[performance report](eviction-performance.md) compares both designs and
+includes short-chain overhead and deep-chain gains.
+
 Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
 chain relation through `put(key, value, parent_key=...)`; the matching

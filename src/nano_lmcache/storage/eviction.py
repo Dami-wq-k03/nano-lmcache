@@ -18,6 +18,7 @@ A backend calls `admit` before storing a payload, deletes the payloads of
 the keys it names as evicted, and stores the new payload only if admitted.
 """
 
+import heapq
 from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -62,6 +63,17 @@ class PrefixLRUIndex:
         # The value is the key's parent (None for a chain root).
         self._parents: OrderedDict[str, str | None] = OrderedDict()
         self._child_counts: dict[str, int] = {}
+        self._clock = 0
+        # In bounded indexes (either limit set), _last_access and _parents
+        # have the same keys at public-operation boundaries. Removing a key
+        # deletes its tick; stale heap records are identified by a missing
+        # or different tick.
+        # Unbounded indexes leave _last_access empty.
+        self._last_access: dict[str, int] = {}
+        # Bounded indexes keep leaf candidates ordered by access time. Hits
+        # and becoming an internal node invalidate old heap records lazily.
+        # Unbounded indexes need no candidates, since they never evict.
+        self._leaf_heap: list[tuple[int, str]] = []
         self._stats = StorageStats()
 
     @property
@@ -101,6 +113,7 @@ class PrefixLRUIndex:
     def touch(self, key: str) -> None:
         """Mark `key` as most recently used, for example after a hit."""
         self._parents.move_to_end(key)
+        self._record_access(key)
 
     def admit(
         self, key: str, parent_key: str | None, *, size_bytes: int = 0
@@ -168,6 +181,11 @@ class PrefixLRUIndex:
 
         self._add(key, parent_key, size_bytes)
 
+    @property
+    def _bounded(self) -> bool:
+        # Either limit can force evictions, so either needs leaf candidates.
+        return self._max_entries is not None or self._max_bytes is not None
+
     def _fits(self, entries: int, nbytes: int) -> bool:
         return (self._max_entries is None or entries <= self._max_entries) and (
             self._max_bytes is None or nbytes <= self._max_bytes
@@ -181,25 +199,66 @@ class PrefixLRUIndex:
             self._child_counts[parent_key] = (
                 self._child_counts.get(parent_key, 0) + 1
             )
+        self._record_access(key)
 
     def _remove(self, key: str) -> None:
         parent_key = self._parents.pop(key)
         self._nbytes -= self._sizes.pop(key)
+        self._last_access.pop(key, None)
         self._child_counts.pop(key, None)
         if parent_key is not None:
             self._child_counts[parent_key] -= 1
+            if self._bounded and self._child_counts[parent_key] == 0:
+                # Exposure is not an access. Reinsert with the parent's last
+                # actual access time, preserving the original LRU policy.
+                heapq.heappush(
+                    self._leaf_heap, (self._last_access[parent_key], parent_key)
+                )
+
+    def _record_access(self, key: str) -> None:
+        if not self._bounded:
+            return
+        self._clock += 1
+        self._last_access[key] = self._clock
+        if self._child_counts.get(key, 0):
+            return
+        heapq.heappush(self._leaf_heap, (self._clock, key))
+
+        # 64 is a small-cache slack floor: avoid rebuilding a tiny heap on
+        # frequent hits. Above 2*n records, at most n records are needed
+        # for current leaves; stale/duplicate records justify an O(n)
+        # rebuild. Charging that rebuild
+        # to the preceding additions costs O(1) amortized per addition;
+        # heap operations remain O(log n). A rebuild can still cause a
+        # latency spike, while retained records stay O(n) overall.
+        if len(self._leaf_heap) > 64 and len(self._leaf_heap) > 2 * len(self._parents):
+            self._leaf_heap = [
+                (tick, candidate)
+                for candidate, tick in self._last_access.items()
+                if self._child_counts.get(candidate, 0) == 0
+            ]
+            heapq.heapify(self._leaf_heap)
 
     def _find_victim(self, protected: str | None) -> str | None:
         """Least recently used leaf, excluding `protected`.
 
-        This scans from the oldest key, which is O(n) in the worst case;
-        roadmap task M2 discusses faster alternatives.
+        A stale record is popped at most once. A protected leaf is only
+        skipped for this admission; keep it for future victim selection.
         """
-        for key in self._parents:
-            if key != protected and self._child_counts.get(key, 0) == 0:
-                return key
-
-        return None
+        protected_leaf: tuple[int, str] | None = None
+        victim = None
+        while self._leaf_heap:
+            tick, key = heapq.heappop(self._leaf_heap)
+            if self._last_access.get(key) != tick or self._child_counts.get(key, 0):
+                continue
+            if key == protected:
+                protected_leaf = (tick, key)
+                continue
+            victim = key
+            break
+        if protected_leaf is not None:
+            heapq.heappush(self._leaf_heap, protected_leaf)
+        return victim
 
 
 def _validate_size(size_bytes: int) -> None:

@@ -1,4 +1,6 @@
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -91,3 +93,44 @@ def test_churn_without_capacity_keeps_everything():
     )
 
     assert result.entries == 20
+
+
+def test_deep_chain_churn_fills_large_capacity_and_forces_eviction():
+    bench = load_bench()
+
+    result = bench.run_deep_chain_churn(repeats=1)
+
+    assert result.prompts == 64
+    assert result.chunks_per_prompt == 1024
+    assert result.capacity == 8192
+    assert result.prompts * result.chunks_per_prompt > result.capacity
+    assert result.entries == result.capacity
+
+
+def test_cli_accepts_deep_chain_churn_parameters():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BENCH_PATH),
+            "--chunks",
+            "4",
+            "--capacity",
+            "2",
+            "--repeats",
+            "1",
+            "--churn-prompts",
+            "3",
+            "--churn-chunks",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "3 prompts x 5 chunks, capacity unbounded:" in result.stdout
+    assert "3 prompts x 5 chunks, capacity 2:" in result.stdout
+    assert "2 of 15 chunks kept" in result.stdout
+    assert "Deep-chain eviction churn (large capacity):" in result.stdout
+    assert "64 prompts x 1024 chunks, capacity 8192:" in result.stdout
+    assert "8192 of 65536 chunks kept" in result.stdout
