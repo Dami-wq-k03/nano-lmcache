@@ -29,6 +29,12 @@ understood without a GPU or an inference engine.
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
+| `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
+| `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
+
+The `tensor` package is optional. Nothing in `core` or `storage` imports
+it, so the cache concepts work without PyTorch installed.
+
 Callers go through `ChunkedPrefixCache`, which owns a `CacheMetrics`
 instance and depends only on the `CacheStorage` protocol, never on a
 concrete backend. `None` is reserved to mean "miss", so `store()`
@@ -71,6 +77,26 @@ The trade-off: shared prefixes are protected because they always have
 descendants, while the tails of long prompts are evicted first. After
 eviction a request typically still hits its prefix and recomputes only
 the lost suffix, which the metrics count as misses.
+
+### Real KV tensors
+
+With a real model the payload of a chunk is one tensor holding the K and V
+of every layer for that chunk's tokens:
+
+    [num_layers, 2, num_kv_heads, chunk_tokens, head_dim]
+
+`run_with_prefix_cache` looks up the longest cached prefix, rebuilds
+`past_key_values` from the matched chunks, runs the model over only the
+remaining tokens, and stores the chunks of the whole sequence for the next
+request. A fully cached prompt still recomputes its last token, because
+the model needs one forward step to produce next-token logits.
+
+Reuse is exact, not approximate. In a causal model the K and V of a token
+depend only on that token and the tokens before it, so identical leading
+tokens have identical K/V. The same tokens after a different prefix do
+not, which is why chunk keys hash the whole prefix. The tests check
+reused-prefix logits against a from-scratch forward pass, and check that a
+chunk with a different prefix has different K/V.
 
 ## Mini: Extend the cache model
 

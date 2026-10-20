@@ -47,3 +47,8 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 mypy_path = "src"
 strict = true
+
+# torch and transformers are optional extras; CI type-checks without them.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "transformers", "transformers.*"]
+ignore_missing_imports = true

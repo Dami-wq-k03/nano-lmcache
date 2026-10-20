@@ -179,3 +179,9 @@ def test_injected_metrics_object_is_shared():
     assert metrics.hit_chunks == 1
     assert cache.metrics is metrics
 
+
+
+def test_chunk_size_is_exposed():
+    cache = ChunkedPrefixCache(chunk_size=4, namespace="model-a")
+
+    assert cache.chunk_size == 4
