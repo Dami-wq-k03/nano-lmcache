@@ -47,7 +47,7 @@ def test_prefix_cache_works_with_custom_backend():
     assert result.matched_chunks == 2
     assert result.matched_tokens == 4
     assert result.values == ("kv-0", "kv-1")
-    # 数据确实写进了注入的后端，而不是默认的 MemoryKVCache。
+    # Data landed in the injected backend, not a default MemoryKVCache.
     assert set(storage.data) == set(result.keys)
 
 
@@ -106,7 +106,7 @@ def test_two_caches_can_share_one_backend():
 
 
 def test_store_rejects_none_values():
-    # None 在存储约定里专门表示 miss，不能同时当作合法缓存值。
+    # None is reserved to mean a miss, so it cannot be a cached value.
     cache = ChunkedPrefixCache(
         chunk_size=2,
         namespace="model-a",
@@ -126,5 +126,5 @@ def test_rejected_store_writes_nothing():
     with pytest.raises(ValueError):
         cache.store([101, 205, 307, 409], ["kv-0", None])
 
-    # 校验必须发生在写入之前，否则会留下残缺的前缀。
+    # Validation must happen before any write, or a partial prefix remains.
     assert storage.data == {}

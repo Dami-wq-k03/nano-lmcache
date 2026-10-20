@@ -107,7 +107,7 @@ def test_lookup_records_remaining_chunks_as_misses():
         ["kv-0", "kv-1", "kv-2"],
     )
 
-    # 前 2 个 chunk 命中，第 3 个必须重算，所以记为 1 次 miss。
+    # The first 2 chunks hit; the 3rd must be recomputed, so it is 1 miss.
     cache.lookup([101, 205, 307, 409, 777, 888])
 
     assert cache.metrics.hit_chunks == 2
@@ -140,7 +140,7 @@ def test_metrics_ignore_incomplete_trailing_chunk():
         ["kv-0", "kv-1"],
     )
 
-    # 第 5 个 token 构成的尾部 chunk 不参与复用，也不计入 miss。
+    # The incomplete tail chunk (5th token) is not reusable and not a miss.
     cache.lookup([101, 205, 307, 409, 511])
 
     assert cache.metrics.hit_chunks == 2

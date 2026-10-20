@@ -82,7 +82,7 @@ def test_overwrite_does_not_evict_or_grow():
 def test_never_evicts_an_entry_that_has_children():
     cache = MemoryKVCache(max_entries=3)
     build_chain(cache, ["a", "b", "c"])
-    # "x" 是独立根节点；a、b 都有后缀依赖，不能被淘汰。
+    # "x" is an independent root; a and b have descendants and must stay.
     cache.put("x", 0)
 
     assert cache.get("a") is not None
@@ -95,8 +95,8 @@ def test_ancestor_becomes_evictable_once_children_are_gone():
     cache = MemoryKVCache(max_entries=2)
     build_chain(cache, ["a", "b"])
 
-    cache.put("x", 0)  # 淘汰叶子 b
-    cache.put("y", 0)  # 此时 a 已是叶子，且最久未用
+    cache.put("x", 0)  # evicts leaf b
+    cache.put("y", 0)  # a is now a leaf and the least recently used
 
     assert cache.get("a") is None
     assert cache.get("x") == 0
@@ -108,7 +108,8 @@ def test_chain_longer_than_capacity_keeps_longest_fitting_prefix():
 
     build_chain(cache, ["a", "b", "c", "d", "e"])
 
-    # 新节点的父节点不能被自己的插入淘汰，所以放不下的后缀直接丢弃。
+    # A new entry's insert cannot evict its own parent, so the suffix that
+    # does not fit is dropped.
     assert len(cache) == 3
     assert [cache.get(k) for k in "abc"] == ["v-a", "v-b", "v-c"]
     assert cache.get("d") is None
@@ -174,9 +175,9 @@ def test_capacity_smaller_than_prompt_keeps_a_usable_prefix():
 def test_eviction_never_breaks_shared_prefix_of_other_request():
     cache = make_prefix_cache(3)
     cache.store([1, 2, 3, 4], ["a0", "a1"])
-    cache.store([1, 2, 7, 8], ["a0", "b1"])  # 与上一条共享第一个 chunk
+    cache.store([1, 2, 7, 8], ["a0", "b1"])  # shares the first chunk with A
 
-    # 再来一个全新请求，必须挤掉某个叶子，而不是共享的 [1,2]。
+    # An unrelated request must push out a leaf, not the shared [1, 2].
     cache.store([9, 9, 8, 8], ["c0", "c1"])
 
     assert cache.lookup([1, 2, 3, 4]).matched_chunks >= 1
@@ -198,7 +199,7 @@ def test_metrics_after_eviction_count_lost_suffix_as_miss():
 def test_evicted_request_can_be_restored_by_storing_again():
     cache = make_prefix_cache(2)
     cache.store([1, 2, 3, 4], ["a0", "a1"])
-    cache.store([9, 9, 8, 8], ["c0", "c1"])  # 淘汰 a1，再淘汰 a0
+    cache.store([9, 9, 8, 8], ["c0", "c1"])  # evicts a1, then a0
 
     assert cache.lookup([1, 2, 3, 4]).matched_chunks == 0
 

@@ -60,6 +60,9 @@ Every new feature or bug fix needs tests in `tests/unit/`. If it changes
 user-visible behavior, update the relevant example in `examples/` and
 `docs/architecture.md`.
 
+Write all code, comments, docs, and commit messages in English, so the
+project stays readable for everyone.
+
 Code should explain itself through clear names and docstrings. Add
 comments for the reasoning behind non-obvious decisions, for example why
 eviction must respect prefix chains.

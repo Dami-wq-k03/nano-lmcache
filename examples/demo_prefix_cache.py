@@ -43,7 +43,7 @@ def serve_request(
         else:
             print(f"  chunk {index} {chunk} MISS  recomputed")
 
-    # 命中的 chunk 直接复用缓存里的 payload，只为剩下的 chunk 付计算代价。
+    # Reuse cached payloads for hit chunks; pay compute only for the rest.
     reused = list(result.values)
     recomputed = [
         compute_kv_payload(chunk)
@@ -75,13 +75,13 @@ def run_unbounded() -> None:
     print(f"Namespace: {NAMESPACE}\n")
 
     requests = [
-        # 冷启动：缓存是空的，每个 chunk 都要算。
+        # Cold start: the cache is empty, so every chunk is computed.
         ("Request A (cold cache)", [101, 205, 307, 409, 511, 613]),
-        # 与 A 共享前 4 个 token，第 3 个 chunk 开始分叉。
+        # Shares A's first 4 tokens and diverges at the 3rd chunk.
         ("Request B (shares 4-token prefix)", [101, 205, 307, 409, 777, 888]),
-        # 与 A 完全相同：整段前缀都能复用。
+        # Identical to A: the whole prefix is reusable.
         ("Request A again (fully warm)", [101, 205, 307, 409, 511, 613]),
-        # 奇数长度：尾部不足一个 chunk，既不复用也不计入命中率。
+        # Odd length: the short tail is neither reused nor counted in hit rate.
         ("Request C (incomplete tail)", [101, 205, 307, 409, 511]),
     ]
 
@@ -100,11 +100,11 @@ def run_bounded() -> None:
     print("=== Part 2: bounded cache (max_entries=4) ===\n")
 
     requests = [
-        # 3 个 chunk 占用 3/4 个条目。
+        # 3 chunks fill 3 of the 4 slots.
         ("Request A (fills 3 of 4 slots)", [101, 205, 307, 409, 511, 613]),
-        # 与 A 共享第一个 chunk，新增 2 个，需要淘汰 1 个叶子（A 的末端）。
+        # Shares A's first chunk and adds 2 more, evicting one leaf (A's tail).
         ("Request B (forces eviction)", [101, 205, 888, 777, 666, 555]),
-        # A 的末端被淘汰了，但共享前缀 [101, 205] 和 A 的中段仍然可用。
+        # A's tail was evicted, but the shared [101, 205] and A's middle remain.
         ("Request A again (suffix evicted)", [101, 205, 307, 409, 511, 613]),
     ]
 

@@ -24,7 +24,7 @@ class MemoryKVCache:
             raise ValueError("max_entries must be positive")
 
         self._max_entries = max_entries
-        # 顺序即新旧程度：最前面是最久未使用的条目。
+        # Order is recency: the first entry is the least recently used.
         self._entries: OrderedDict[str, object] = OrderedDict()
         self._parents: dict[str, str | None] = {}
         self._child_counts: dict[str, int] = {}
@@ -44,13 +44,13 @@ class MemoryKVCache:
         *,
         parent_key: str | None = None,
     ) -> None:
-        # 覆盖已有条目：不改变容量，也不改变它在前缀链中的位置。
+        # Overwrite: capacity and the entry's place in its chain are unchanged.
         if key in self._entries:
             self._entries[key] = value
             self._entries.move_to_end(key)
             return
 
-        # 父节点不在缓存里，这个条目永远走不到，直接丢弃。
+        # Without its parent this entry could never be reached, so drop it.
         if parent_key is not None and parent_key not in self._entries:
             return
 
@@ -58,10 +58,10 @@ class MemoryKVCache:
             self._max_entries is not None
             and len(self._entries) >= self._max_entries
         ):
-            # 新条目的父节点不能被淘汰，否则新条目一插入就成了孤儿。
+            # Never evict the new entry's parent, or it would be orphaned on arrival.
             victim = self._find_victim(protected=parent_key)
             if victim is None:
-                # 放不下：保留已有的前缀，丢弃这个更长的后缀。
+                # No room: keep the existing prefix and drop this longer suffix.
                 return
             self._evict(victim)
 
