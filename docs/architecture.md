@@ -14,7 +14,7 @@ graph TD
     PC --> MET["CacheMetrics<br/>core/metrics.py"]
     PC -->|"put / get via CacheStorage"| ST["CacheStorage protocol<br/>storage/protocol.py"]
     ST -.->|implemented by| MEM["MemoryKVCache<br/>storage/memory.py"]
-    ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
+    ST -.->|"future backends"| FUT["GPU offload, remote"]
 ```
 
 `ChunkedPrefixCache` owns the matching logic and the metrics. It only
@@ -132,6 +132,7 @@ understood without a GPU or an inference engine.
 | `storage/eviction.py` | `PrefixLRUIndex`: prefix-safe LRU bookkeeping shared by bounded backends |
 | `storage/disk.py` | `DiskKVCache`: one file per entry, survives restarts |
 | `storage/serializers.py` | `Serializer` protocol and the safe `JsonSerializer` default |
+| `storage/tiered.py` | `TieredStorage`: fast tier in front of a slow tier, write-through |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
@@ -249,6 +250,29 @@ lives in GPU memory and is lost on restart.
 
 Only one process should write to a directory at a time, since each keeps
 its own index.
+
+### Tiered storage
+
+`TieredStorage(fast=..., slow=...)` puts a small fast backend (usually
+`MemoryKVCache`) in front of a large slow one (usually `DiskKVCache`),
+the way LMCache keeps hot chunks in memory and the long tail on disk.
+
+- **Write-through**: every `put` goes to the slow tier, then the fast
+  tier. Write-back (demote to disk only when memory evicts) would save
+  writes, but it breaks prefix safety: memory evicts a leaf whose parent
+  may still exist only in memory, so a prefix-safe disk tier has to reject
+  it and the chunk is lost. Write-through also means a crash never loses a
+  stored chunk.
+- **Promote on hit**: a slow-tier hit is copied into the fast tier with
+  the parent the slow tier recorded. A prefix lookup walks a chain root
+  first, so the parent is normally promoted just before its child. If the
+  fast tier refuses the parent (no room), it also refuses the child, and
+  the slow tier keeps serving both.
+- **Invariant**: each tier keeps whole chains on its own, so their union
+  does too. A randomized test checks this after every step.
+
+`TieredStorage.tier_stats` counts hits per tier, misses, and promotions,
+which shows how much of the working set fits in the fast tier.
 
 ## Mini: Extend the cache model
 

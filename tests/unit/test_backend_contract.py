@@ -9,11 +9,16 @@ import pytest
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
+from nano_lmcache.storage.tiered import TieredStorage
 
 BACKENDS = {
     "memory": lambda tmp_path, max_entries: MemoryKVCache(max_entries=max_entries),
     "disk": lambda tmp_path, max_entries: DiskKVCache(
         tmp_path / "disk", max_entries=max_entries
+    ),
+    "tiered": lambda tmp_path, max_entries: TieredStorage(
+        fast=MemoryKVCache(max_entries=max_entries),
+        slow=DiskKVCache(tmp_path / "tiered", max_entries=max_entries),
     ),
 }
 
