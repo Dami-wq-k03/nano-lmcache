@@ -14,7 +14,7 @@ graph TD
     PC --> MET["CacheMetrics<br/>core/metrics.py"]
     PC -->|"put / get via CacheStorage"| ST["CacheStorage protocol<br/>storage/protocol.py"]
     ST -.->|implemented by| MEM["MemoryKVCache<br/>storage/memory.py"]
-    ST -.->|"future backends"| FUT["GPU offload, remote"]
+    ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
 ```
 
 `ChunkedPrefixCache` owns the matching logic and the metrics. It only
