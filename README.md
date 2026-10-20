@@ -51,6 +51,8 @@ uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv  
 The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 
+New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for short definitions and beginner-friendly answers.
+
 ## Roadmap
 
 1. **Nano** (done): Token chunking, prefix-aware chunk keys, an
