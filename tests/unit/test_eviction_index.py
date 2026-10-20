@@ -127,3 +127,31 @@ def test_restore_beyond_capacity_is_an_error():
 
     with pytest.raises(ValueError):
         index.restore("b", None)
+
+
+def test_byte_eviction_decision_lists_leaves_in_removal_order():
+    index = PrefixLRUIndex(max_bytes=6)
+    index.admit("a", None, size_bytes=2)
+    index.admit("b", "a", size_bytes=2)
+    index.admit("c", "b", size_bytes=2)
+
+    decision = index.admit("x", None, size_bytes=4)
+
+    assert decision == Admission(admitted=True, evicted=("c", "b"))
+    assert index.nbytes == index.max_bytes == 6
+    assert list(index.keys_by_recency()) == ["a", "x"]
+
+
+def test_restore_accounts_for_bytes_without_eviction_or_stats():
+    index = PrefixLRUIndex(max_bytes=5)
+    index.restore("a", None, size_bytes=3)
+    index.restore("b", "a", size_bytes=2)
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        index.restore("c", "b", size_bytes=1)
+
+    assert index.nbytes == 5
+    assert list(index.keys_by_recency()) == ["a", "b"]
+    assert index.stats.evictions == index.stats.rejected == 0
+    assert index.admit("x", None, size_bytes=2).evicted == ("b",)
+    assert index.nbytes == 5

@@ -191,8 +191,48 @@ reusable work was actually reused" rather than as a probe count.
 ### Capacity and eviction
 
 `MemoryKVCache(max_entries=N)` limits the cache to N entries, where one
-entry is one chunk payload. Without `max_entries` the cache is unbounded
-and behaves exactly as before.
+entry is one chunk payload. `MemoryKVCache(max_bytes=B, size_fn=...)` limits
+the sum of recorded payload sizes to B bytes. Either limit can be omitted;
+when both are set, **both must be satisfied**. With neither, the cache is
+unbounded. `max_bytes` must be a positive integer.
+
+Byte capacity is currently exposed only by `MemoryKVCache`. Although
+`PrefixLRUIndex` is shared, `DiskKVCache` and `CPUOffloadKVCache` do not
+expose `max_bytes` and omit `size_bytes` when admitting entries. Their
+index sizes therefore default to zero; they enforce entry limits only.
+
+The injectable `size_fn(value) -> int` must return a non-negative integer
+(zero is allowed). It defaults to `sys.getsizeof`, which measures the
+shallow Python object size, not recursively referenced objects or a
+tensor's underlying storage.
+
+**For tensors or containers of bytes, pass a custom `size_fn`.** The
+default may count only a small Python wrapper while ignoring a large
+backing buffer or referenced byte strings, so it cannot enforce the
+intended payload-memory budget for those values. A tensor size function
+can report `value.nelement() * value.element_size()`; a container size
+function should explicitly measure its contained payloads. For bytes-only
+payloads, for example:
+
+```python
+def byte_payload_size(value: object) -> int:
+    if not isinstance(value, bytes):
+        raise TypeError("expected bytes")
+    return len(value)
+
+
+storage = MemoryKVCache(max_entries=100, max_bytes=1024, size_fn=byte_payload_size)
+```
+
+The limit covers payload sizes as reported by that function, excluding
+keys, index metadata, and container overhead; it is not a process-memory
+limit. `storage.nbytes` exposes the recorded total, even without a byte
+limit. Payloads are measured on each `put`, not on reads. Do not resize
+cached payloads in place: their recorded sizes only change on another
+successful `put`. A size function exception or invalid result raises
+before any entries, recency, or counters change.
+Sizing intentionally runs before checking for a missing parent, so even
+a write that will be rejected for that reason pays the measurement cost.
 
 Chunk keys chain: each key is derived from the previous chunk's key, and
 a lookup walks the chain from its first chunk, stopping at the first
@@ -205,14 +245,31 @@ The eviction rule therefore is:
 1. Only an entry with no descendants (a leaf) may be evicted.
 2. Among leaves, evict the least recently used. `get` refreshes recency.
 3. The parent of the entry being inserted is never the victim.
-4. If no victim exists, the new entry is dropped, so a prompt longer
-   than the cache keeps its longest prefix that fits.
+4. If the new entry and its ancestors cannot fit, the write is dropped
+   without evicting anything, so a prompt longer than the cache keeps its
+   longest prefix that fits. This includes a single payload larger than
+   `max_bytes`.
 5. An entry whose parent is not stored is dropped.
 
 These rules live in `PrefixLRUIndex` (`storage/eviction.py`), which only
-tracks keys, parents, and recency. A backend asks it whether a new entry
-is admitted and which keys to evict, then moves the payloads itself, so
+tracks keys, parents, recency, and reported sizes, never payload objects.
+A backend asks it whether a new entry is admitted and which keys to
+evict, then moves the payloads itself, so
 memory, disk, and CPU-offload backends share one eviction policy.
+
+One write can evict several leaves until both limits are met. After a
+leaf goes, its parent may become a candidate, but the incoming entry's
+ancestor chain stays protected. Admission checks that this required chain
+can fit before removing any victims, so a rejected write preserves all
+existing data and recency.
+
+Overwriting a key preserves its original parent and entry count, measures
+the replacement payload, and adjusts `nbytes` by the size difference.
+The overwritten key and its ancestors stay protected; its descendants
+may be evicted to make room for a larger payload. If the replacement and
+its ancestors cannot fit, the old payload and all other entries remain
+unchanged. A successful overwrite refreshes recency; shrinking frees
+bytes for later writes.
 
 Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
@@ -222,8 +279,8 @@ logic in `ChunkedPrefixCache` is unchanged and unaware of eviction.
 Eviction is observable through `MemoryKVCache.stats` (a `StorageStats`):
 
 - `evictions`: entries removed to make room.
-- `rejected_no_room`: writes dropped because the only evictable entry was
-  the new entry's own parent.
+- `rejected_no_room`: writes dropped because the payload and its required
+  ancestors cannot fit within the entry or byte limits.
 - `rejected_missing_parent`: writes dropped because the parent was not
   stored.
 
@@ -363,8 +420,8 @@ them. `examples/demo_kv_reuse.py --offload --disk DIR` runs exactly this.
 The storage interface is in place: cache logic depends on the
 `CacheStorage` protocol, so file, CPU, GPU, or remote backends can be
 added without touching the cache loop. Capacity limits and prefix-safe
-eviction are implemented in `MemoryKVCache`; other eviction policies and
-byte-based capacity are future work.
+eviction, including byte-based capacity, are implemented in `MemoryKVCache`;
+other eviction policies are future work.
 
 Those backends are not implemented ahead of need.
 
