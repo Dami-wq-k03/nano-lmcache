@@ -27,6 +27,10 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]
+tensor-test = [
+    "torch>=2.6",
+    "transformers>=4.45",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -58,8 +62,23 @@ ignore_missing_imports = true
 # CUDA 12.x wheels run on drivers >= 525 through CUDA minor-version
 # compatibility. torch >= 2.6 is required by current transformers releases.
 # Other platforms keep PyPI.
+[tool.uv]
+conflicts = [
+    [{ group = "tensor-test" }, { extra = "torch" }],
+    [{ group = "tensor-test" }, { extra = "hf" }],
+]
+
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu124", marker = "sys_platform == 'linux'" }]
+torch = [
+    { index = "pytorch-cpu", group = "tensor-test" },
+    { index = "pytorch-cu124", extra = "torch", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu124", extra = "hf", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu124"

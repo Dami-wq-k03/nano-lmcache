@@ -36,13 +36,15 @@ uv sync
 
 ## Checks
 
-CI runs exactly these three commands. Please make sure they pass locally
+CI runs exactly these commands. Please make sure they pass locally
 before opening a pull request:
 
 ```bash
 uv run pytest
 uv run ruff check .
 uv run mypy src/nano_lmcache
+uv sync --locked --group tensor-test
+uv run --locked --group tensor-test pytest -m "torch and not gpu"
 ```
 
 - Ruff uses a line length of 88 with the `E`, `F`, `I`, `UP`, `B` rules.
@@ -56,12 +58,15 @@ installs only the dev tools. Heavy libraries are optional extras:
 ```bash
 uv sync --extra torch   # PyTorch only
 uv sync --extra hf      # PyTorch + transformers
+uv sync --group tensor-test  # CPU PyTorch + transformers for tests
 ```
 
 On Linux, `torch` is installed from PyTorch's CUDA 12.4 wheel index (see
 `[tool.uv.sources]` in `pyproject.toml`). PyPI's default Linux wheel targets
 CUDA 13 and needs a very recent NVIDIA driver, while CUDA 12 wheels run on
 drivers >= 525. `torch >= 2.6` is required by current transformers.
+The `tensor-test` dependency group uses PyTorch's CPU wheel index so the same
+tests can run efficiently without a GPU.
 Check that your GPU is visible with:
 
 ```bash
@@ -94,8 +99,9 @@ def test_copy_to_gpu():
     ...
 ```
 
-CI runs CPU-only, so GPU tests only run on your machine. Run just them
-with `uv run pytest -m gpu`, and say in your PR which GPU you tested on.
+CI installs the `tensor-test` group in a separate job and runs tests marked
+`torch` on CPU. GPU tests only run on your machine. Run just them with
+`uv run pytest -m gpu`, and say in your PR which GPU you tested on.
 
 ## Development workflow
 

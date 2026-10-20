@@ -2,13 +2,32 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.15' and sys_platform != 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux'",
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version >= '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
+conflicts = [[
+    { package = "nano-lmcache", extra = "torch" },
+    { package = "nano-lmcache", group = "tensor-test" },
+], [
+    { package = "nano-lmcache", extra = "hf" },
+    { package = "nano-lmcache", group = "tensor-test" },
+]]
 
 [[package]]
 name = "annotated-doc"
@@ -25,7 +44,7 @@ version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
@@ -183,12 +202,12 @@ name = "httpx2"
 version = "2.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten'" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
+    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "httpx2-jsfetch", marker = "python_full_version >= '3.12' and sys_platform == 'emscripten'" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7f/85/07978f4afd168d6b408fa75c1dc13e3010653a81e182aa1b6d89ab94d9c6/httpx2-2.15.1.tar.gz", hash = "sha256:ff75485308fbe441e75b1218546e4e78d884df41e1a9741c1f79335ed8fcfef7", size = 101673, upload-time = "2026-10-19T20:14:24.587Z" }
 wheels = [
@@ -212,7 +231,7 @@ dependencies = [
     { name = "click" },
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'ARM64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "httpx2" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -534,7 +553,7 @@ version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ast-serialize" },
-    { name = "librt", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "librt", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "mypy-extensions" },
     { name = "pathspec" },
     { name = "typing-extensions" },
@@ -604,13 +623,13 @@ source = { editable = "." }
 
 [package.optional-dependencies]
 hf = [
-    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
-    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "(sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch') or (sys_platform == 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch') or (sys_platform != 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "transformers" },
 ]
 torch = [
-    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "sys_platform == 'linux'" },
-    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "(sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra != 'extra-12-nano-lmcache-hf' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (extra != 'extra-12-nano-lmcache-hf' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
 ]
 
 [package.dev-dependencies]
@@ -619,11 +638,16 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
+tensor-test = [
+    { name = "torch", version = "2.14.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform == 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "transformers" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'hf'", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu124" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'torch'", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu124" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'hf'", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "nano-lmcache", extra = "hf" } },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'torch'", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "nano-lmcache", extra = "torch" } },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'hf'", specifier = ">=2.6" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'torch'", specifier = ">=2.6" },
     { name = "transformers", marker = "extra == 'hf'", specifier = ">=4.45" },
@@ -636,14 +660,22 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "ruff", specifier = ">=0.17.1" },
 ]
+tensor-test = [
+    { name = "torch", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "nano-lmcache", group = "tensor-test" } },
+    { name = "transformers", specifier = ">=4.45" },
+]
 
 [[package]]
 name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
 wheels = [
@@ -655,10 +687,18 @@ name = "networkx"
 version = "3.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.15' and sys_platform != 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux'",
+    "python_full_version >= '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dc/76/3af777226b63a5e64a6b36b1ec5855c14e2b94a37096d4760e595fc43511/networkx-3.7.tar.gz", hash = "sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a", size = 1866482, upload-time = "2026-09-21T16:45:16.974Z" }
 wheels = [
@@ -670,8 +710,12 @@ name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d0/ad/fed0499ce6a338d2a03ebae59cd15093910c8875328855781952abf6c2fe/numpy-2.4.6.tar.gz", hash = "sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda", size = 20735807, upload-time = "2026-05-18T23:37:14.07Z" }
 wheels = [
@@ -753,10 +797,18 @@ name = "numpy"
 version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.15' and sys_platform != 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux'",
+    "python_full_version >= '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/95/b0/c7453d0b6e2073c3264468b106ee1563750cecc910965e67357e3698c83e/numpy-2.5.4.tar.gz", hash = "sha256:9a94cf751c9ad8ebaa835bcd3d40dacf8534ad086b88c38029b65123c7999d2a", size = 20866315, upload-time = "2026-10-10T20:05:31.422Z" }
 wheels = [
@@ -832,7 +884,9 @@ name = "nvidia-cublas-cu12"
 version = "12.4.5.8"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/7f/7fbae15a3982dc9595e49ce0f19332423b260045d0a6afe93cdbe2f1f624/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0f8aa1706812e00b9f19dfe0cdb3999b092ccb8ca168c0db5b8ea712456fd9b3", size = 363333771, upload-time = "2024-06-18T19:28:09.881Z" },
     { url = "https://files.pythonhosted.org/packages/ae/71/1c91302526c45ab494c23f61c7a84aa568b8c1f9d196efa5993957faf906/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl", hash = "sha256:2fc8da60df463fdefa81e323eef2e36489e1c94335b5358bcb38360adf75ac9b", size = 363438805, upload-time = "2024-04-03T20:57:06.025Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/2a/4f27ca96232e8b5269074a72e03b4e0d43aa68c9b965058b1684d07c6ff8/nvidia_cublas_cu12-12.4.5.8-py3-none-win_amd64.whl", hash = "sha256:5a796786da89203a0657eda402bcdcec6180254a8ac22d72213abc42069522dc", size = 396895858, upload-time = "2024-04-03T21:03:31.996Z" },
 ]
 
 [[package]]
@@ -840,7 +894,9 @@ name = "nvidia-cuda-cupti-cu12"
 version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/b5/9fb3d00386d3361b03874246190dfec7b206fd74e6e287b26a8fcb359d95/nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:79279b35cf6f91da114182a5ce1864997fd52294a87a16179ce275773799458a", size = 12354556, upload-time = "2024-06-18T19:30:40.546Z" },
     { url = "https://files.pythonhosted.org/packages/67/42/f4f60238e8194a3106d06a058d494b18e006c10bb2b915655bd9f6ea4cb1/nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:9dec60f5ac126f7bb551c055072b69d85392b13311fcc1bcda2202d172df30fb", size = 13813957, upload-time = "2024-04-03T20:55:01.564Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/79/8cf313ec17c58ccebc965568e5bcb265cdab0a1df99c4e674bb7a3b99bfe/nvidia_cuda_cupti_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:5688d203301ab051449a2b1cb6690fbe90d2b372f411521c86018b950f3d7922", size = 9938035, upload-time = "2024-04-03T21:01:01.109Z" },
 ]
 
 [[package]]
@@ -848,7 +904,9 @@ name = "nvidia-cuda-nvrtc-cu12"
 version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/aa/083b01c427e963ad0b314040565ea396f914349914c298556484f799e61b/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0eedf14185e04b76aa05b1fea04133e59f465b6f960c0cbf4e37c3cb6b0ea198", size = 24133372, upload-time = "2024-06-18T19:32:00.576Z" },
     { url = "https://files.pythonhosted.org/packages/2c/14/91ae57cd4db3f9ef7aa99f4019cfa8d54cb4caa7e00975df6467e9725a9f/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a178759ebb095827bd30ef56598ec182b85547f1508941a3d560eb7ea1fbf338", size = 24640306, upload-time = "2024-04-03T20:56:01.463Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/30/8c844bfb770f045bcd8b2c83455c5afb45983e1a8abf0c4e5297b481b6a5/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:a961b2f1d5f17b14867c619ceb99ef6fcec12e46612711bcec78eb05068a60ec", size = 19751955, upload-time = "2024-04-03T21:01:51.133Z" },
 ]
 
 [[package]]
@@ -856,7 +914,9 @@ name = "nvidia-cuda-runtime-cu12"
 version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/aa/b656d755f474e2084971e9a297def515938d56b466ab39624012070cb773/nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:961fe0e2e716a2a1d967aab7caee97512f71767f852f67432d572e36cb3a11f3", size = 894177, upload-time = "2024-06-18T19:32:52.877Z" },
     { url = "https://files.pythonhosted.org/packages/ea/27/1795d86fe88ef397885f2e580ac37628ed058a92ed2c39dc8eac3adf0619/nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:64403288fa2136ee8e467cdc9c9427e0434110899d07c779f25b5c068934faa5", size = 883737, upload-time = "2024-04-03T20:54:51.355Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/8b/450e93fab75d85a69b50ea2d5fdd4ff44541e0138db16f9cd90123ef4de4/nvidia_cuda_runtime_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:09c2e35f48359752dfa822c09918211844a3d93c100a715d79b59591130c5e1e", size = 878808, upload-time = "2024-04-03T21:00:49.77Z" },
 ]
 
 [[package]]
@@ -864,10 +924,11 @@ name = "nvidia-cudnn-cu12"
 version = "9.1.0.70"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/d0/f90ee6956a628f9f04bf467932c0a25e5a7e706a684b896593c06c82f460/nvidia_cudnn_cu12-9.1.0.70-py3-none-win_amd64.whl", hash = "sha256:6278562929433d68365a07a4a1546c237ba2849852c0d4b2262a486e805b977a", size = 679925892, upload-time = "2024-04-22T15:24:53.333Z" },
 ]
 
 [[package]]
@@ -875,10 +936,12 @@ name = "nvidia-cufft-cu12"
 version = "11.2.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/8a/0e728f749baca3fbeffad762738276e5df60851958be7783af121a7221e7/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:5dad8008fc7f92f5ddfa2101430917ce2ffacd86824914c82e28990ad7f00399", size = 211422548, upload-time = "2024-06-18T19:33:39.396Z" },
     { url = "https://files.pythonhosted.org/packages/27/94/3266821f65b92b3138631e9c8e7fe1fb513804ac934485a8d05776e1dd43/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:f083fc24912aa410be21fa16d157fed2055dab1cc4b6934a0e03cba69eb242b9", size = 211459117, upload-time = "2024-04-03T20:57:40.402Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/ee/3f3f8e9874f0be5bbba8fb4b62b3de050156d159f8b6edc42d6f1074113b/nvidia_cufft_cu12-11.2.1.3-py3-none-win_amd64.whl", hash = "sha256:d802f4954291101186078ccbe22fc285a902136f974d369540fd4a5333d1440b", size = 210576476, upload-time = "2024-04-03T21:04:06.422Z" },
 ]
 
 [[package]]
@@ -886,7 +949,9 @@ name = "nvidia-curand-cu12"
 version = "10.3.5.147"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/9c/a79180e4d70995fdf030c6946991d0171555c6edf95c265c6b2bf7011112/nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1f173f09e3e3c76ab084aba0de819c49e56614feae5c12f69883f4ae9bb5fad9", size = 56314811, upload-time = "2024-06-18T19:34:48.575Z" },
     { url = "https://files.pythonhosted.org/packages/8a/6d/44ad094874c6f1b9c654f8ed939590bdc408349f137f9b98a3a23ccec411/nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a88f583d4e0bb643c49743469964103aa59f7f708d862c3ddb0fc07f851e3b8b", size = 56305206, upload-time = "2024-04-03T20:58:08.722Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/22/2573503d0d4e45673c263a313f79410e110eb562636b0617856fdb2ff5f6/nvidia_curand_cu12-10.3.5.147-py3-none-win_amd64.whl", hash = "sha256:f307cc191f96efe9e8f05a87096abc20d08845a841889ef78cb06924437f6771", size = 55799918, upload-time = "2024-04-03T21:04:34.45Z" },
 ]
 
 [[package]]
@@ -894,12 +959,14 @@ name = "nvidia-cusolver-cu12"
 version = "11.6.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/6b/a5c33cf16af09166845345275c34ad2190944bcc6026797a39f8e0a282e0/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_aarch64.whl", hash = "sha256:d338f155f174f90724bbde3758b7ac375a70ce8e706d70b018dd3375545fc84e", size = 127634111, upload-time = "2024-06-18T19:35:01.793Z" },
     { url = "https://files.pythonhosted.org/packages/3a/e1/5b9089a4b2a4790dfdea8b3a006052cfecff58139d5a4e34cb1a51df8d6f/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:19e33fa442bcfd085b3086c4ebf7e8debc07cfe01e11513cc6d332fd918ac260", size = 127936057, upload-time = "2024-04-03T20:58:28.735Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/be/d435b7b020e854d5d5a682eb5de4328fd62f6182507406f2818280e206e2/nvidia_cusolver_cu12-11.6.1.9-py3-none-win_amd64.whl", hash = "sha256:e77314c9d7b694fcebc84f58989f3aa4fb4cb442f12ca1a9bde50f5e8f6d1b9c", size = 125224015, upload-time = "2024-04-03T21:04:53.339Z" },
 ]
 
 [[package]]
@@ -907,10 +974,12 @@ name = "nvidia-cusparse-cu12"
 version = "12.3.1.170"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/a9/c0d2f83a53d40a4a41be14cea6a0bf9e668ffcf8b004bd65633f433050c0/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_aarch64.whl", hash = "sha256:9d32f62896231ebe0480efd8a7f702e143c98cfaa0e8a76df3386c1ba2b54df3", size = 207381987, upload-time = "2024-06-18T19:35:32.989Z" },
     { url = "https://files.pythonhosted.org/packages/db/f7/97a9ea26ed4bbbfc2d470994b8b4f338ef663be97b8f677519ac195e113d/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ea4f11a2904e2a8dc4b1833cc1b5181cde564edd0d5cd33e3c168eff2d1863f1", size = 207454763, upload-time = "2024-04-03T20:58:59.995Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/e0/3155ca539760a8118ec94cc279b34293309bcd14011fc724f87f31988843/nvidia_cusparse_cu12-12.3.1.170-py3-none-win_amd64.whl", hash = "sha256:9bc90fb087bc7b4c15641521f31c0371e9a612fc2ba12c338d3ae032e6b6797f", size = 204684315, upload-time = "2024-04-03T21:05:26.031Z" },
 ]
 
 [[package]]
@@ -918,7 +987,9 @@ name = "nvidia-cusparselt-cu12"
 version = "0.6.2"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/8e/675498726c605c9441cf46653bd29cb1b8666da1fb1469ffa25f67f20c58/nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_aarch64.whl", hash = "sha256:067a7f6d03ea0d4841c85f0c6f1991c5dda98211f6302cb83a4ab234ee95bef8", size = 149422781, upload-time = "2024-07-23T17:35:27.203Z" },
     { url = "https://files.pythonhosted.org/packages/78/a8/bcbb63b53a4b1234feeafb65544ee55495e1bb37ec31b999b963cbccfd1d/nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_x86_64.whl", hash = "sha256:df2c24502fd76ebafe7457dbc4716b2fec071aabaed4fb7691a201cde03704d9", size = 150057751, upload-time = "2024-07-23T02:35:53.074Z" },
+    { url = "https://files.pythonhosted.org/packages/56/8f/2c33082238b6c5e783a877dc8786ab62619e3e6171c083bd3bba6e3fe75e/nvidia_cusparselt_cu12-0.6.2-py3-none-win_amd64.whl", hash = "sha256:0057c91d230703924c0422feabe4ce768841f9b4b44d28586b6f6d2eb86fbe70", size = 148755794, upload-time = "2024-07-23T02:35:00.261Z" },
 ]
 
 [[package]]
@@ -934,7 +1005,9 @@ name = "nvidia-nvjitlink-cu12"
 version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/45/239d52c05074898a80a900f49b1615d81c07fceadd5ad6c4f86a987c0bc4/nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4abe7fef64914ccfa909bc2ba39739670ecc9e820c83ccc7a6ed414122599b83", size = 20552510, upload-time = "2024-06-18T20:20:13.871Z" },
     { url = "https://files.pythonhosted.org/packages/ff/ff/847841bacfbefc97a00036e0fce5a0f086b640756dc38caea5e1bb002655/nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:06b3b9b25bf3f8af351d664978ca26a16d2c5127dbd53c0497e28d1fb9611d57", size = 21066810, upload-time = "2024-04-03T20:59:46.957Z" },
+    { url = "https://files.pythonhosted.org/packages/81/19/0babc919031bee42620257b9a911c528f05fb2688520dcd9ca59159ffea8/nvidia_nvjitlink_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:fd9020c501d27d135f983c6d3e244b197a7ccad769e34df53a42e276b0e25fa1", size = 95336325, upload-time = "2024-04-03T21:06:25.073Z" },
 ]
 
 [[package]]
@@ -942,7 +1015,9 @@ name = "nvidia-nvtx-cu12"
 version = "12.4.127"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/39/471f581edbb7804b39e8063d92fc8305bdc7a80ae5c07dbe6ea5c50d14a5/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:7959ad635db13edf4fc65c06a6e9f9e55fc2f92596db928d169c0bb031e88ef3", size = 100417, upload-time = "2024-06-18T20:16:22.484Z" },
     { url = "https://files.pythonhosted.org/packages/87/20/199b8713428322a2f22b722c62b8cc278cc53dffa9705d744484b5035ee9/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:781e950d9b9f60d8241ccea575b32f5105a5baf4c2351cab5256a24869f12a1a", size = 99144, upload-time = "2024-04-03T20:56:12.406Z" },
+    { url = "https://files.pythonhosted.org/packages/54/1b/f77674fbb73af98843be25803bbd3b9a4f0a96c75b8d33a2854a5c7d2d77/nvidia_nvtx_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:641dccaaa1139f3ffb0d3164b4b84f9d253397e38246a4f2f36728b48566d485", size = 66307, upload-time = "2024-04-03T21:02:01.959Z" },
 ]
 
 [[package]]
@@ -986,7 +1061,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -1262,7 +1337,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "mpmath" },
+    { name = "mpmath", marker = "sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ca/99/5a5b6f19ff9f083671ddf7b9632028436167cd3d33e11015754e41b249a4/sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f", size = 7533040, upload-time = "2024-07-19T09:26:51.238Z" }
 wheels = [
@@ -1274,12 +1349,21 @@ name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'linux'",
-    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version >= '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-nano-lmcache-hf' and extra != 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-12-nano-lmcache-torch' and extra != 'group-12-nano-lmcache-tensor-test'",
 ]
 dependencies = [
-    { name = "mpmath" },
+    { name = "mpmath", marker = "sys_platform != 'linux' or extra == 'group-12-nano-lmcache-tensor-test'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
@@ -1330,34 +1414,66 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'linux'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cudnn-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cufft-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-curand-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cusolver-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cusparse-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-cusparselt-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-nccl-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64'" },
-    { name = "setuptools", marker = "python_full_version >= '3.12'" },
-    { name = "sympy", version = "1.13.1", source = { registry = "https://pypi.org/simple" } },
-    { name = "triton", marker = "platform_machine == 'x86_64'" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform == 'linux'" },
+    { name = "fsspec", marker = "sys_platform == 'linux'" },
+    { name = "jinja2", marker = "sys_platform == 'linux'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf') or (python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch') or (python_full_version < '3.12' and sys_platform == 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf') or (python_full_version >= '3.12' and sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch') or (python_full_version >= '3.12' and sys_platform == 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cufft-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-curand-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusolver-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparselt-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nccl-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' and sys_platform == 'linux'" },
+    { name = "sympy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "triton", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-linux_x86_64.whl", hash = "sha256:d4c3e9a8d31a7c0fcbb9da17c31a1917e1fac26c566a4cfbd8c9568ad7cade79", upload-time = "2025-01-30T00:55:01Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-win_amd64.whl", hash = "sha256:6a1fb2714e9323f11edb6e8abf7aad5f79e45ad25c081cde87681a18d99c29eb", upload-time = "2025-01-30T00:55:31Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-linux_x86_64.whl", hash = "sha256:a393b506844035c0dac2f30ea8478c343b8e95a429f06f3b3cadfc7f53adb597", upload-time = "2025-01-30T00:57:08Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-win_amd64.whl", hash = "sha256:3313061c1fec4c7310cf47944e84513dcd27b6173b72a349bb7ca68d0ee6e9c0", upload-time = "2025-01-30T00:57:40Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-linux_x86_64.whl", hash = "sha256:0f3bc53c988ce9568cd876a2a5316761e84a8704135ec8068f5f81b4417979cb", upload-time = "2025-01-30T00:59:14Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-win_amd64.whl", hash = "sha256:519330eef09534acad8110b6f423d2fe58c1d8e9ada999ed077a637a0021f908", upload-time = "2025-01-30T00:59:45Z" },
     { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313t-linux_x86_64.whl", hash = "sha256:35cba404c0d742406cdcba1609085874bc60facdfbc50e910c47a92405fef44c", upload-time = "2025-01-30T01:01:25Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.14.1"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform == 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform == 'darwin'",
+    "python_full_version < '3.12' and sys_platform == 'darwin'",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform == 'darwin'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin'" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'darwin' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'darwin' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'darwin' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform != 'darwin' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "setuptools", marker = "sys_platform == 'darwin'" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:7b0670b545f1b732a3219966e6704b27398a32a764bc7cce065e40b142dcf8a1", upload-time = "2026-09-30T19:50:26Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:9cf3082d25560efb1eef921871595227c0cf305abb7761ca45b6b988ef6cdd45", upload-time = "2026-09-30T19:50:32Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:82762c7527079f1e17a771684362ed51400e3bc72942df30217e40f27c6816d7", upload-time = "2026-09-30T19:50:39Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:17b32fd68abe9429d936c643579e24465e7174a06c168bbfcc01395a881bc8af", upload-time = "2026-09-30T19:50:45Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:6fe25964e53113a8a1f5640be1103a982a426c07f8907fba48fcca1be1112202", upload-time = "2026-09-30T19:50:51Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp315-cp315-macosx_14_0_arm64.whl", hash = "sha256:729992e6b581de722989012547b7767ef8ac019bd060e34805f06a52ff9a120e", upload-time = "2026-09-30T19:50:56Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1-cp315-cp315t-macosx_14_0_arm64.whl", hash = "sha256:3e4d7679866c4cd68258ccda7c51bcda150797eda095813f26fe63c07934cc21", upload-time = "2026-09-30T19:51:02Z" },
 ]
 
 [[package]]
@@ -1370,26 +1486,87 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'linux'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
-    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform != 'linux'" },
+    { name = "fsspec", marker = "sys_platform != 'linux'" },
+    { name = "jinja2", marker = "sys_platform != 'linux'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf') or (python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch') or (python_full_version < '3.12' and sys_platform != 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-hf') or (python_full_version >= '3.12' and sys_platform != 'linux' and extra == 'extra-12-nano-lmcache-torch') or (python_full_version >= '3.12' and sys_platform != 'linux' and extra != 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'linux' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "setuptools", marker = "sys_platform != 'linux'" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform != 'linux'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/9b/fd1cd143a7bda5abc1fc352ed7b431f6f52aa3c454293211a33656db2cb5/torch-2.14.1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:b6074b130fd26bc50f5d171f07dfed70db22dd0c354ab34767729249f9e0f042", size = 127281154, upload-time = "2026-09-30T17:43:58.328Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/0e/21281ff4015779255229f487f4481c5bfba53b8c83e01eaa4a8a8f1180c9/torch-2.14.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:ef1276fd07adb8d463ac402a24ea7482e45c9a42df8ebdac211aa757779200ba", size = 453982557, upload-time = "2026-09-30T17:44:52.656Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/4f/7af6fbada912b3023cc79b6ab30f89234b258a9a373880ea52ed914a2ae9/torch-2.14.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:305a61f61f35f128579f299c5bd33d475f6a01c6307336139632e30856c4854d", size = 554581699, upload-time = "2026-09-30T17:49:10.777Z" },
     { url = "https://files.pythonhosted.org/packages/fe/54/4e0a71376b2fb15aaf65ed9e6a4c8043d36f554338c6daabc63059a5e157/torch-2.14.1-cp311-cp311-win_amd64.whl", hash = "sha256:0bd2fb0c4098856bc5af59fe5988bf38bdbcdb6550b44273c12ae425cb8ec17e", size = 124096268, upload-time = "2026-09-30T17:44:04.362Z" },
     { url = "https://files.pythonhosted.org/packages/4b/3c/379349820e9a6e713826de3d0b88f07728541bdcabe2a3afd128871cdc4b/torch-2.14.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:420dbf314c180ee4b86e9bc00aee5746a7d6e5bacdd7df925af671ed393f0b2e", size = 127307099, upload-time = "2026-09-30T17:44:10.421Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/3e/474930ab971e306957ec763b7df695d659179e15ccab9e7073d47ae14ce8/torch-2.14.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:0b13acde294b401509830d85a8906cbf2fc97425a12a66cce1d9fa13c5106a2a", size = 453998918, upload-time = "2026-09-30T17:52:45.134Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/fd/c470857d0dfc5d4c94430658b3eed60fd5292b0bf596a8aae7b9fd66d674/torch-2.14.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:23011fe29a99b591eabb3a31a25080c62e2c2f0690a3c798744e5489dae50451", size = 554618695, upload-time = "2026-09-30T17:53:06.8Z" },
     { url = "https://files.pythonhosted.org/packages/ad/1a/b9648b0d228e513f69f8453ec3f90a8d436d78ff6d85a2773e539f0c07cf/torch-2.14.1-cp312-cp312-win_amd64.whl", hash = "sha256:38bee9f2a2ccfc6898172a5075e4ba52522fbe143eeb099674fc67ab390e858d", size = 124113906, upload-time = "2026-09-30T17:52:21.377Z" },
     { url = "https://files.pythonhosted.org/packages/7d/11/faaca4f8541c45127b7e0d6bb141221fe944c8466d89986b8466c6c195f9/torch-2.14.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:dbe359d705f4d67236743794c296c6dee93a922fd8117eff8c3e880d7d0fb2b9", size = 127315286, upload-time = "2026-09-30T17:52:27.43Z" },
+    { url = "https://files.pythonhosted.org/packages/60/1f/0330275c705b846882531c64e80d32b13fb572eeb9b995e87e84154b0712/torch-2.14.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:6d530bd11479fb574567af3a1f384af9a77bf5bb9550cde8080b356ca7220d5a", size = 453999200, upload-time = "2026-09-30T17:53:21.716Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/cc/bb579ac0c80e077c58204e43b37a254b74dea5873635100bea25789a55d4/torch-2.14.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:c8f71aabc67bcbfc9373dc131537a5968d04edce73e88add21354a7cd0a76985", size = 554618164, upload-time = "2026-09-30T17:53:42.73Z" },
     { url = "https://files.pythonhosted.org/packages/7b/4b/32c00cacbe682a4c08d9c6c3e7a7116c912184cc7155f06c64f545db97d1/torch-2.14.1-cp313-cp313-win_amd64.whl", hash = "sha256:711713391d26a1ce5e9fbc6c996d954a8c12e8825374cc77b809a6af29539b8c", size = 124113754, upload-time = "2026-09-30T17:52:33.474Z" },
     { url = "https://files.pythonhosted.org/packages/43/19/23a1aed488423a5055727256b25406e4b93bd2bcf1352bef582b9951c10c/torch-2.14.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:cee091caf2a6229e248daf41d18ceebf590ba02d9179205610062c64ee5fef03", size = 127325330, upload-time = "2026-09-30T17:52:54.752Z" },
+    { url = "https://files.pythonhosted.org/packages/93/f4/94219ada13edd62fda1f976163292b7b8595f1fd2f4ef74af24b3baad375/torch-2.14.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:f68f5476e2bc0e8f60b74f7ca21acda885c4477af6392f8977e4f0d1ea1aa162", size = 454016297, upload-time = "2026-09-30T17:54:03.078Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/df/23c69e9b9fd19fe6563422f1bc59f89601bda47234a89a1cf432cfde3aee/torch-2.14.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:1d4df07be7338bbcc4d54085adee21363c91314702b9bd4d78ef72ffac9465ba", size = 554621744, upload-time = "2026-09-30T17:54:22.951Z" },
     { url = "https://files.pythonhosted.org/packages/d9/dc/a36a4431ab5e3ad168a75f341e24677a4bbbf0c5dda59c97a7079262bb94/torch-2.14.1-cp314-cp314-win_amd64.whl", hash = "sha256:d02a4c48a2ca5fb7654e36e71f710f74494d83f1f10aaff8e059dd554adca956", size = 124110781, upload-time = "2026-09-30T17:53:31.141Z" },
     { url = "https://files.pythonhosted.org/packages/2d/bc/1afbd1a22f6023eafcdb9295ac1d97137a7816f54091d693701072da2218/torch-2.14.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:06c3ec25f3b497f9a73dc0c36f293f295cfe8d5584fd446238d9a501b30a66d5", size = 127657364, upload-time = "2026-09-30T17:53:53.837Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/94/b97e863c9ceef2bc6e082e967cbfb9065b5e232f2a60c5af0f5115a1bc31/torch-2.14.1-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:9113f94f70429f9f302bf55b090b5411269083e8a72a5d015ffcc5a7f83f2c69", size = 453998592, upload-time = "2026-09-30T17:54:38.268Z" },
+    { url = "https://files.pythonhosted.org/packages/03/d8/8272157c438cc26a199a8fa0caf87985477b8a1ed8a09084eb2ae40609d8/torch-2.14.1-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:e65d5fe136e533b23c2d134377f7f126721c7c78dd75b3dbb735af082a8aeb85", size = 554578730, upload-time = "2026-09-30T17:54:54.838Z" },
     { url = "https://files.pythonhosted.org/packages/45/05/451a69a4287033d8f106f5c65f92c2c0c37229d81ea101d4b047caf758cc/torch-2.14.1-cp314-cp314t-win_amd64.whl", hash = "sha256:e07306caa1de2a4ac1467e11ecfc92fc44f523dd6a521145039aef46d913963c", size = 124400129, upload-time = "2026-09-30T17:54:12.306Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.14.1+cpu"
+source = { registry = "https://download.pytorch.org/whl/cpu" }
+resolution-markers = [
+    "python_full_version >= '3.15' and sys_platform != 'darwin'",
+    "python_full_version >= '3.12' and python_full_version < '3.15' and sys_platform != 'darwin'",
+    "python_full_version < '3.12' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version >= '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'darwin' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'darwin' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (python_full_version < '3.12' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'darwin' and extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (sys_platform == 'darwin' and extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-linux_s390x.whl", hash = "sha256:cccd0a609fe3f83ab2ff651b627d5bd68c7fb33ee77a994b31c18b7c9a6f9a52", upload-time = "2026-09-30T19:47:01Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:36a03a3f87ec875ca39c8e29eccbaf0fc704605f78a3f7f179f157048c3c395e", upload-time = "2026-09-30T19:47:07Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:5e38154c8896d426a5df58bf2276b603e82184dfae4f54d77dbb212f36e34f37", upload-time = "2026-09-30T19:47:14Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:d14b0c8a66345b7ba43adfa86fc20d89087a0a92e440004755d49d2468ddc6e0", upload-time = "2026-09-30T19:47:21Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-win_arm64.whl", hash = "sha256:100df7e44af5c973606cfef571a14b36b0acfd165d6bbc7aabe3edac95c9ccbd", upload-time = "2026-09-30T19:47:25Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-linux_s390x.whl", hash = "sha256:6b06a7f6275c5fdecaf1dbf5546f0820b024a97785575bb99e3d9930d83cd86b", upload-time = "2026-09-30T19:47:30Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:2af649994b36dffc627175c3f306d9e513a309b58d4619ac7107577613336454", upload-time = "2026-09-30T19:47:36Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:5a6363570c753812540a05eb82380e329469cbe668643e88111414c12627711f", upload-time = "2026-09-30T19:47:44Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-win_amd64.whl", hash = "sha256:c52adc3bd526ff7fc5bdcc58fc4a76e6214d09951b646ffe5256ebd7ba60cef1", upload-time = "2026-09-30T19:47:50Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-win_arm64.whl", hash = "sha256:2f8162c6b265eaf2b0bdd6bef20e96cece430f308e1477a32d0aef51e472124c", upload-time = "2026-09-30T19:47:55Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-linux_s390x.whl", hash = "sha256:4b323c71a5ac184485c87d694842157b1eb217c425ad69761dafd379d1590521", upload-time = "2026-09-30T19:47:59Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:783a3dec10d272e40ed3f1a05ec228400300d3229b8f7521a9327645fae88646", upload-time = "2026-09-30T19:48:06Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:331fa474e26e428e2e6af1143b2fdab19cee492d7d21897b8899ce1c14755662", upload-time = "2026-09-30T19:48:15Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-win_amd64.whl", hash = "sha256:4eec5a4fadd7a18f9c75b97fdb374fbb579ce4b1604bf66eeb14dc2201d54def", upload-time = "2026-09-30T19:48:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-win_arm64.whl", hash = "sha256:a46884e8b38cbdf5af8d4fdd39223a5fa97491419c3417c93f9b3e28749fa356", upload-time = "2026-09-30T19:48:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-linux_s390x.whl", hash = "sha256:a7a580e3d92467516c9247a22bc805ae4f79c7b1b9a2052f92849f34e89720f5", upload-time = "2026-09-30T19:48:32Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:f56cd23a3bf003bfbed3da0645ba09b3ccc66c0a2f2ac726a9b98f34e0e4926f", upload-time = "2026-09-30T19:48:39Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:35103e180214793207f95d7e12e100ecba3ace6f5fb37e1fcefbb07e096ed180", upload-time = "2026-09-30T19:48:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-win_amd64.whl", hash = "sha256:a93db7947d53caab62c2436205a60ddf9c3150c2e09eb9b24610c1c3f4cbaf99", upload-time = "2026-09-30T19:48:56Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-linux_s390x.whl", hash = "sha256:f67ee1fe9c9f7c6ad3785d150bc3cecda442a5880a6d40816e13fee475d97dd8", upload-time = "2026-09-30T19:49:02Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:2547c9f32f8fd9c8fced83119269d85519b123d4e8c87eba71660fe3a6996336", upload-time = "2026-09-30T19:49:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:7d2c35e915793f3ae82e8ee4041a960140bcd0bd35f3ec6eb06e1f1f37a89dba", upload-time = "2026-09-30T19:49:18Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-win_amd64.whl", hash = "sha256:5c0d1ef51127c9c65ec6394226b82ef1a5f3cd0ab8ffb10f48cc5c08aa72a5cf", upload-time = "2026-09-30T19:49:27Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:88634fad89f7b953acd011bad0d5c131d269aa71a7de6e0ef2344e3a2c95fabc", upload-time = "2026-09-30T19:49:34Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:94edee897fbd15a73f91aa38e22e2d2b7b60ac3acf6e8afc6b8dad89229c810c", upload-time = "2026-09-30T19:49:42Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-win_amd64.whl", hash = "sha256:e799161f94d97485857ec82424e40a83d7648ab02c03e3d6e71c7838a4d7b89e", upload-time = "2026-09-30T19:49:50Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:930d724490955b822c0b005499128279e54876a318b51fdb9b9da35e0230cc0f", upload-time = "2026-09-30T19:49:57Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:2948f065d848178a0402791baf87493b7ebf067dae48a8e04c498d6668e94895", upload-time = "2026-09-30T19:50:06Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-win_amd64.whl", hash = "sha256:192745b92c9ac392298e73de950cd02d8a7886117923073d890625622d343ede", upload-time = "2026-09-30T19:50:14Z" },
 ]
 
 [[package]]
@@ -1410,8 +1587,8 @@ version = "5.20.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-nano-lmcache-hf' and extra == 'group-12-nano-lmcache-tensor-test') or (extra == 'extra-12-nano-lmcache-torch' and extra == 'group-12-nano-lmcache-tensor-test')" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "regex" },
