@@ -15,8 +15,8 @@ class StorageStats:
 
     A write is rejected, rather than stored, for one of two reasons:
 
-    - `rejected_no_room`: the cache is full and the only evictable entry is
-      the new entry's own parent, so a longer chain cannot fit.
+    - `rejected_no_room`: the payload and its required ancestors cannot fit
+      within the entry or byte limits, so the write leaves the cache unchanged.
     - `rejected_missing_parent`: the new entry's parent is not stored (for
       example it was never stored, or an earlier chunk of the same prompt
       was rejected), so the entry would be unreachable.
