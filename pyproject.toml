@@ -11,6 +11,12 @@ authors = [
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+# Heavy dependencies stay optional: `uv sync` installs none of them.
+# A `vllm` extra is added once a vLLM version is pinned (roadmap V0/V1).
+torch = ["torch>=2.6"]
+hf = ["torch>=2.6", "transformers>=4.45"]
+
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]
 build-backend = "uv_build"
@@ -24,6 +30,11 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "torch: needs PyTorch (skipped when not installed)",
+    "gpu: needs PyTorch and a CUDA GPU (skipped otherwise)",
+    "vllm: needs vLLM and a CUDA GPU (skipped otherwise)",
+]
 
 [tool.ruff]
 line-length = 88
@@ -36,3 +47,21 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 mypy_path = "src"
 strict = true
+
+# torch and transformers are optional extras; CI type-checks without them.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "transformers", "transformers.*"]
+ignore_missing_imports = true
+
+# On Linux, take torch from PyTorch's CUDA 12.4 index. PyPI's default Linux
+# wheel is built for CUDA 13.x and needs a very recent NVIDIA driver, while
+# CUDA 12.x wheels run on drivers >= 525 through CUDA minor-version
+# compatibility. torch >= 2.6 is required by current transformers releases.
+# Other platforms keep PyPI.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

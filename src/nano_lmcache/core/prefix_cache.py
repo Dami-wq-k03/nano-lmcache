@@ -49,6 +49,11 @@ class ChunkedPrefixCache:
         return self._storage
 
     @property
+    def chunk_size(self) -> int:
+        """Number of tokens in one complete chunk."""
+        return self._chunk_size
+
+    @property
     def metrics(self) -> CacheMetrics:
         """Hit/miss totals accumulated by this cache's lookups."""
         return self._metrics

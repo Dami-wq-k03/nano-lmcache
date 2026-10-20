@@ -1,5 +1,107 @@
 # Architecture
 
+## Diagrams
+
+GitHub renders the diagrams below directly. They describe the code in
+`src/nano_lmcache/`; if you change behavior, update them too.
+
+### Module relationships
+
+```mermaid
+graph TD
+    Caller["Caller (demo, engine, tests)"] --> PC["ChunkedPrefixCache<br/>core/prefix_cache.py"]
+    PC --> CH["chunk_tokens, make_chunk_key<br/>core/chunking.py"]
+    PC --> MET["CacheMetrics<br/>core/metrics.py"]
+    PC -->|"put / get via CacheStorage"| ST["CacheStorage protocol<br/>storage/protocol.py"]
+    ST -.->|implemented by| MEM["MemoryKVCache<br/>storage/memory.py"]
+    ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
+```
+
+`ChunkedPrefixCache` owns the matching logic and the metrics. It only
+knows the `CacheStorage` protocol, so storage backends can change without
+touching it.
+
+### How a chunk key is built
+
+Each key hashes the namespace, the previous chunk's key, and the chunk's
+own tokens. The chain is what makes a key depend on the whole prefix.
+
+```mermaid
+graph LR
+    N["namespace"] --> K0
+    T0["tokens of chunk 0"] --> K0["key 0"]
+    K0 -->|"prefix_key"| K1["key 1"]
+    T1["tokens of chunk 1"] --> K1
+    N --> K1
+    K1 -->|"prefix_key"| K2["key 2"]
+    T2["tokens of chunk 2"] --> K2
+    N --> K2
+```
+
+The first chunk has no `prefix_key`. Identical tokens after a different
+prefix therefore get a different key and are never reused by mistake.
+
+### `store(token_ids, chunk_values)`
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant P as ChunkedPrefixCache
+    participant S as CacheStorage
+
+    C->>P: store(token_ids, chunk_values)
+    P->>P: split into chunks, keep complete chunks only
+    P->>P: check value count and that no value is None
+    loop each complete chunk, in order
+        P->>P: key = make_chunk_key(chunk, prefix_key)
+        P->>S: put(key, value, parent_key=prefix_key)
+    end
+```
+
+Validation happens before the first write, so a rejected store never
+leaves a partial prefix behind. The incomplete tail chunk is ignored.
+
+### `lookup(token_ids)`
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant P as ChunkedPrefixCache
+    participant S as CacheStorage
+    participant M as CacheMetrics
+
+    C->>P: lookup(token_ids)
+    P->>P: split into chunks, keep complete chunks only
+    loop each complete chunk, in order
+        P->>P: key = make_chunk_key(chunk, prefix_key)
+        P->>S: get(key)
+        alt payload found
+            S-->>P: payload (hit)
+        else None
+            S-->>P: None (miss, stop here)
+        end
+    end
+    P->>M: record_lookup(hits, remaining chunks as misses, hit tokens)
+    P-->>C: PrefixLookupResult(matched_chunks, matched_tokens, values, keys)
+```
+
+Lookup stops at the first miss: a later chunk can only be valid if every
+chunk before it is. Chunks after the miss are counted as misses because
+the caller must recompute them.
+
+### Why eviction must respect prefix chains
+
+```mermaid
+graph LR
+    A["A (root)"] --> B["B"] --> C["C"] --> D["D (leaf)"]
+```
+
+Evicting `A` here would leave `B`, `C`, and `D` in memory, but a lookup
+starts at `A` and stops at the first miss, so they could never be
+reached. The storage therefore only evicts leaves (here, only `D`), and
+evicts the least recently used leaf first. After `D` goes, `C` becomes a
+leaf and is next in line.
+
 ## Nano: Core cache concepts
 
 The current implementation covers a minimal cache lifecycle:
@@ -29,6 +131,12 @@ understood without a GPU or an inference engine.
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
+
+| `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
+| `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
+
+The `tensor` package is optional. Nothing in `core` or `storage` imports
+it, so the cache concepts work without PyTorch installed.
 
 Callers go through `ChunkedPrefixCache`, which owns a `CacheMetrics`
 instance and depends only on the `CacheStorage` protocol, never on a
@@ -86,6 +194,26 @@ The trade-off: shared prefixes are protected because they always have
 descendants, while the tails of long prompts are evicted first. After
 eviction a request typically still hits its prefix and recomputes only
 the lost suffix, which the metrics count as misses.
+
+### Real KV tensors
+
+With a real model the payload of a chunk is one tensor holding the K and V
+of every layer for that chunk's tokens:
+
+    [num_layers, 2, num_kv_heads, chunk_tokens, head_dim]
+
+`run_with_prefix_cache` looks up the longest cached prefix, rebuilds
+`past_key_values` from the matched chunks, runs the model over only the
+remaining tokens, and stores the chunks of the whole sequence for the next
+request. A fully cached prompt still recomputes its last token, because
+the model needs one forward step to produce next-token logits.
+
+Reuse is exact, not approximate. In a causal model the K and V of a token
+depend only on that token and the tokens before it, so identical leading
+tokens have identical K/V. The same tokens after a different prefix do
+not, which is why chunk keys hash the whole prefix. The tests check
+reused-prefix logits against a from-scratch forward pass, and check that a
+chunk with a different prefix has different K/V.
 
 ## Mini: Extend the cache model
 
