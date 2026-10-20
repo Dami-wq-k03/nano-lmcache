@@ -137,6 +137,7 @@ understood without a GPU or an inference engine.
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
+| `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 
 The `tensor` package is optional. Nothing in `core` or `storage` imports
@@ -273,6 +274,40 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
 
 `TieredStorage.tier_stats` counts hits per tier, misses, and promotions,
 which shows how much of the working set fits in the fast tier.
+
+### GPU to CPU offload
+
+`CPUOffloadKVCache(device="cuda")` keeps chunk tensors in CPU memory and
+copies them back to the GPU on a hit. GPU memory is shared by the model
+weights and the KV cache of running requests, while CPU memory is usually
+several times larger, so offloading lets a server keep far more reusable
+prefixes. It satisfies `CacheStorage` and evicts with `PrefixLRUIndex`, so
+it can be used on its own or as the fast tier of a `TieredStorage`.
+`run_with_prefix_cache` moves reused chunks to the model's device, so any
+backend may hand chunks back on the CPU.
+
+Two copy details matter, measured with `benchmarks/bench_offload.py` on an
+RTX 4090 (PCIe), 28 MiB per copy (one 256-token Qwen3-0.6B chunk in
+bfloat16):
+
+| CPU memory | `non_blocking` | GPU->CPU | CPU->GPU | call returns after |
+| --- | --- | --- | --- | --- |
+| pageable | no | 10.7 GB/s | 11.3 GB/s | 2.7 ms |
+| pinned | no | 26.0 GB/s | 24.9 GB/s | 1.1 ms |
+| pinned | yes | 26.2 GB/s | 25.2 GB/s | 0.005 ms |
+
+- **Pinned memory** is page-locked, so the GPU can DMA straight into it.
+  Pageable memory is first staged through a hidden pinned buffer, which
+  cuts bandwidth by more than half.
+- **`non_blocking`** does not make the copy faster; it makes the Python
+  call return as soon as the copy is queued, so the CPU can keep
+  scheduling work. Both directions are queued on the same CUDA stream, so
+  a copy back to the GPU always runs after the copy it depends on. Only
+  code reading the CPU buffer directly must wait (`peek` does).
+
+At ~25 GB/s, loading one 28 MiB chunk takes about 1.1 ms. Whether that
+beats recomputing those 256 tokens depends on the model and GPU, which is
+what roadmap task G3 measures.
 
 ## Mini: Extend the cache model
 

@@ -40,6 +40,7 @@ With a real model (needs `uv sync --extra hf`):
 
 ```bash
 uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
+uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
 ```
 
 The prefix-cache demo serves four requests against one cache and prints

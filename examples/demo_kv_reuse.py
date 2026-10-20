@@ -5,6 +5,7 @@ Needs the `hf` extra:
     uv sync --extra hf
     uv run python examples/demo_kv_reuse.py
     uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B --device cuda
+    uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
 
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
@@ -27,6 +28,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.tensor.hf import run_with_prefix_cache
+from nano_lmcache.tensor.offload import CPUOffloadKVCache
 
 DOCUMENT = (
     "The city council met on Tuesday to discuss the new transit plan. "
@@ -50,6 +52,11 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--chunk-size", type=int, default=16)
+    parser.add_argument(
+        "--offload",
+        action="store_true",
+        help="keep cached KV in pinned CPU memory instead of on the device",
+    )
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -65,8 +72,11 @@ def main() -> None:
         name: tokenizer(text)["input_ids"] for name, text in prompts.items()
     }
 
+    storage = CPUOffloadKVCache(device=args.device) if args.offload else None
     cache = ChunkedPrefixCache(
-        chunk_size=args.chunk_size, namespace=args.model.replace("/", "-")
+        chunk_size=args.chunk_size,
+        namespace=args.model.replace("/", "-"),
+        storage=storage,
     )
 
     # Warm up so one-time setup (CUDA context, kernel loading) is not timed.
@@ -98,6 +108,8 @@ def main() -> None:
         print(f"  max |logit diff|:  {max_diff:.2e}\n")
 
     print(f"Cache metrics: hit rate {cache.metrics.hit_rate:.1%}")
+    if storage is not None:
+        print(f"KV held in CPU memory: {storage.nbytes / 2**20:.1f} MiB")
 
 
 if __name__ == "__main__":
