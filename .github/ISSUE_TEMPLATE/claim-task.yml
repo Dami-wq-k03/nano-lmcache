@@ -1,0 +1,41 @@
+name: Claim a roadmap task
+description: Tell others you are working on a task from ROADMAP.md.
+title: "Claiming <task ID>: <task name>"
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping out! Please read [CONTRIBUTING.md](https://github.com/Kangwenqiao/nano-lmcache/blob/main/CONTRIBUTING.md)
+        and the task's section in [ROADMAP.md](https://github.com/Kangwenqiao/nano-lmcache/blob/main/ROADMAP.md) first.
+  - type: input
+    id: task-id
+    attributes:
+      label: Task ID
+      description: The ID from the roadmap table, for example `M1` or `G1`.
+      placeholder: M1
+    validations:
+      required: true
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: The prerequisite tasks listed in the roadmap are already merged.
+          required: true
+        - label: I have checked that nobody else has claimed this task.
+          required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Planned approach
+      description: A few sentences on how you plan to do it. Optional for easy tasks.
+    validations:
+      required: false
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: GPU model and VRAM, if the task needs a GPU.
+    validations:
+      required: false
