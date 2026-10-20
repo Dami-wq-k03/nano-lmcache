@@ -7,18 +7,21 @@ performance.
 
 ## Project stage
 
-The project grows one concept at a time. See `docs/architecture.md` for
-the roadmap:
+The project grows one concept at a time. Open tasks, their difficulty,
+and hardware requirements are listed in [ROADMAP.md](ROADMAP.md); the
+design is described in `docs/architecture.md`.
 
 - **Nano** (done): chunking, prefix-aware keys, in-memory storage,
   prefix lookup, hit/miss metrics.
 - **Mini** (in progress): storage interface and bounded, prefix-safe
   eviction are in place; more cache behavior and backends come next.
-- **Integration** (later): real KV tensors and inference engines such as
-  vLLM.
+- **GPU and vLLM** (open for contributors): real KV tensors, GPU offload,
+  and a vLLM KV connector.
 
-Please do not add PyTorch, vLLM, or other heavy runtime dependencies
-ahead of the stage that needs them. If you are unsure whether an idea
+The core package must stay free of runtime dependencies. PyTorch, vLLM,
+and similar libraries belong in optional dependency groups and separate
+subpackages (see task I1 in the roadmap), so people learning the cache
+concepts never have to install them. If you are unsure whether an idea
 fits, open an issue first.
 
 ## Setup

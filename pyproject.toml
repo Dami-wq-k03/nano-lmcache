@@ -1,7 +1,7 @@
 [project]
 name = "nano-lmcache"
 version = "0.1.0"
-description = "Add your description here"
+description = "An educational, step-by-step implementation of KV cache reuse"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
