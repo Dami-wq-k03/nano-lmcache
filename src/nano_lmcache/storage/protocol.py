@@ -13,9 +13,21 @@ class CacheStorage(Protocol):
 
     `get` returns None to signal a miss, so None is reserved and cannot be
     stored as a payload.
+
+    `put` also receives `parent_key`, the key of the entry that precedes
+    this one in its prefix chain. Backends that evict must use it to avoid
+    removing an entry while its descendants remain, since descendants are
+    unreachable without their ancestors. Backends that never evict may
+    ignore it.
     """
 
-    def put(self, key: str, value: object) -> None:
+    def put(
+        self,
+        key: str,
+        value: object,
+        *,
+        parent_key: str | None = None,
+    ) -> None:
         """Store `value` under `key`, replacing any existing payload."""
         ...
 
