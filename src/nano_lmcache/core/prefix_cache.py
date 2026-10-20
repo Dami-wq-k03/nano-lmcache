@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
+from nano_lmcache.core.metrics import CacheMetrics
 from nano_lmcache.storage.memory import MemoryKVCache
 
 
@@ -31,6 +32,7 @@ class ChunkedPrefixCache:
         chunk_size: int,
         namespace: str,
         storage: MemoryKVCache | None = None,
+        metrics: CacheMetrics | None = None,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
@@ -38,6 +40,12 @@ class ChunkedPrefixCache:
         self._chunk_size = chunk_size
         self._namespace = namespace
         self._storage = storage if storage is not None else MemoryKVCache()
+        self._metrics = metrics if metrics is not None else CacheMetrics()
+
+    @property
+    def metrics(self) -> CacheMetrics:
+        """Hit/miss totals accumulated by this cache's lookups."""
+        return self._metrics
 
     def _complete_chunks(
         self, token_ids: Sequence[int]
@@ -65,13 +73,15 @@ class ChunkedPrefixCache:
             prefix_key = key
 
     def lookup(self, token_ids: Sequence[int]) -> PrefixLookupResult:
+        complete_chunks = self._complete_chunks(token_ids)
+
         matched_chunks = 0
         matched_tokens = 0
         values: list[object] = []
         keys: list[str] = []
 
         prefix_key: str | None = None
-        for chunk in self._complete_chunks(token_ids):
+        for chunk in complete_chunks:
             key = make_chunk_key(
                 chunk, namespace=self._namespace, prefix_key=prefix_key
             )
@@ -84,6 +94,12 @@ class ChunkedPrefixCache:
             values.append(value)
             keys.append(key)
             prefix_key = key
+
+        self._metrics.record_lookup(
+            hit_chunks=matched_chunks,
+            miss_chunks=len(complete_chunks) - matched_chunks,
+            hit_tokens=matched_tokens,
+        )
 
         return PrefixLookupResult(
             matched_chunks=matched_chunks,

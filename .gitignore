@@ -7,4 +7,3 @@ __pycache__/
 .mypy_cache/
 dist/
 build/
-examples/

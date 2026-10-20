@@ -1,5 +1,6 @@
 import pytest
 
+from nano_lmcache.core.metrics import CacheMetrics
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 
 
@@ -78,3 +79,103 @@ def test_store_rejects_wrong_number_of_values():
 
     with pytest.raises(ValueError):
         cache.store([101, 205, 307, 409], ["kv-0"])
+
+
+def test_lookup_records_a_full_hit():
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+    )
+    tokens = [101, 205, 307, 409]
+    cache.store(tokens, ["kv-0", "kv-1"])
+
+    cache.lookup(tokens)
+
+    assert cache.metrics.hit_chunks == 2
+    assert cache.metrics.miss_chunks == 0
+    assert cache.metrics.hit_tokens == 4
+    assert cache.metrics.hit_rate == 1.0
+
+
+def test_lookup_records_remaining_chunks_as_misses():
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+    )
+    cache.store(
+        [101, 205, 307, 409, 511, 613],
+        ["kv-0", "kv-1", "kv-2"],
+    )
+
+    # 前 2 个 chunk 命中，第 3 个必须重算，所以记为 1 次 miss。
+    cache.lookup([101, 205, 307, 409, 777, 888])
+
+    assert cache.metrics.hit_chunks == 2
+    assert cache.metrics.miss_chunks == 1
+    assert cache.metrics.hit_tokens == 4
+    assert cache.metrics.hit_rate == 2 / 3
+
+
+def test_lookup_on_cold_cache_records_only_misses():
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+    )
+
+    cache.lookup([101, 205, 307, 409])
+
+    assert cache.metrics.hit_chunks == 0
+    assert cache.metrics.miss_chunks == 2
+    assert cache.metrics.hit_tokens == 0
+    assert cache.metrics.hit_rate == 0.0
+
+
+def test_metrics_ignore_incomplete_trailing_chunk():
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+    )
+    cache.store(
+        [101, 205, 307, 409, 511],
+        ["kv-0", "kv-1"],
+    )
+
+    # 第 5 个 token 构成的尾部 chunk 不参与复用，也不计入 miss。
+    cache.lookup([101, 205, 307, 409, 511])
+
+    assert cache.metrics.hit_chunks == 2
+    assert cache.metrics.miss_chunks == 0
+
+
+def test_metrics_accumulate_across_lookups():
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+    )
+    tokens = [101, 205, 307, 409]
+
+    cache.lookup(tokens)
+    cache.store(tokens, ["kv-0", "kv-1"])
+    cache.lookup(tokens)
+
+    assert cache.metrics.hit_chunks == 2
+    assert cache.metrics.miss_chunks == 2
+    assert cache.metrics.hit_tokens == 4
+    assert cache.metrics.hit_rate == 0.5
+
+
+def test_injected_metrics_object_is_shared():
+    metrics = CacheMetrics()
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+        metrics=metrics,
+    )
+    tokens = [101, 205]
+    cache.store(tokens, ["kv-0"])
+
+    cache.lookup(tokens)
+
+    assert metrics.hit_chunks == 1
+    assert cache.metrics is metrics
+

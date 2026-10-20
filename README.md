@@ -23,11 +23,24 @@ uv run ruff check .
 uv run mypy src/nano_lmcache
 ```
 
+## Try it
+
+```bash
+uv run python examples/demo_chunking.py       # chunk keys in isolation
+uv run python examples/demo_prefix_cache.py   # full cache loop + metrics
+```
+
+The prefix-cache demo serves four requests against one cache and prints
+per-chunk hit/miss decisions plus cumulative reuse metrics.
+
 ## Roadmap
 
-1. **Nano**: Cache keys, an in-memory backend, and basic cache lookup.
-2. **Mini**: Chunked prefix reuse, storage abstractions, and cache metrics.
-3. **Integration**: Real KV tensors and inference-engine integration.
+1. **Nano** (current): Token chunking, prefix-aware chunk keys, an
+   in-memory backend, continuous-prefix lookup, and hit/miss metrics.
+2. **Mini**: A storage interface so cache logic no longer depends on
+   `MemoryKVCache` directly, plus richer eviction/cache behavior.
+3. **Integration**: Real KV tensors, GPU or remote backends, and
+   inference-engine integration such as vLLM.
 
 ## Scope
 
