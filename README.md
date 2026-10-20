@@ -1,9 +1,13 @@
 # nano-lmcache
 
-An educational implementation of LMCache concepts.
+An educational, step-by-step implementation of KV cache reuse, from a
+pure-Python prototype to real GPU tensors and vLLM integration.
 
-nano-lmcache is a small, incremental implementation designed to help
-developers understand the core ideas behind LMCache and KV cache reuse.
+nano-lmcache is a teaching project, not a reimplementation or replacement
+of [LMCache](https://github.com/LMCache/LMCache). It rebuilds the core
+ideas one concept at a time, each with tests and a runnable example, so
+that learners can later read production systems like LMCache and vLLM
+and understand why they are designed the way they are.
 
 ## Goals
 
@@ -35,12 +39,15 @@ per-chunk hit/miss decisions plus cumulative reuse metrics.
 
 ## Roadmap
 
-1. **Nano** (current): Token chunking, prefix-aware chunk keys, an
+1. **Nano** (done): Token chunking, prefix-aware chunk keys, an
    in-memory backend, continuous-prefix lookup, and hit/miss metrics.
-2. **Mini**: A storage interface so cache logic no longer depends on
-   `MemoryKVCache` directly, plus richer eviction/cache behavior.
-3. **Integration**: Real KV tensors, GPU or remote backends, and
-   inference-engine integration such as vLLM.
+2. **Mini** (in progress): A storage interface and bounded, prefix-safe
+   eviction are in place; disk and tiered backends come next.
+3. **GPU and vLLM**: Real KV tensors verified against a real model, GPU
+   to CPU offload, and a vLLM KV connector.
+
+See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
+contributors to claim.
 
 ## Scope
 
@@ -51,5 +58,5 @@ concepts are established.
 
 ## Contributing and license
 
-Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-workflow. nano-lmcache is released under the [MIT License](LICENSE).
+Contributions are welcome. Pick a task from [ROADMAP.md](ROADMAP.md) and
+see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow. nano-lmcache is released under the [MIT License](LICENSE).
