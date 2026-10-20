@@ -129,6 +129,7 @@ understood without a GPU or an inference engine.
 | `core/prefix_cache.py` | `ChunkedPrefixCache`: the store/lookup loop |
 | `core/metrics.py` | `CacheMetrics`: chunk-level hit/miss accounting |
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
+| `storage/eviction.py` | `PrefixLRUIndex`: prefix-safe LRU bookkeeping shared by bounded backends |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 
@@ -170,6 +171,11 @@ The eviction rule therefore is:
 4. If no victim exists, the new entry is dropped, so a prompt longer
    than the cache keeps its longest prefix that fits.
 5. An entry whose parent is not stored is dropped.
+
+These rules live in `PrefixLRUIndex` (`storage/eviction.py`), which only
+tracks keys, parents, and recency. A backend asks it whether a new entry
+is admitted and which keys to evict, then moves the payloads itself, so
+memory, disk, and CPU-offload backends share one eviction policy.
 
 Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
