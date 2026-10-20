@@ -37,6 +37,7 @@ uv run mypy src/nano_lmcache
 uv run python examples/demo_chunking.py       # chunk keys in isolation
 uv run python examples/demo_prefix_cache.py   # full cache loop + metrics
 uv run python examples/demo_disk_cache.py     # run twice: reuse across restarts
+uv run python examples/demo_tiered_storage.py # memory in front of disk
 ```
 
 With a real model (needs `uv sync --extra hf`):

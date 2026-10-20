@@ -34,6 +34,16 @@ class MemoryKVCache:
     def __len__(self) -> int:
         return len(self._values)
 
+    def __contains__(self, key: object) -> bool:
+        """Whether `key` is stored; unlike `get`, does not count as a use."""
+        return key in self._values
+
+    def parent_of(self, key: str) -> str | None:
+        """The parent recorded for a stored `key`; KeyError if absent."""
+        if key not in self._values:
+            raise KeyError(key)
+        return self._index.parent_of(key)
+
     def put(
         self,
         key: str,
