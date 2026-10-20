@@ -28,11 +28,15 @@ The stage that generates the answer one token at a time, reading the KV cache an
 
 nano-lmcache does not implement decoding. It reuses the KV produced by prefill, and `run_with_prefix_cache` returns logits, not generated text.
 
+See: [`run_with_prefix_cache`](../src/nano_lmcache/tensor/hf.py)
+
 ### Time to First Token (TTFT)
 
 The time between submitting a request and receiving its first generated token. For long prompts, prefill is a large part of it, so skipping prefill work can lower TTFT, but only if loading the cached data costs less than the computation it replaces.
 
 A TTFT comparison with a real inference engine is an open task (V5 in the [roadmap](../ROADMAP.md)).
+
+See: [Roadmap task V5 — End-to-end demo and TTFT comparison](../ROADMAP.md)
 
 ### Token
 
@@ -84,6 +88,8 @@ See: [Capacity and eviction](architecture.md#capacity-and-eviction)
 
 A stored chunk that has no stored children. In the chain `A -> B -> C -> D`, only `D` is a leaf, and `A` is the root.
 
+See: [Why eviction must respect prefix chains](architecture.md#why-eviction-must-respect-prefix-chains)
+
 ### Prefix-safe eviction
 
 Eviction that never breaks a chain: only a leaf may be evicted, and the least recently used leaf goes first. The parent of the entry being added is never the victim. If no victim exists, or the new entry's parent is not stored, the new entry is rejected instead.
@@ -97,6 +103,8 @@ See: [`PrefixLRUIndex`](../src/nano_lmcache/storage/eviction.py), [Why eviction 
 A way of managing KV cache memory in fixed-size blocks instead of one contiguous region per sequence. vLLM uses it. A block is a unit of memory in the engine; a chunk is a group of tokens in nano-lmcache's cache keys. They are related but not the same thing.
 
 nano-lmcache has no paged attention code. How chunks and blocks line up belongs to the vLLM track, which is still open (V0 and D10 in the [roadmap](../ROADMAP.md)).
+
+See: [Roadmap task V0 — vLLM KV connector research](../ROADMAP.md)
 
 ### Cache offloading
 
@@ -116,9 +124,13 @@ See: [`tiered.py`](../src/nano_lmcache/storage/tiered.py), [Tiered storage](arch
 
 Computing KV data for a long prompt is expensive, and many requests start with the same tokens. Reusing the stored KV of a shared prefix avoids repeating that work. It pays off only when loading the data costs less than the computation it replaces (see question 4).
 
+See: [Real KV tensors](architecture.md#real-kv-tensors)
+
 ### 2. Why not cache by full prompt?
 
 A full-prompt cache hits only when the whole input repeats exactly. In practice requests often share a long beginning, such as a system prompt or a document, and differ at the end. Chunked prefix keys let the shared beginning hit even when the endings differ.
+
+See: [How a chunk key is built](architecture.md#how-a-chunk-key-is-built)
 
 ### 3. Why can only prefixes be reused?
 
@@ -134,7 +146,7 @@ Loading is not free. Looking up chunks, copying them between memory tiers, and r
 
 The [roadmap](../ROADMAP.md) (task G3) reports one case: on an RTX 4090 with Qwen3-0.6B and a prompt of about 270 tokens, reusing 256 cached tokens took about 60 ms, while recomputing the whole prompt took about 45 ms. The logits matched; the cache bookkeeping cost more than the skipped compute. This is one data point, not a general rule: the result depends on the model, prompt length, storage tier, and hardware.
 
-See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py)
+See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py), [Roadmap task G3 — Measure recompute vs. load cost](../ROADMAP.md)
 
 ### 5. What happens when the cache is full?
 
@@ -164,9 +176,7 @@ See: [ROADMAP.md](../ROADMAP.md)
 
 No, not for the cache concepts. `core/` and `storage/` are pure Python with no runtime dependencies, so chunking, prefix matching, metrics, eviction, and the memory, disk, and tiered backends run on any computer.
 
-Real KV tensors need PyTorch (`uv sync --extra hf`), but the
-real-model demo also runs on a CPU. Only GPU-to-CPU offload needs an
-NVIDIA GPU.
+Real KV tensors need PyTorch (`uv sync --extra hf`), but the real-model demo also runs on a CPU. Only GPU-to-CPU offload needs an NVIDIA GPU.
 
 See: [README](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md)
 
