@@ -15,7 +15,7 @@ def build_chunk_keys(tokens: list[int], chunk_size: int) -> list[str]:
 
 
 def main() -> None:
-    # 两个请求共享前 4 个 Token，后续 Token 不同。
+    # Both requests share the first 4 tokens and differ after that.
     request_a = [101, 205, 307, 409, 511, 613]
     request_b = [101, 205, 307, 409, 777, 888]
 
@@ -48,7 +48,7 @@ def main() -> None:
         print(f"  Key B: {keys_b[i][:16]}...")
         print(f"  Result: {status}\n")
 
-    # 统计两个请求开头连续匹配的 Chunk 数量。
+    # Count how many leading chunks the two requests share.
     shared_chunks = 0
 
     for key_a, key_b in zip(keys_a, keys_b, strict=False):

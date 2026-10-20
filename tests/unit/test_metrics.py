@@ -11,7 +11,7 @@ def test_new_metrics_start_at_zero():
 
 
 def test_hit_rate_is_zero_without_any_lookup():
-    # 没有任何 lookup 时不应该除以 0。
+    # Must not divide by zero before any lookup.
     assert CacheMetrics().hit_rate == 0.0
 
 

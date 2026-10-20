@@ -65,7 +65,8 @@ class ChunkedPrefixCache:
                 f"got {len(chunk_values)}"
             )
 
-        # None 是存储层的 miss 标记，先整体校验再写入，避免写入一半失败。
+        # None is the storage layer's miss marker. Validate everything before
+        # writing anything, so a rejected store never leaves a partial prefix.
         if any(value is None for value in chunk_values):
             raise ValueError("chunk_values must not contain None")
 
