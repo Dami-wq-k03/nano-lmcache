@@ -138,6 +138,7 @@ understood without a GPU or an inference engine.
 
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
 | `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
+| `tensor/serializers.py` | `TensorSerializer`: safe tensor encoding for `DiskKVCache` (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 
 The `tensor` package is optional. Nothing in `core` or `storage` imports
@@ -247,7 +248,10 @@ lives in GPU memory and is lost on restart.
   also survives a restart.
 - **Serialization** is pluggable. The default is JSON, not `pickle`:
   unpickling runs code chosen by whoever wrote the file, and a cache
-  directory is easy to share. Tensor payloads need a tensor serializer.
+  directory is easy to share. For KV tensors use `TensorSerializer`
+  (`tensor/serializers.py`): it writes with `torch.save` and reads with
+  `torch.load(weights_only=True)`, whose restricted unpickler rebuilds
+  only tensors and plain containers and refuses every other class.
 
 Only one process should write to a directory at a time, since each keeps
 its own index.
@@ -308,6 +312,19 @@ bfloat16):
 At ~25 GB/s, loading one 28 MiB chunk takes about 1.1 ms. Whether that
 beats recomputing those 256 tokens depends on the model and GPU, which is
 what roadmap task G3 measures.
+
+The full LMCache-style hierarchy is a composition of these pieces:
+
+```python
+TieredStorage(
+    fast=CPUOffloadKVCache(device="cuda"),
+    slow=DiskKVCache("/var/cache/kv", serializer=TensorSerializer()),
+)
+```
+
+The model computes on the GPU, cached chunks live in pinned CPU memory,
+and every chunk is written through to disk, so a restarted process reuses
+them. `examples/demo_kv_reuse.py --offload --disk DIR` runs exactly this.
 
 ## Mini: Extend the cache model
 

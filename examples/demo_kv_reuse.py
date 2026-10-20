@@ -6,6 +6,8 @@ Needs the `hf` extra:
     uv run python examples/demo_kv_reuse.py
     uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B --device cuda
     uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
+    # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
+    uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
@@ -22,13 +24,19 @@ this trade-off).
 
 import argparse
 import time
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.storage.disk import DiskKVCache
+from nano_lmcache.storage.memory import MemoryKVCache
+from nano_lmcache.storage.protocol import CacheStorage
+from nano_lmcache.storage.tiered import TieredStorage
 from nano_lmcache.tensor.hf import run_with_prefix_cache
 from nano_lmcache.tensor.offload import CPUOffloadKVCache
+from nano_lmcache.tensor.serializers import TensorSerializer
 
 DOCUMENT = (
     "The city council met on Tuesday to discuss the new transit plan. "
@@ -57,6 +65,11 @@ def main() -> None:
         action="store_true",
         help="keep cached KV in pinned CPU memory instead of on the device",
     )
+    parser.add_argument(
+        "--disk",
+        type=Path,
+        help="also write KV through to this directory, reusable across runs",
+    )
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -72,7 +85,17 @@ def main() -> None:
         name: tokenizer(text)["input_ids"] for name, text in prompts.items()
     }
 
-    storage = CPUOffloadKVCache(device=args.device) if args.offload else None
+    fast: CacheStorage | None = (
+        CPUOffloadKVCache(device=args.device) if args.offload else None
+    )
+    storage: CacheStorage | None = fast
+    if args.disk is not None:
+        disk = DiskKVCache(args.disk, serializer=TensorSerializer())
+        print(f"Disk tier {args.disk}: {len(disk)} chunks from earlier runs")
+        # Not `fast or ...`: an empty cache has len() 0, which is falsy.
+        storage = TieredStorage(
+            fast=fast if fast is not None else MemoryKVCache(), slow=disk
+        )
     cache = ChunkedPrefixCache(
         chunk_size=args.chunk_size,
         namespace=args.model.replace("/", "-"),
@@ -108,8 +131,14 @@ def main() -> None:
         print(f"  max |logit diff|:  {max_diff:.2e}\n")
 
     print(f"Cache metrics: hit rate {cache.metrics.hit_rate:.1%}")
-    if storage is not None:
-        print(f"KV held in CPU memory: {storage.nbytes / 2**20:.1f} MiB")
+    if isinstance(fast, CPUOffloadKVCache):
+        print(f"KV held in CPU memory: {fast.nbytes / 2**20:.1f} MiB")
+    if isinstance(storage, TieredStorage):
+        stats = storage.tier_stats
+        print(
+            f"Chunks served: {stats.fast_hits} from memory, "
+            f"{stats.slow_hits} from disk"
+        )
 
 
 if __name__ == "__main__":
