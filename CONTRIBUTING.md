@@ -13,13 +13,15 @@ design is described in `docs/architecture.md`.
 
 - **Nano** (done): chunking, prefix-aware keys, in-memory storage,
   prefix lookup, hit/miss metrics.
-- **Mini** (in progress): storage interface and bounded, prefix-safe
-  eviction are in place; more cache behavior and backends come next.
-- **GPU and vLLM** (open for contributors): real KV tensors, GPU offload,
-  and a vLLM KV connector.
+- **Mini** (done, follow-ups open): storage interface, prefix-safe
+  eviction, disk and tiered backends.
+- **GPU** (done, follow-ups open): real KV tensors, GPU to CPU offload.
+- **nano-vLLM integration** (open for contributors): nano-lmcache as the
+  external KV cache of nano-vLLM; see
+  [docs/nanovllm-integration.md](docs/nanovllm-integration.md).
 
-The core package must stay free of runtime dependencies. PyTorch, vLLM,
-and similar libraries belong in optional dependency groups and separate
+The core package must stay free of runtime dependencies. PyTorch,
+nano-vLLM, and similar libraries belong in optional dependency groups and separate
 subpackages (see task I1 in the roadmap), so people learning the cache
 concepts never have to install them. If you are unsure whether an idea
 fits, open an issue first.
@@ -29,7 +31,7 @@ fits, open an issue first.
 Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/Kangwenqiao/nano-lmcache.git
+git clone https://github.com/Dami-wq-k03/nano-lmcache.git
 cd nano-lmcache
 uv sync
 ```
@@ -73,12 +75,24 @@ Check that your GPU is visible with:
 uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-(A `vllm` extra is added once a vLLM version is pinned; see roadmap V0.)
+nano-vLLM integration tests need the `nanovllm` dependency group (Linux,
+Python 3.11 or 3.12; flash-attn comes as a prebuilt wheel), a CUDA GPU,
+and a local model directory:
 
-Code that needs PyTorch lives in `src/nano_lmcache/tensor/`, and vLLM code
-will live in `src/nano_lmcache/integration/vllm/`. Never import torch or
-vllm from `nano_lmcache` itself, `core`, or `storage`; a test enforces
-this.
+```bash
+uv sync --extra hf --group nanovllm
+CUDA_VISIBLE_DEVICES=0 NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B \
+    uv run pytest -m nanovllm
+```
+
+nano-vLLM always runs on the first visible GPU, so choose one with
+`CUDA_VISIBLE_DEVICES`. Without the model variable, the real-engine tests
+skip and the scheduler-level tests still run (they need no GPU).
+
+Code that needs PyTorch lives in `src/nano_lmcache/tensor/`, and inference
+engine adapters live in `src/nano_lmcache/integrations/` (for example
+`integrations/nanovllm/`). Never import torch or an engine from
+`nano_lmcache` itself, `core`, or `storage`; a test enforces this.
 
 Tests that need heavy dependencies carry a marker and are skipped, not
 failed, when the environment cannot run them:
@@ -88,6 +102,7 @@ failed, when the environment cannot run them:
 | `torch` | PyTorch installed |
 | `gpu` | PyTorch and a CUDA GPU |
 | `vllm` | vLLM and a CUDA GPU |
+| `nanovllm` | The `nanovllm` dependency group (add `gpu` for real-engine tests) |
 
 ```python
 import pytest

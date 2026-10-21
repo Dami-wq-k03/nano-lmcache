@@ -5,7 +5,8 @@
 # nano-lmcache
 
 An educational, step-by-step implementation of KV cache reuse, from a
-pure-Python prototype to real GPU tensors and vLLM integration.
+pure-Python prototype to real GPU tensors and an external KV cache for the
+nano-vLLM inference engine.
 
 nano-lmcache is a teaching project, not a reimplementation or replacement
 of [LMCache](https://github.com/LMCache/LMCache). It rebuilds the core
@@ -57,10 +58,14 @@ New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for shor
 
 1. **Nano** (done): Token chunking, prefix-aware chunk keys, an
    in-memory backend, continuous-prefix lookup, and hit/miss metrics.
-2. **Mini** (in progress): A storage interface and bounded, prefix-safe
-   eviction are in place; disk and tiered backends come next.
-3. **GPU and vLLM**: Real KV tensors verified against a real model, GPU
-   to CPU offload, and a vLLM KV connector.
+2. **Mini** (done): A storage interface, bounded prefix-safe eviction,
+   and disk and tiered memory + disk backends.
+3. **GPU** (done): Real KV tensors verified against a real model, GPU to
+   CPU offload, and a GPU -> CPU -> disk hierarchy.
+4. **nano-vLLM integration** (in progress): nano-lmcache as the external
+   KV cache behind [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)'s
+   GPU prefix cache. Design:
+   [docs/nanovllm-integration.md](docs/nanovllm-integration.md).
 
 See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
 contributors to claim.

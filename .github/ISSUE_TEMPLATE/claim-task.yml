@@ -6,8 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping out! Please read [CONTRIBUTING.md](https://github.com/Kangwenqiao/nano-lmcache/blob/main/CONTRIBUTING.md)
-        and the task's section in [ROADMAP.md](https://github.com/Kangwenqiao/nano-lmcache/blob/main/ROADMAP.md) first.
+        Thanks for helping out! Please read [CONTRIBUTING.md](https://github.com/Dami-wq-k03/nano-lmcache/blob/main/CONTRIBUTING.md)
+        and the task's section in [ROADMAP.md](https://github.com/Dami-wq-k03/nano-lmcache/blob/main/ROADMAP.md) first.
   - type: input
     id: task-id
     attributes:

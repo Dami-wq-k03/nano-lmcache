@@ -15,8 +15,9 @@ nano-lmcache aims to:
 - Break KV cache reuse into independent concepts and introduce them one
   at a time, each with tests and a runnable example.
 - Go all the way from a pure-Python prototype to **real KV tensors on a
-  GPU**, and finally **integrate with vLLM**, so learners can see prefix
-  reuse cut real prefill compute.
+  GPU**, and finally **serve as the external KV cache of a real inference
+  engine**, [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), so
+  learners can see prefix reuse cut real prefill compute.
 - Leave learners able to read the LMCache and vLLM source and understand
   what problems they solve and why they are designed the way they are.
 
@@ -106,35 +107,32 @@ open an issue to discuss it.
 | **GPU: real KV tensors** | | | | | |
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
 | G2 | GPU to CPU offload backend | Hard | Yes | G1 | Done |
-| G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Open |
+| G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Merged into N4 |
 | G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Open |
 | G5 | Compress cached KV with int8 quantization | Medium | No | – | Open |
 | G6 | Model-aware cache namespaces | Easy | No | – | Open |
-| **vLLM integration** | | | | | |
-| V0 | vLLM KV connector research notes | Medium | No | – | Open |
-| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Open |
-| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Open |
-| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Open |
-| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Open |
-| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Open |
+| **nano-vLLM integration** | | | | | |
+| N0 | KV block format: export and import nano-vLLM blocks | Medium | No | I1 | Done |
+| N1 | External prefix lookup, cache keys, model namespace | Medium | No | N0 | Done |
+| N2 | Restore L2 hits into nano-vLLM's GPU blocks | Hard | Yes | N1 | Done |
+| N3 | Save newly completed KV blocks | Medium | Yes | N2 | Open |
+| N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Open |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Open |
 
-**Good first contributions:** M6, M7, M8, G6, and V0 (no GPU needed).
-**Most wanted next:** V0, which unblocks the whole vLLM track, and M6, a
-quick win for every disk-backed run.
+**Good first contributions:** M6, M7, M8, and G6 (no GPU needed).
+**Most wanted next:** N3, which makes nano-vLLM fill L2 on its own (needs a
+GPU), and M6, a quick win for every disk-backed run.
 
 **Dependencies:**
 
 ```mermaid
 graph LR
-  I1 --> G1 --> G2 --> G3
-  I1 --> V1
-  V0 --> V1 --> V2 --> V4 --> V5
-  V1 --> V3 --> V4
-  G1 --> V3
+  I1 --> G1 --> G2
+  I1 --> N0 --> N1 --> N2 --> N3 --> N4
+  G2 --> N4
   M4 --> M5
   I3 --> M2
   M10 --> M12
@@ -146,8 +144,9 @@ graph LR
 
 ### I1: Optional dependency groups and GPU test markers
 
-**Status: done.** The `vllm` extra is deliberately missing: add it together
-with the version pin in V0/V1.
+**Status: done.** An extra for the inference engine is deliberately missing:
+N2 adds one for nano-vLLM, the first time engine code runs in tests.
+Engine adapters live in `nano_lmcache/integrations/`.
 
 The core package has no runtime dependencies, and that must stay true:
 someone learning the cache concepts should never be forced to install
@@ -537,6 +536,9 @@ Acceptance criteria:
 
 ### G3: Measure recompute vs. load cost
 
+**Status: merged into N4**, which measures the same trade-off inside a
+real engine. The notes below are input for N4.
+
 Caching does not always pay off: for a short prefix, copying KV back from
 the CPU can be slower than recomputing it on the GPU.
 
@@ -625,91 +627,123 @@ cached value.
 
 ---
 
-## vLLM integration
+## nano-vLLM integration
 
-vLLM's KV connector API changes quickly. **V0 must pin a vLLM version
-first**, and all later tasks target that version; upgrading is a separate
-task. Class and method names mentioned below should be checked against
-the source of the pinned version.
+nano-lmcache becomes the **external (L2) KV cache** of
+[nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), a ~1,200-line
+reimplementation of vLLM's core. nano-vLLM keeps its own GPU prefix cache
+(L1); nano-lmcache stores the blocks the GPU no longer has, in CPU memory,
+on disk, or both, so they can be reused across processes and restarts.
+An L2 hit is not free: the block still has to be copied back to the GPU.
 
-### V0: vLLM KV connector research notes
+The design is in [`docs/nanovllm-integration.md`](docs/nanovllm-integration.md):
+which nano-vLLM code is involved, what each side owns, and ten rules the
+integration must keep. It pins nano-vLLM commit `bb823b3`; every task
+below targets that commit, and upgrading is a separate task. `attach()`
+installs the hooks into a running engine, so nano-vLLM stays an
+unmodified dependency (`uv sync --group nanovllm`); all cache logic stays
+in nano-lmcache.
 
-No GPU needed; this is mostly reading vLLM source. It is the entry point
-for all vLLM work, and a good first "read the source" task.
+Version 1 scope, for every task below:
 
-To do: write `docs/vllm-kv-connector.md`, covering:
+- `kvcache_block_size = 256` and `chunk_size = 256`: one chunk is one block.
+- `tensor_parallel_size = 1` and `enforce_eager = True`.
+- Only complete, computed blocks are stored.
+- The last block of a prompt is never reused, matching nano-vLLM's own
+  prefix cache, so there are always tokens left to compute logits from.
+- Synchronous loads and stores; Python 3.11 or 3.12.
 
-- The pinned vLLM version and why it was chosen.
-- The interface of vLLM's v1 KV connector base class, split into its
-  scheduler-side and worker-side halves, and when each method is called
-  during a request (a sequence diagram is recommended).
-- The memory layout of vLLM's paged KV cache (paged attention): blocks,
-  block tables, and slot mapping, and how they relate to our chunks.
-  Should `chunk_size` be a multiple of `block_size`?
-- How vLLM's built-in automatic prefix caching differs from an external
-  KV cache such as LMCache: the former lives only in one instance's GPU
-  memory; the latter can offload to CPU or disk and be shared across
-  instances and restarts.
-- The example connector that ships in the vLLM repository (the one that
-  stores KV in local files) is the closest reference implementation.
+### N0: KV block format
 
-### V1: Minimal connector skeleton
+**Status: done** (`src/nano_lmcache/integrations/nanovllm/kv_blocks.py`).
 
-To do:
+`export_block(kv_cache, block_id)` copies one physical block out of
+nano-vLLM's KV cache `[2, layers, blocks, block_size, kv_heads, head_dim]`
+into nano-lmcache's chunk format `[layers, 2, kv_heads, block_size,
+head_dim]`, and `import_block` writes one back. Tests run on CPU tensors,
+without nano-vLLM.
 
-- Implement an out-of-tree connector in `nano_lmcache/integration/vllm/`,
-  loaded through vLLM's `--kv-transfer-config` without modifying vLLM.
-- Keep every method trivial at first: always report 0 matched tokens,
-  never save or load, but log the order and arguments of every call.
+### N1: External prefix lookup, cache keys, model namespace
 
-Acceptance criteria:
+**Status: done** (`integrations/nanovllm/layout.py`, `external_cache.py`;
+see "Keys, namespace, and lookup" in the design doc).
 
-- vLLM started with this connector generates exactly the same output as
-  without it.
-- The docs include a real request's call log, explained against the V0
-  sequence diagram.
+No GPU and no nano-vLLM install needed.
 
-### V2: Scheduler side: report matched tokens
+To do: in `integrations/nanovllm/`, map a prompt's token IDs to
+nano-lmcache chunk keys over whole blocks, and build the cache namespace
+from everything that changes a block's bytes: model identity and
+revision, dtype, layers, KV heads, head size, block size, and the
+tensor-parallel layout (design rule 10; G6 does the same for the
+HuggingFace path). Provide the calls N2 and N3 need:
 
-To do: when the scheduler asks how many tokens of a request can be loaded
-externally, answer with `ChunkedPrefixCache.lookup`. Report only
-complete-chunk hits, and handle alignment between chunks and blocks.
-
-Acceptance criteria: logs show the correct matched token count the second
-time a request with the same prefix arrives, and 0 the first time.
-
-### V3: Worker side: save chunks from the paged KV cache
-
-To do: after vLLM computes each layer, use the slot mapping to gather
-this request's K/V out of the paged KV cache, split it into chunks, and
-store them.
-
-Acceptance criteria: the saved chunks match, within tolerance, the KV
-that transformers computes for the same prompt in G1. This is the most
-direct way to check that the right slots were read.
-
-### V4: Worker side: load cached chunks back to the GPU
-
-To do: for the part V2 reported as matched, write the cached chunks into
-the blocks vLLM allocated for the request, before the forward pass.
+- given the number of L1 hits, count the L2 blocks that follow, using
+  membership checks only (design rule 3);
+- fetch those blocks' payloads;
+- given completed blocks, say which ones L2 does not have yet.
 
 Acceptance criteria:
 
-- With greedy decoding (temperature=0), the second request for the same
-  prompt produces exactly the same output as the first.
-- The second request's prefill compute (or time) drops noticeably.
+- The last-block limit holds (design rule 1): a prompt of exactly `k`
+  full blocks reports at most `k - 1` reusable blocks.
+- Counting never reads a payload.
+- A different model, revision, dtype, or KV head layout never hits.
+- Works on `MemoryKVCache`, `CPUOffloadKVCache`, `DiskKVCache` with
+  `TensorSerializer`, and `TieredStorage`.
 
-### V5: End-to-end demo and TTFT comparison
+### N2: Restore L2 hits into nano-vLLM's GPU blocks
+
+**Status: done** (`integrations/nanovllm/engine.py`: `ExternalBlockManager`
+and `attach()`; dependency group `nanovllm`; tests marked `nanovllm`).
+With Qwen3-0.6B, a 1,501-token prompt restored 5 blocks from pinned CPU
+memory, prefilled only the remaining 221 tokens, and generated exactly the
+tokens of a cold run.
+
+To do: extend `can_allocate` to add the L2 blocks after the L1 hits, make
+`allocate` fetch them, attach fresh GPU blocks, register their L1 hashes,
+and set `num_cached_tokens`, and copy the payloads in with N0's
+`import_block` before the forward pass. Add an optional dependency group
+for nano-vLLM, with tests marked so they skip without it. See design
+rules 1 to 6 and 9.
+
+Acceptance criteria:
+
+- A request whose prefix is in L2 but not in L1 computes only its
+  uncached tail.
+- After a restore, a later request hits the same blocks in L1.
+- If an L2 entry disappears between `can_allocate` and `allocate`, the
+  request still completes correctly.
+
+### N3: Save newly completed KV blocks
+
+To do: in `ExternalBlockManager.hash_blocks`, export the blocks it just
+completed with N0's `export_block` and store the ones L2 does not have,
+using N1's `missing_blocks` and `store`. `postprocess` calls `hash_blocks`
+before it frees a finished sequence's blocks, so exporting there keeps
+design rule 7 without extra bookkeeping. See design rules 7 and 8.
+
+Acceptance criteria: after one request, all of its complete prompt blocks
+are in L2; blocks completed by chunked prefill and by decode are stored
+exactly once; blocks of finished sequences are exported before they can
+be reused.
+
+### N4: Correctness, reuse across restarts, TTFT benchmarks
 
 To do:
 
-- Add a vLLM demo under `examples/` with several requests sharing a long
-  prefix (for example, one long document with different questions).
-- Compare time to first token (TTFT) in three setups: no caching; vLLM's
-  built-in prefix caching only; and the nano-lmcache connector, querying
-  again **after restarting vLLM**.
-- The third setup is exactly where an external KV cache earns its keep;
-  show it with data.
+- With greedy decoding (temperature 0), compare outputs with L2 hits
+  against a run without prefix caching: single prompts, batches, chunked
+  prefill, preemption, and capacity-limited L2 storage.
+- Restart the engine between two requests with a disk-backed L2 and show
+  the second one reuses the first one's blocks.
+- Measure time to first token for shared-prefix workloads (one long
+  document, many questions) with no prefix caching, L1 only, L1 + L2 in
+  CPU memory, and L1 + L2 on disk. Separate the cost of loading a block
+  from recomputing it, across prefix lengths (this absorbs G3).
+
+Acceptance criteria: identical token outputs in every scenario, and a
+benchmark write-up in `docs/` with the crossover point where L2 reuse
+starts to pay off.
 
 ---
 
@@ -742,13 +776,13 @@ it was translated from, so drift is easy to spot.
 
 ## Hardware
 
-- The I, M, and D tasks, plus V0, need only an ordinary computer.
+- The I, M, and D tasks, plus N0 and N1, need only an ordinary computer.
 - G1, G5, and G6 can be done on a CPU, and so can G4 (with
   `pin_memory=False`); G2 and G3 need an NVIDIA GPU.
 - On Linux, `torch` comes from the CUDA 12.4 wheel index, which runs on
   NVIDIA drivers >= 525. Check with
   `uv run python -c "import torch; print(torch.cuda.is_available())"`.
-- V1 to V5 need an NVIDIA GPU that can run vLLM. A small model around
-  0.5B parameters is enough, so memory requirements are modest.
-- Without a GPU you can still do all M tasks, G4 to G6, and V0, which is
-  about reading vLLM's source and is just as valuable.
+- N2 to N4 need an NVIDIA GPU that can run nano-vLLM (it uses
+  flash-attn and Triton). A small model such as Qwen3-0.6B is enough.
+- Without a GPU you can still do all M tasks, G4 to G6, and N1, which is
+  just as valuable.

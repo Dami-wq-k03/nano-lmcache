@@ -118,3 +118,31 @@ def test_core_package_declares_no_runtime_dependencies():
 
     assert "dependencies = []" in text
     assert importlib.util.find_spec("nano_lmcache") is not None
+
+
+def test_nanovllm_marker_needs_torch_and_nanovllm():
+    conftest = load_conftest()
+
+    reason = conftest.skip_reason(
+        {"nanovllm"}, has_torch=True, has_cuda=True, has_vllm=False,
+        has_nanovllm=False,
+    )
+    assert reason is not None and "nanovllm" in reason
+    assert conftest.skip_reason(
+        {"nanovllm"}, has_torch=False, has_cuda=False, has_vllm=False,
+        has_nanovllm=True,
+    )
+    # Scheduler-level integration tests run on a CPU.
+    assert (
+        conftest.skip_reason(
+            {"nanovllm"}, has_torch=True, has_cuda=False, has_vllm=False,
+            has_nanovllm=True,
+        )
+        is None
+    )
+
+
+def test_nanovllm_marker_is_registered():
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text()
+
+    assert '"nanovllm:' in text

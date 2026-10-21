@@ -170,6 +170,10 @@ understood without a GPU or an inference engine.
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
 | `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
+| `integrations/nanovllm/layout.py` | `KVBlockLayout`: what a nano-vLLM block's bytes depend on, and its cache namespace |
+| `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
+| `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits inside a running nano-vLLM engine (needs nano-vLLM) |
+| `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
 | `tensor/serializers.py` | `TensorSerializer`: safe tensor encoding for `DiskKVCache` (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 
@@ -455,8 +459,10 @@ Those backends are not implemented ahead of need.
 
 ## Inference integration
 
-A later stage explores KV tensor handling and integration with an
-inference engine such as vLLM.
+nano-lmcache becomes the external (L2) KV cache of nano-vLLM, behind
+nano-vLLM's own GPU prefix cache (L1). The design, including the block
+format in `integrations/nanovllm/kv_blocks.py`, is in
+[nanovllm-integration.md](nanovllm-integration.md).
 
 The core package should remain independently understandable and
 testable. Integration-specific dependencies should be introduced only

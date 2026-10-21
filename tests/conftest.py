@@ -7,6 +7,8 @@ when the environment cannot run them:
 - `torch`: needs PyTorch installed.
 - `gpu`: needs PyTorch and a CUDA device.
 - `vllm`: needs vLLM and a CUDA device.
+- `nanovllm`: needs PyTorch and nano-vLLM (`uv sync --group nanovllm`); add
+  `gpu` as well for tests that run the real engine.
 """
 
 import importlib.util
@@ -34,9 +36,10 @@ def skip_reason(
     has_torch: bool,
     has_cuda: bool,
     has_vllm: bool,
+    has_nanovllm: bool = False,
 ) -> str | None:
     """Return why a test with these markers must be skipped, or None."""
-    needs_torch = bool(set(markers) & {"torch", "gpu", "vllm"})
+    needs_torch = bool(set(markers) & {"torch", "gpu", "vllm", "nanovllm"})
     needs_cuda = bool(set(markers) & {"gpu", "vllm"})
 
     if needs_torch and not has_torch:
@@ -45,6 +48,8 @@ def skip_reason(
         return "requires a CUDA GPU"
     if "vllm" in markers and not has_vllm:
         return "requires vllm"
+    if "nanovllm" in markers and not has_nanovllm:
+        return "requires nanovllm (install with `uv sync --group nanovllm`)"
 
     return None
 
@@ -54,6 +59,7 @@ def pytest_collection_modifyitems(
 ) -> None:
     has_torch = _has_module("torch")
     has_vllm = _has_module("vllm")
+    has_nanovllm = _has_module("nanovllm")
     # Only touch CUDA if some collected test could need it.
     needs_cuda = any(
         {"gpu", "vllm"} & {marker.name for marker in item.iter_markers()}
@@ -64,7 +70,11 @@ def pytest_collection_modifyitems(
     for item in items:
         names = {marker.name for marker in item.iter_markers()}
         reason = skip_reason(
-            names, has_torch=has_torch, has_cuda=has_cuda, has_vllm=has_vllm
+            names,
+            has_torch=has_torch,
+            has_cuda=has_cuda,
+            has_vllm=has_vllm,
+            has_nanovllm=has_nanovllm,
         )
         if reason is not None:
             item.add_marker(pytest.mark.skip(reason=reason))

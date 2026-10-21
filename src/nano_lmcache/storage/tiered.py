@@ -93,6 +93,10 @@ class TieredStorage:
     def tier_stats(self) -> TierStats:
         return self._tier_stats
 
+    def __contains__(self, key: object) -> bool:
+        """Whether either tier has `key`; does not promote or count a use."""
+        return key in self._fast or key in self._slow
+
     def put(
         self,
         key: str,

@@ -164,3 +164,15 @@ def test_no_tier_ever_holds_an_orphan(tmp_path, monkeypatch, seed):
                 if key in tier:
                     parent = tier.parent_of(key)
                     assert parent is None or parent in tier, (step, key)
+
+
+def test_contains_checks_both_tiers_without_counting_a_use(tmp_path):
+    tiered = make_tiered(tmp_path, fast=1)
+    tiered.put("a", "kv-a")
+    tiered.put("b", "kv-b")  # a is now only on disk
+
+    assert "a" in tiered
+    assert "b" in tiered
+    assert "missing" not in tiered
+    assert tiered.tier_stats == TierStats()
+    assert "a" not in tiered.fast  # membership does not promote
