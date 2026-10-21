@@ -115,7 +115,7 @@ open an issue to discuss it.
 | N0 | KV block format: export and import nano-vLLM blocks | Medium | No | I1 | Done |
 | N1 | External prefix lookup, cache keys, model namespace | Medium | No | N0 | Done |
 | N2 | Restore L2 hits into nano-vLLM's GPU blocks | Hard | Yes | N1 | Done |
-| N3 | Save newly completed KV blocks | Medium | Yes | N2 | Open |
+| N3 | Save newly completed KV blocks | Medium | Yes | N2 | Done |
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Open |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
@@ -123,8 +123,8 @@ open an issue to discuss it.
 | D11 | Chinese translation of README and docs | Easy | No | – | Open |
 
 **Good first contributions:** M6, M7, M8, and G6 (no GPU needed).
-**Most wanted next:** N3, which makes nano-vLLM fill L2 on its own (needs a
-GPU), and M6, a quick win for every disk-backed run.
+**Most wanted next:** N4, which measures when the nano-vLLM L2 cache pays
+off (needs a GPU), and M6, a quick win for every disk-backed run.
 
 **Dependencies:**
 
@@ -716,6 +716,11 @@ Acceptance criteria:
 
 ### N3: Save newly completed KV blocks
 
+**Status: done** (`ExternalBlockManager.hash_blocks` in
+`integrations/nanovllm/engine.py`; `examples/demo_nanovllm.py`). nano-vLLM
+now fills L2 on its own: run the demo twice and the second process
+restores its prompt blocks from disk and generates the same tokens.
+
 To do: in `ExternalBlockManager.hash_blocks`, export the blocks it just
 completed with N0's `export_block` and store the ones L2 does not have,
 using N1's `missing_blocks` and `store`. `postprocess` calls `hash_blocks`
@@ -740,6 +745,11 @@ To do:
   document, many questions) with no prefix caching, L1 only, L1 + L2 in
   CPU memory, and L1 + L2 on disk. Separate the cost of loading a block
   from recomputing it, across prefix lengths (this absorbs G3).
+
+- Measure the cost of storing too: in version 1 stores are synchronous, so
+  a cold request with a disk-backed L2 waits for its blocks to be written
+  (about 1.9 s for five 28 MiB blocks with Qwen3-0.6B; see "What version
+  1 costs" in the design doc).
 
 Acceptance criteria: identical token outputs in every scenario, and a
 benchmark write-up in `docs/` with the crossover point where L2 reuse

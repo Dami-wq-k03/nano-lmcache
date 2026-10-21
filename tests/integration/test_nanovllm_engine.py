@@ -1,4 +1,4 @@
-"""N2: restore L2 hits into nano-vLLM's GPU blocks.
+"""N2 and N3: restore L2 hits into nano-vLLM's GPU blocks, and store new ones.
 
 Two levels:
 
@@ -138,11 +138,22 @@ def seed_l2(external, token_ids, num_blocks):
 class RecordingStorage(MemoryKVCache):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.gets = []
+        self.gets, self.puts = [], []
 
     def get(self, key):
         self.gets.append(key)
         return super().get(key)
+
+    def put(self, key, value, *, parent_key=None):
+        self.puts.append(key)
+        super().put(key, value, parent_key=parent_key)
+
+
+def assert_l2_holds_correct_kv(external, token_ids, num_blocks):
+    keys = external.block_keys(token_ids, num_blocks)
+    for block, key in enumerate(keys):
+        assert torch.equal(external.storage.get(key),
+                           expected_payload(token_ids, block)), block
 
 
 def attached(storage=None, **llm_kwargs):
@@ -367,6 +378,128 @@ def test_preempted_requests_are_restored_again():
     assert llm.generate([token_ids]) == reference
 
 
+# ---- storing (N3) -----------------------------------------------------
+
+
+def test_a_cold_request_stores_its_complete_blocks():
+    token_ids = prompt(3, extra=10)
+    llm, external, manager = attached()
+
+    llm.generate([token_ids])
+
+    assert manager.stats.stored_blocks == 3
+    assert_l2_holds_correct_kv(external, token_ids, 3)
+
+
+def test_stored_blocks_are_restored_by_a_fresh_block_manager():
+    """The whole loop: store, look up, restore, reuse, with no manual help."""
+    token_ids = prompt(3, extra=10)
+    reference = FakeLLM().generate([token_ids])
+    llm, external, _ = attached()
+    llm.generate([token_ids])
+
+    fresh = attach(llm, external)  # empty L1, same L2
+    llm.model_runner.computed_tokens = 0
+
+    assert llm.generate([token_ids]) == reference
+    assert fresh.stats.l2_hit_blocks == 3
+    assert llm.model_runner.computed_tokens == 10 + 3
+
+
+def test_the_incomplete_last_block_is_not_stored():
+    llm, external, _ = attached()
+
+    llm.generate([prompt(2, extra=100)], max_tokens=4)
+
+    assert len(external.storage) == 2
+
+
+def test_blocks_completed_during_decode_are_stored():
+    token_ids = prompt(1, extra=250)  # 6 tokens short of two full blocks
+    llm, external, manager = attached()
+
+    (completion,) = llm.generate([token_ids], max_tokens=10)
+
+    full = token_ids + completion
+    assert manager.stats.stored_blocks == 2
+    assert_l2_holds_correct_kv(external, full, 2)
+
+
+def test_each_block_is_stored_once_through_chunked_prefill():
+    storage = RecordingStorage()
+    token_ids = prompt(4, extra=100)
+    llm, external, _ = attached(storage, max_num_batched_tokens=300)
+
+    llm.generate([token_ids])
+
+    assert sorted(storage.puts) == sorted(external.block_keys(token_ids))
+    assert_l2_holds_correct_kv(external, token_ids, 4)
+
+
+def test_blocks_already_in_l2_are_not_stored_again():
+    storage = RecordingStorage()
+    token_ids = prompt(3, extra=10)
+    llm, external, _ = attached(storage)
+    llm.generate([token_ids])
+    attach(llm, external)
+    storage.puts.clear()
+
+    llm.generate([token_ids])  # restored from L2
+    llm.generate([token_ids])  # hits L1
+
+    assert storage.puts == []
+
+
+def test_l2_is_repaired_from_l1_after_losing_entries():
+    storage = MemoryKVCache()
+    token_ids = prompt(3, extra=10)
+    llm, external, _ = attached(storage)
+    llm.generate([token_ids])
+    longer = token_ids[: 3 * BLOCK] + prompt(1, extra=5, first=60000)
+    # L2 loses everything, but L1 still holds the first three blocks.
+    attach_storage = MemoryKVCache()
+    llm.scheduler.block_manager.external = NanoVLLMExternalCache(LAYOUT, attach_storage)
+
+    llm.generate([longer])
+
+    assert_l2_holds_correct_kv(llm.scheduler.block_manager.external, longer, 4)
+
+
+def test_finished_requests_are_exported_before_their_blocks_are_reused():
+    # Only 4 GPU blocks: the second request reuses the first one's blocks.
+    llm, external, _ = attached(num_blocks=4)
+    first = prompt(3, extra=10, first=1000)
+    second = prompt(3, extra=10, first=30000)
+
+    llm.generate([first])
+    llm.generate([second])
+
+    assert_l2_holds_correct_kv(external, first, 3)
+    assert_l2_holds_correct_kv(external, second, 3)
+
+
+def test_capacity_limited_l2_counts_what_it_kept():
+    llm, _, manager = attached(MemoryKVCache(max_entries=2))
+
+    llm.generate([prompt(3, extra=10)])
+
+    assert manager.stats.stored_blocks == 2
+
+
+def test_steps_that_complete_no_block_do_no_work(monkeypatch):
+    llm, external, _ = attached()
+    calls = []
+    original = external.missing_blocks
+    monkeypatch.setattr(
+        external, "missing_blocks", lambda *a: calls.append(a) or original(*a)
+    )
+
+    # Prefill completes block 0; the next 40 decode steps complete nothing.
+    llm.generate([prompt(1, extra=10)], max_tokens=40)
+
+    assert len(calls) == 1
+
+
 # ---- the real engine --------------------------------------------------
 
 
@@ -394,22 +527,6 @@ def real_layout(engine):
     )
 
 
-def copy_l1_into_l2(engine, external, token_ids):
-    """Fill L2 from blocks a finished request left behind in L1.
-
-    N3 will store blocks as they are computed; until then, read them back
-    through nano-vLLM's own hash table.
-    """
-    manager = engine.scheduler.block_manager
-    kv_cache = engine.model_runner.kv_cache
-    payloads, h = [], -1
-    for block in range(len(token_ids) // BLOCK):
-        tokens = token_ids[block * BLOCK:(block + 1) * BLOCK]
-        h = manager.compute_hash(tokens, h)
-        payloads.append(export_block(kv_cache, manager.hash_to_block_id[h]).cpu())
-    return external.store(token_ids, 0, payloads)
-
-
 def long_prompt(engine):
     text = ("The city council met on Tuesday to discuss the new transit plan, "
             "which adds bus lines and extends the tram to the airport. ") * 40
@@ -418,15 +535,16 @@ def long_prompt(engine):
 
 
 @pytest.mark.gpu
-def test_real_engine_restores_l2_hits_and_generates_the_same_tokens(llm):
+def test_real_engine_stores_restores_and_generates_the_same_tokens(llm):
     params = SamplingParams(temperature=1e-6, max_tokens=16)
     token_ids = long_prompt(llm)
     external = NanoVLLMExternalCache(real_layout(llm), MemoryKVCache())
 
-    attach(llm, external)
+    first = attach(llm, external)
     torch.manual_seed(0)
     (cold,) = llm.generate([token_ids], params, use_tqdm=False)
-    assert copy_l1_into_l2(llm, external, token_ids) == 3
+    # N3: the cold request stored its complete blocks on its own.
+    assert first.stats.stored_blocks == 3
 
     # A fresh block manager: L1 is empty, L2 has the prompt's blocks.
     manager = attach(llm, external)

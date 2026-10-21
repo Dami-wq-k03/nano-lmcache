@@ -1,6 +1,6 @@
 """Install nano-lmcache as the L2 KV cache of a running nano-vLLM engine.
 
-Roadmap task N2 (restore). nano-vLLM stays an unmodified, pinned
+Roadmap tasks N2 (restore) and N3 (store). nano-vLLM stays an unmodified, pinned
 dependency (commit `bb823b3`): instead of patching its source, `attach()`
 swaps in a `BlockManager` subclass and wraps `ModelRunner.run`, which are
 the only two places that need to know about L2.
@@ -22,6 +22,9 @@ What happens for a new request:
    blocks, and sets `num_cached_tokens` to cover L1 and L2 hits.
 3. The wrapped `run` copies the fetched payloads into their GPU blocks
    before the forward pass, which then computes only the uncached tail.
+4. After the step, `hash_blocks` registers the blocks it completed, and
+   any complete block L2 does not hold yet is exported and stored. That
+   includes blocks completed by chunked prefill and by decode.
 
 This module imports nano-vLLM, so it needs `uv sync --group nanovllm`; the
 rest of `nano_lmcache.integrations.nanovllm` does not. The rules each step
@@ -36,7 +39,7 @@ import torch
 from nanovllm.engine.block_manager import BlockManager
 
 from nano_lmcache.integrations.nanovllm.external_cache import NanoVLLMExternalCache
-from nano_lmcache.integrations.nanovllm.kv_blocks import import_block
+from nano_lmcache.integrations.nanovllm.kv_blocks import export_block, import_block
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
 
 
@@ -50,13 +53,23 @@ class EngineCacheStats:
     l2_hit_blocks: int = 0
     # Prompt tokens the model actually computed during prefill.
     prefill_tokens: int = 0
+    # Completed blocks exported from the GPU and kept by L2.
+    stored_blocks: int = 0
 
 
 class ExternalBlockManager(BlockManager):  # type: ignore[misc]
-    """nano-vLLM's BlockManager, extended to restore blocks from L2."""
+    """nano-vLLM's BlockManager, extended to restore blocks from L2 and fill it.
+
+    `kv_cache` is the engine's `ModelRunner.kv_cache`; without it the
+    manager restores but never stores.
+    """
 
     def __init__(
-        self, num_blocks: int, block_size: int, external: NanoVLLMExternalCache
+        self,
+        num_blocks: int,
+        block_size: int,
+        external: NanoVLLMExternalCache,
+        kv_cache: torch.Tensor | None = None,
     ) -> None:
         super().__init__(num_blocks, block_size)
         if external.layout.block_size != block_size:
@@ -65,6 +78,7 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
                 f"nano-vLLM's kvcache_block_size {block_size}"
             )
         self.external = external
+        self.kv_cache = kv_cache
         self.stats = EngineCacheStats()
         # seq_id -> L1 hits found by the latest can_allocate for that request.
         self._l1_hits: dict[int, int] = {}
@@ -105,6 +119,34 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         seq.num_cached_tokens = restored_end * self.block_size
         self.stats.l2_hit_blocks += len(payloads)
 
+    def hash_blocks(self, seq: Any) -> None:
+        """Register the blocks this step completed, then store new ones in L2.
+
+        `Scheduler.postprocess` calls this before it frees a finished
+        sequence's blocks, so the blocks still hold this sequence's KV
+        (rule 7). Only complete, computed blocks are stored, each once
+        (rule 8).
+        """
+        start = seq.num_cached_tokens // self.block_size
+        end = (seq.num_cached_tokens + seq.num_scheduled_tokens) // self.block_size
+        super().hash_blocks(seq)
+        # Most decode steps complete no block; skip them before hashing
+        # any keys, the same shortcut the original method takes.
+        if start == end or self.kv_cache is None:
+            return
+
+        # Usually starts at `start`, but can start earlier: if L2 lost
+        # blocks that L1 still holds, they are stored again from the GPU.
+        missing = self.external.missing_blocks(seq.token_ids, end)
+        if not missing:
+            return
+        payloads = [
+            export_block(self.kv_cache, seq.block_table[index]) for index in missing
+        ]
+        self.stats.stored_blocks += self.external.store(
+            seq.token_ids, missing.start, payloads
+        )
+
     def take_pending_loads(self) -> list[tuple[int, torch.Tensor]]:
         """Payloads to copy into the KV cache before the next forward pass."""
         pending, self._pending_loads = self._pending_loads, []
@@ -127,7 +169,10 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
 
 
 def attach(llm: Any, external: NanoVLLMExternalCache) -> ExternalBlockManager:
-    """Make a single-GPU nano-vLLM engine restore L2 hits from `external`.
+    """Make a single-GPU nano-vLLM engine use `external` as its L2 KV cache.
+
+    The engine restores L2 hits before prefill and stores every complete
+    block it computes.
 
     Call it after creating the engine and before adding requests. Calling
     it again installs a fresh block manager, which empties L1 (useful in
@@ -159,7 +204,7 @@ def attach(llm: Any, external: NanoVLLMExternalCache) -> ExternalBlockManager:
 
     previous = llm.scheduler.block_manager
     manager = ExternalBlockManager(
-        len(previous.blocks), previous.block_size, external
+        len(previous.blocks), previous.block_size, external, runner.kv_cache
     )
     llm.scheduler.block_manager = manager
     _wrap_run(runner, manager)

@@ -49,6 +49,13 @@ uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
 uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv  # run twice
 ```
 
+As the external KV cache of nano-vLLM (Linux and an NVIDIA GPU; needs
+`uv sync --extra hf --group nanovllm`):
+
+```bash
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B  # run twice
+```
+
 The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 

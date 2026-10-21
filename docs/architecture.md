@@ -172,7 +172,7 @@ understood without a GPU or an inference engine.
 | `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
 | `integrations/nanovllm/layout.py` | `KVBlockLayout`: what a nano-vLLM block's bytes depend on, and its cache namespace |
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
-| `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits inside a running nano-vLLM engine (needs nano-vLLM) |
+| `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
 | `tensor/serializers.py` | `TensorSerializer`: safe tensor encoding for `DiskKVCache` (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
