@@ -1,7 +1,7 @@
-﻿<!--
-Chinese translation of docs/architecture.md
-English source commit: 2aa6d0ae92b07eb9c8b0053e6a9a9c51df77ba40
--->
+
+[English](../architecture.md) | [简体中文](architecture.md)
+
+本文译自英文版 [docs/architecture.md](../architecture.md) commit `2aa6d0a`，内容以英文版为准。
 
 # 架构
 
@@ -153,7 +153,7 @@ graph LR
 | `storage/stats.py` | `StorageStats`：记录淘汰和拒绝写入的次数 |
 | `storage/memory.py` | `MemoryKVCache`：可选有界容量、采用前缀安全 LRU 策略的内存存储 |
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`：在逐层 KV 张量与分块张量之间转换（需要 torch） |
-| `tensor/offload.py` | `CPUOffloadKVCache`：将 GPU 分块保存在固定页锁定的 CPU 内存中（需要 torch） |
+| `tensor/offload.py` | `CPUOffloadKVCache`：将 GPU 分块保存在页锁定的 CPU 内存中（需要 torch） |
 | `tensor/serializers.py` | `TensorSerializer`：为 `DiskKVCache` 提供安全的张量编码（需要 torch） |
 | `tensor/hf.py` | `run_with_prefix_cache`：与 HuggingFace 模型一起复用前缀 KV（需要 torch 和 transformers） |
 
@@ -201,7 +201,7 @@ graph LR
 
 `run_with_prefix_cache` 会查找最长的已缓存前缀，从匹配到的分块重建 `past_key_values`，只让模型处理剩余 token，并存储整个序列的分块，以供下一个请求复用。即使提示词已被完全缓存，模型仍然需要重新计算最后一个 token，因为它必须执行一次前向计算才能生成下一个 token 的 logits。
 
-这种复用是精确的，而不是近似的。在因果模型中，一个 token 的 K 和 V 只取决于该 token 及其之前的 token，因此相同的前导 token 会产生相同的 K/V。但如果相同 token 出现在不同的前缀之后，其 K/V 就可能不同，这也是分块键需要对完整前缀进行哈希计算的原因。测试会将复用前缀后的 logits 与从头执行前向计算的结果进行比较，并检查前缀不同的分块是否具有不同的 K/V。
+这种复用是精确的，而不是近似的。在因果模型中，一个 token 的 K 和 V 只取决于该 token 及其之前的 token，因此相同的前导 token 会产生相同的 K/V。但如果相同 token 出现在不同的前缀之后，其 K/V 并不相同，这也是分块键需要对完整前缀进行哈希计算的原因。测试会将复用前缀后的 logits 与从头执行前向计算的结果进行比较，并检查前缀不同的分块是否具有不同的 K/V。
 
 ### 磁盘存储
 
@@ -233,10 +233,10 @@ graph LR
 | CPU 内存 | `non_blocking` | GPU 到 CPU | CPU 到 GPU | 调用返回耗时 |
 | --- | --- | --- | --- | --- |
 | 可分页内存 | 否 | 10.7 GB/s | 11.3 GB/s | 2.7 ms |
-| 固定页锁定内存 | 否 | 26.0 GB/s | 24.9 GB/s | 1.1 ms |
-| 固定页锁定内存 | 是 | 26.2 GB/s | 25.2 GB/s | 0.005 ms |
+| 页锁定内存 | 否 | 26.0 GB/s | 24.9 GB/s | 1.1 ms |
+| 页锁定内存 | 是 | 26.2 GB/s | 25.2 GB/s | 0.005 ms |
 
-- **固定页锁定内存（Pinned memory）**：内存页被锁定，因此 GPU 可以直接使用 DMA 将数据传输到该内存中。可分页内存则必须先经过一个隐藏的固定页锁定缓冲区，这会使带宽降低一半以上。
+- **页锁定内存（Pinned memory）**：内存页被锁定，因此 GPU 可以直接使用 DMA 将数据传输到该内存中。可分页内存则必须先经过一个隐藏的页锁定缓冲区，这会使带宽降低一半以上。
 - **`non_blocking`**：它不会让复制本身变得更快，而是让 Python 调用在复制任务进入队列后立即返回，使 CPU 能继续调度其他工作。两个方向的复制都在同一个 CUDA stream 上排队，因此复制回 GPU 的操作一定会在其依赖的复制操作之后执行。只有直接读取 CPU 缓冲区的代码才必须等待，例如 `peek`。
 
 以约 25 GB/s 的速度传输时，加载一个 28 MiB 的分块大约需要 1.1 ms。能否比重新计算这 256 个 token 更快，取决于模型和 GPU；路线图任务 G3 将对此进行测量。
@@ -250,7 +250,7 @@ TieredStorage(
 )
 ```
 
-模型在 GPU 上执行计算，缓存分块保存在固定页锁定的 CPU 内存中，并且每个分块都会写入磁盘，因此进程重启后仍然可以复用它们。运行 `examples/demo_kv_reuse.py --offload --disk DIR` 就可以演示这一流程。
+模型在 GPU 上执行计算，缓存分块保存在页锁定的 CPU 内存中，并且每个分块都会写入磁盘，因此进程重启后仍然可以复用它们。运行 `examples/demo_kv_reuse.py --offload --disk DIR` 就可以演示这一流程。
 
 ## Mini：扩展缓存模型
 
