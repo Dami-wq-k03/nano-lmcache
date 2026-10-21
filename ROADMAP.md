@@ -97,7 +97,7 @@ open an issue to discuss it.
 | M3 | Byte-based capacity | Medium | No | – | Done |
 | M4 | Local disk backend | Medium | No | – | Done |
 | M5 | Tiered memory + disk storage | Hard | No | M4 | Done |
-| M6 | Skip rewriting chunks that are already cached | Easy | No | – | Open |
+| M6 | Skip rewriting chunks that are already cached | Easy | No | – | Done |
 | M7 | Detect corrupted disk entries | Easy | No | – | Open |
 | M8 | Cache inspector CLI | Easy | No | – | Open |
 | M9 | Byte-based capacity for the disk backend | Medium | No | – | Open |
@@ -300,6 +300,9 @@ Acceptance criteria:
 - Docs explain the write and promotion policies chosen and their costs.
 
 ### M6: Skip rewriting chunks that are already cached
+
+**Status: done** (`start_chunk` in `ChunkedPrefixCache.store`, used by
+`run_with_prefix_cache`).
 
 `run_with_prefix_cache` (`tensor/hf.py`) ends by calling
 `cache.store(token_ids, ...)` for **every** complete chunk, including the
