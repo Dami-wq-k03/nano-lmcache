@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
