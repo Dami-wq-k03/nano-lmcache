@@ -102,7 +102,7 @@ See: [`PrefixLRUIndex`](../src/nano_lmcache/storage/eviction.py), [Why eviction 
 
 A way of managing KV cache memory in fixed-size blocks instead of one contiguous region per sequence. vLLM uses it. A block is a unit of memory in the engine; a chunk is a group of tokens in nano-lmcache's cache keys. They are related but not the same thing.
 
-nano-lmcache has no paged attention code. How chunks and blocks line up belongs to the vLLM track, which is still open (V0 and D10 in the [roadmap](../ROADMAP.md)).
+nano-lmcache has no paged attention code. How chunks and blocks line up belongs to the vLLM track, which is still open (V0 in the [roadmap](../ROADMAP.md)).
 
 See: [Roadmap task V0 — vLLM KV connector research](../ROADMAP.md)
 
