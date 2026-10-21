@@ -2,6 +2,8 @@
   <img src="logo/nano-lmcache-logo.svg" alt="nano-lmcache logo" width="420">
 </p>
 
+English | [简体中文](README.zh-CN.md)
+
 # nano-lmcache
 
 An educational, step-by-step implementation of KV cache reuse, from a

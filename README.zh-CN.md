@@ -1,11 +1,10 @@
-﻿<!--
-Chinese translation of README.md
-English source commit: 2aa6d0ae92b07eb9c8b0053e6a9a9c51df77ba40
--->
-
 <p align="center">
   <img src="logo/nano-lmcache-logo.svg" alt="nano-lmcache 标志" width="420">
 </p>
+
+[English](README.md) | 简体中文
+
+本文译自英文版 [README.md](README.md) commit `2aa6d0a`，内容以英文版为准。架构说明见 [docs/zh-CN/architecture.md](docs/zh-CN/architecture.md)。
 
 # nano-lmcache
 
