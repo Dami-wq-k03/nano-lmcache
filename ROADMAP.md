@@ -120,7 +120,7 @@ open an issue to discuss it.
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
-| D11 | Chinese translation of README and docs | Easy | No | – | Open |
+| D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
 **Good first contributions:** M6, M7, M8, and G6 (no GPU needed).
 **Most wanted next:** N4, which measures when the nano-vLLM L2 cache pays
@@ -776,6 +776,8 @@ slower?"). Each entry should be short and link to the code or chapter
 that explains it.
 
 ### D11: Chinese translation of README and docs
+
+**Status: done** (`README.zh-CN.md`, `docs/zh-CN/`).
 
 Translate the README and architecture doc into Chinese (for
 example `README.zh-CN.md`, `docs/zh-CN/`). Keep the English version the
