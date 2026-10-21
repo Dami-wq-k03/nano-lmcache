@@ -65,27 +65,49 @@ class ChunkedPrefixCache:
         return [chunk for chunk in chunks if len(chunk) == self._chunk_size]
 
     def store(
-        self, token_ids: Sequence[int], chunk_values: Sequence[object]
+        self, token_ids: Sequence[int],
+        chunk_values: Sequence[object],
+        start_chunk: int = 0,
     ) -> None:
         complete_chunks = self._complete_chunks(token_ids)
-        if len(chunk_values) != len(complete_chunks):
+        num_chunks = len(complete_chunks)
+
+        if (
+            type(start_chunk) is not int
+            or not 0 <= start_chunk <= num_chunks
+        ):
             raise ValueError(
-                f"expected {len(complete_chunks)} chunk_values "
-                f"for {len(complete_chunks)} complete chunks, "
+                f"start_chunk must be an integer between 0 and {num_chunks}, "
+                f"got {start_chunk!r}"
+            )
+
+        expected_values = num_chunks - start_chunk
+        if len(chunk_values) != expected_values:
+            raise ValueError(
+                f"expected {expected_values} chunk_values "
+                f"for {num_chunks} complete chunks "
+                f"starting at chunk {start_chunk}, "
                 f"got {len(chunk_values)}"
             )
 
-        # None is the storage layer's miss marker. Validate everything before
-        # writing anything, so a rejected store never leaves a partial prefix.
         if any(value is None for value in chunk_values):
             raise ValueError("chunk_values must not contain None")
 
         prefix_key: str | None = None
-        for chunk, value in zip(complete_chunks, chunk_values, strict=True):
+
+        for index, chunk in enumerate(complete_chunks):
             key = make_chunk_key(
-                chunk, namespace=self._namespace, prefix_key=prefix_key
+                chunk,
+                namespace=self._namespace,
+                prefix_key=prefix_key
             )
-            self._storage.put(key, value, parent_key=prefix_key)
+
+            if index >= start_chunk:
+                self._storage.put(
+                    key,
+                    chunk_values[index - start_chunk],
+                    parent_key=prefix_key,
+                )
             prefix_key = key
 
     def lookup(self, token_ids: Sequence[int]) -> PrefixLookupResult:

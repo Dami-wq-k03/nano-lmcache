@@ -78,7 +78,7 @@ def run_with_prefix_cache(
     1. Look up the longest cached prefix of whole chunks.
     2. Rebuild `past_key_values` from the matched chunks.
     3. Run the model over only the remaining tokens.
-    4. Store every complete chunk of the full sequence for later requests.
+    4. Split and store only new complete chunks after the matched prefix.
     """
     if not token_ids:
         raise ValueError("token_ids must not be empty")
@@ -113,8 +113,26 @@ def run_with_prefix_cache(
     with torch.no_grad():
         output = model(new_ids, past_key_values=past, use_cache=True)
 
+    start_chunk = match.matched_chunks
+    num_complete_chunks = len(token_ids) // cache.chunk_size
+
+    start_token = start_chunk * cache.chunk_size
+    end_token = num_complete_chunks * cache.chunk_size
+
     # `past` now holds the reused KV plus the KV of the tokens just computed.
-    cache.store(token_ids, split_kv(cache_to_layers(past), cache.chunk_size))
+    new_layers = [
+        (
+            key[:, start_token:end_token],
+            value[:, start_token:end_token]
+        )
+        for key, value in cache_to_layers(past)
+    ]
+
+    cache.store(
+        token_ids,
+        split_kv(new_layers, cache.chunk_size),
+        start_chunk=start_chunk
+    )
 
     return ReuseResult(
         logits=output.logits,

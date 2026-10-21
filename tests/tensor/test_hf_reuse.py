@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
@@ -178,3 +179,25 @@ def test_layers_without_kv_tensors_are_rejected():
 
     with pytest.raises(ValueError, match="attention"):
         cache_to_layers(fake_cache)
+
+
+def test_repeated_and_extended_requests_only_write_new_chunks(model, cache):
+    first_prompt = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    second_prompt = [1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16]
+
+    with patch.object(cache.storage, "put", wraps=cache.storage.put) as put:
+        first = run_with_prefix_cache(model, cache, first_prompt)
+        assert first.matched_tokens == 0
+        assert first.computed_tokens == 12
+        assert put.call_count == 3
+
+        put.reset_mock()
+
+        second = run_with_prefix_cache(model, cache, second_prompt)
+        assert second.matched_tokens == 8
+        assert second.computed_tokens == 4
+        put.assert_called_once()
+
+        match = cache.lookup(second_prompt)
+        assert match.matched_chunks == 3
+        assert put.call_args.args[0] == match.keys[-1]
