@@ -49,8 +49,10 @@ Done (pure Python, no GPU dependency):
       survives restarts (`storage/disk.py`, M4)
 - [x] Write-through tiered storage `TieredStorage`, memory in front of
       disk (`storage/tiered.py`, M5)
-- [x] Runnable demos (`examples/`) and architecture notes
-      (`docs/architecture.md`)
+- [x] O(log n) leaf-heap eviction with the exact same LRU order (M2) and
+      byte-based capacity for the memory backend (M3)
+- [x] Runnable demos (`examples/`), architecture notes
+      (`docs/architecture.md`), and a glossary and FAQ (`docs/glossary.md`)
 
 Done (optional torch / GPU layer):
 
@@ -90,14 +92,24 @@ open an issue to discuss it.
 | I3 | Benchmark scaffolding | Easy | No | – | Done |
 | **Mini: cache behavior (pure Python)** | | | | | |
 | M1 | Eviction metrics | Easy | No | – | Done |
-| M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Open (needs rework, see below) |
-| M3 | Byte-based capacity | Medium | No | – | Open |
+| M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Done |
+| M3 | Byte-based capacity | Medium | No | – | Done |
 | M4 | Local disk backend | Medium | No | – | Done |
 | M5 | Tiered memory + disk storage | Hard | No | M4 | Done |
+| M6 | Skip rewriting chunks that are already cached | Easy | No | – | Open |
+| M7 | Detect corrupted disk entries | Easy | No | – | Open |
+| M8 | Cache inspector CLI | Easy | No | – | Open |
+| M9 | Byte-based capacity for the disk backend | Medium | No | – | Open |
+| M10 | Thread-safe storage | Medium | No | – | Open |
+| M11 | Pluggable eviction policies | Hard | No | – | Open |
+| M12 | Shared cache server for several processes | Hard | No | M10 | Open |
 | **GPU: real KV tensors** | | | | | |
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
 | G2 | GPU to CPU offload backend | Hard | Yes | G1 | Done |
 | G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Open |
+| G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Open |
+| G5 | Compress cached KV with int8 quantization | Medium | No | – | Open |
+| G6 | Model-aware cache namespaces | Easy | No | – | Open |
 | **vLLM integration** | | | | | |
 | V0 | vLLM KV connector research notes | Medium | No | – | Open |
 | V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Open |
@@ -107,23 +119,12 @@ open an issue to discuss it.
 | V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Open |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
-| D2 | Step-by-step tutorial | Medium | No | – | Open |
-| D3 | Concept map: nano-lmcache ↔ LMCache ↔ vLLM | Medium | No | V0 | Open |
-| D4 | Animation: one `store` and one `lookup` step by step | Medium | No | D1 | Open |
-| D5 | Animation: why eviction must be prefix-safe | Medium | No | D1 | Open |
-| D6 | Visualization: why only prefixes can be reused | Medium | No | – | Open |
-| D7 | Jupyter notebooks for each tutorial chapter | Medium | No | D2 | Open |
-| D8 | Exercises with hidden tests and reference solutions | Medium | No | D2 | Open |
-| D9 | Glossary and FAQ | Easy | No | – | Open |
-| D10 | Illustration: vLLM paged KV cache vs. nano-lmcache chunks | Medium | No | V0 | Open |
+| D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Open |
 
-**Good first contributions:** M3, D2, D9, D11, and V0 (reading source, no GPU).
-**Most wanted next:** G3 (all its prerequisites are done) and V0, which
-unblocks the whole vLLM track.
-
-Teaching material (animations, notebooks, exercises, translations) is as
-welcome as code. See the D tasks below.
+**Good first contributions:** M6, M7, M8, G6, and V0 (no GPU needed).
+**Most wanted next:** V0, which unblocks the whole vLLM track, and M6, a
+quick win for every disk-backed run.
 
 **Dependencies:**
 
@@ -136,12 +137,7 @@ graph LR
   G1 --> V3
   M4 --> M5
   I3 --> M2
-  V0 --> D3
-  D1 --> D4
-  D1 --> D5
-  D2 --> D7
-  D2 --> D8
-  V0 --> D10
+  M10 --> M12
 ```
 
 ---
@@ -214,6 +210,9 @@ alone can hide problems.
 
 ### M2: Make eviction cheaper than a linear scan
 
+**Status: done** (leaf heap in `storage/eviction.py`,
+`docs/eviction-performance.md`).
+
 `PrefixLRUIndex._find_victim` (shared by the memory, disk, and CPU
 offload backends) scans from the oldest entry looking for the
 first leaf, which is O(n) in the worst case.
@@ -244,6 +243,8 @@ Acceptance criteria:
   leave it.
 
 ### M3: Byte-based capacity
+
+**Status: done** (`max_bytes` in `MemoryKVCache` and `PrefixLRUIndex`).
 
 Real systems limit a cache by memory size, not by entry count.
 
@@ -298,6 +299,180 @@ Acceptance criteria:
 - A prefix evicted from the memory tier still hits from the disk tier.
 - The two tiers together still satisfy the prefix-safety invariant.
 - Docs explain the write and promotion policies chosen and their costs.
+
+### M6: Skip rewriting chunks that are already cached
+
+`run_with_prefix_cache` (`tensor/hf.py`) ends by calling
+`cache.store(token_ids, ...)` for **every** complete chunk, including the
+ones `lookup` just matched. For `MemoryKVCache` that only refreshes
+recency, but `DiskKVCache.put` re-serializes the payload, rewrites the
+file and `fsync`s it. A request that reuses 90% of its prompt still pays
+to write 100% of it.
+
+To do: let a caller store only the chunks after a prefix it knows is
+cached, for example `ChunkedPrefixCache.store(..., start_chunk=n)`, where
+chunk keys before `n` are still computed (to chain parent keys) but not
+written. Use it from `run_with_prefix_cache`, and skip splitting the
+reused chunks too. Decide and document what happens if a prefix chunk was
+evicted between `lookup` and `store`. Hint: its children are then rejected
+as having a missing parent, which is safe but worth explaining.
+
+Acceptance criteria:
+
+- A test with a storage wrapper that counts `put` calls shows that
+  repeating a request writes nothing new, and extending a cached prompt
+  writes only the new chunks.
+- The step list in the `run_with_prefix_cache` docstring is updated.
+
+What you learn: the cost of a cache is not only lookups; write
+amplification can eat the savings.
+
+### M7: Detect corrupted disk entries
+
+Entry files can be damaged by a full disk, a bad sector, or someone
+editing the directory. `_recover` only checks that a file's header
+parses, so a damaged payload is found later, inside `get`, where
+`serializer.loads` raises and the whole lookup crashes. A cache must never
+take serving down: a damaged entry should simply be a miss.
+
+To do: record a checksum of the payload in the header (compare SHA-256
+with `zlib.crc32` and justify your choice), verify it on `get` and during
+recovery, and on a mismatch delete the entry. Careful: deleting an entry
+that has children would strand them, breaking the prefix-safety
+invariant, so the entry's whole subtree must go. `PrefixLRUIndex` needs a
+way to discard a key and its descendants. Count corrupted entries in
+`StorageStats`. Decide what to do with files written before this change
+(no checksum) and document it.
+
+Acceptance criteria:
+
+- Tests flip a byte in and truncate an entry file: `lookup` returns the
+  prefix before the damaged chunk instead of raising, the damaged entry
+  and its descendants are deleted, and the invariant holds.
+- The corrupted-entry counter is tested.
+
+What you learn: production caches treat their own storage as untrusted
+input.
+
+### M8: Cache inspector CLI
+
+Add `python -m nano_lmcache.inspect <directory>`, which prints what a
+`DiskKVCache` directory holds:
+
+- the number of entries and total bytes;
+- the prefix chains as a tree (roots, depth, fan-out);
+- the leaves in LRU order, which are the next eviction victims.
+
+It must be **read-only**. Opening a `DiskKVCache` cleans up the directory,
+so the tool has to read the entry files itself. Add a `--json` flag for
+machine-readable output.
+
+Acceptance criteria:
+
+- Tests build a directory with `DiskKVCache`, run the inspector, and check
+  its output.
+- A test shows the inspector changes no files: the listing, contents, and
+  mtimes are unchanged.
+- The README mentions the tool.
+
+What you learn: making a data structure's invariants visible is the
+fastest way to debug it.
+
+### M9: Byte-based capacity for the disk backend
+
+M3 added `max_bytes` to `MemoryKVCache` only. On disk, the scarce
+resource is disk space, and size is exact: the entry file's length
+(header plus payload).
+
+To do: add `max_bytes` to `DiskKVCache`, passing each file's size to
+`PrefixLRUIndex.admit`. On restart, recover sizes from the files with
+`restore(..., size_bytes=...)`. Opening a directory that already exceeds
+the limit should behave like the existing `max_entries` check.
+
+Acceptance criteria:
+
+- `tests/unit/test_backend_contract.py` and the disk tests pass, with
+  byte-limited variants added.
+- `nbytes` is identical before and after a restart.
+- Randomized tests show the prefix-safety invariant holds under byte
+  pressure, as in `tests/unit/test_byte_capacity.py`.
+
+### M10: Thread-safe storage
+
+A serving engine handles requests on several threads, but no backend has
+a lock. Python's GIL does not make compound operations atomic: two
+threads can both see room in `PrefixLRUIndex.admit` and exceed the
+limit, or one can evict an entry while another is reading its file.
+
+To do: make `MemoryKVCache`, `DiskKVCache`, and `TieredStorage` safe
+under concurrent `put` and `get`. Choose the lock granularity (one lock
+per backend, or inside the index) and explain the trade-off. For the disk
+backend, decide which file I/O may happen outside the lock and why that
+is safe.
+
+Acceptance criteria:
+
+- A stress test runs many threads doing random `store` and `lookup`
+  through `ChunkedPrefixCache` on each backend, then checks the capacity
+  limits, the prefix-safety invariant, and that the stats add up.
+- The PR shows that the stress test fails, or can fail, without the locks.
+- Docs explain what is now thread-safe and what is still not
+  multi-process-safe.
+
+What you learn: correctness under concurrency has to be designed, not
+assumed.
+
+### M11: Pluggable eviction policies
+
+`PrefixLRUIndex` hard-codes LRU among leaves. Prefix safety (only leaves,
+the incoming chain protected) is the mechanism; which leaf goes first is
+a policy, and LRU is not obviously the best one for prefix caching. A
+long, unique tail is less likely to be reused than a short shared system
+prompt.
+
+To do: separate the policy from the mechanism behind a small interface.
+Keep today's LRU heap as the default, and implement at least one
+alternative, such as LFU, FIFO, or deepest-leaf-first. Extend
+`benchmarks/bench_prefix_cache.py` with a workload of shared system
+prompts and diverse tails, and compare hit rates.
+
+Acceptance criteria:
+
+- The default behavior is unchanged: `tests/unit/test_bounded_memory.py`
+  and the eviction tests pass unmodified.
+- Each policy has randomized tests that check the prefix-safety
+  invariant.
+- The PR reports hit rates per policy, and the docs explain when each one
+  wins.
+
+What you learn: separating mechanism from policy, and measuring a policy
+on a realistic workload.
+
+### M12: Shared cache server for several processes
+
+`MemoryKVCache` lives inside one process, and `DiskKVCache` allows only
+one writer per directory. LMCache shares KV between engine instances
+through a cache server. Build a minimal one using only the standard
+library:
+
+- `nano_lmcache.server`: serves any `CacheStorage` over TCP.
+- `RemoteKVCache`: a client that implements `CacheStorage`, using a small
+  length-prefixed protocol (`PUT key parent payload`, `GET key`) and a
+  `Serializer` for payloads.
+
+A prefix lookup walks chunks one at a time, so each chunk costs a network
+round trip. Add a batched request, or a server-side prefix lookup, and
+measure the difference.
+
+Acceptance criteria:
+
+- A test starts the server on localhost in a thread and shows that two
+  clients share entries.
+- `RemoteKVCache` passes the backend contract tests.
+- A server that is down or unreachable behaves as a miss, not a crash.
+- The PR includes a benchmark comparing per-chunk and batched lookups.
+
+What you learn: what a remote KV tier costs, and why batching matters.
 
 ---
 
@@ -378,6 +553,75 @@ explain how it depends on model size and GPU bandwidth.
 
 What you learn: knowing when caching is worth it matters more than
 implementing the cache itself.
+
+### G4: Byte-based capacity for CPU offload
+
+`CPUOffloadKVCache` reports `nbytes` but can only limit entries. Pinned
+host memory is the scarce resource here, and tensor sizes are exact
+(`tensor.nbytes`), unlike the `sys.getsizeof` default in the memory
+backend.
+
+To do: add `max_bytes` to `CPUOffloadKVCache`, passing each tensor's
+size to `PrefixLRUIndex.admit`.
+
+Acceptance criteria:
+
+- Tests in the tensor group run on a CPU (`device="cpu",
+  pin_memory=False`) and cover multi-entry eviction and oversized
+  tensors.
+- The prefix-safety invariant is tested under byte pressure.
+- A `TieredStorage` with a byte-limited offload tier in front of disk
+  still passes the tiered tests.
+
+### G5: Compress cached KV with int8 quantization
+
+KV chunks are large: layers × 2 × heads × tokens × head_dim, at 2 bytes
+per value in fp16. LMCache's CacheGen work compresses KV before storing
+it. Start simple, with int8 quantization.
+
+To do: add an opt-in `QuantizedTensorSerializer` that stores int8 values
+plus scales and decodes back to the original dtype. Choose the scale
+granularity (per tensor, per head, or per channel) and justify it.
+Measure:
+
+- compression ratio;
+- encode and decode time;
+- the maximum K/V error;
+- most importantly, the effect on the model: compare logits and greedy
+  tokens of a reused run against a full recompute, with the G1 setup.
+
+Acceptance criteria:
+
+- CPU-runnable tests with a tiny model.
+- The PR reports the numbers above.
+- Docs explain when the error is acceptable and why this is never on by
+  default.
+
+What you learn: lossy KV compression is a trade between storage and
+accuracy, and only the model's output can judge it.
+
+### G6: Model-aware cache namespaces
+
+The namespace is the only thing that keeps KV from different models
+apart, and today the caller can pass any string. Reusing KV computed by
+another model, revision, or dtype silently produces wrong outputs.
+
+To do: add `namespace_for(model)` in `tensor/hf.py`, which derives a
+stable namespace (for example a hash of sorted JSON) from what determines
+KV: model name and revision, dtype, layer, head, and head-size counts,
+and RoPE settings. Explain which config fields matter and which do not:
+generation settings, for example, do not change KV. Use the helper in
+`examples/demo_kv_reuse.py`.
+
+Acceptance criteria:
+
+- Tests with a tiny model show that the namespace is identical across
+  processes, and changes when the dtype or a KV-relevant config field
+  changes.
+- The core package still never imports torch.
+
+What you learn: a cache key must capture everything that determines the
+cached value.
 
 ---
 
@@ -477,77 +721,9 @@ Add mermaid diagrams to `docs/architecture.md` showing the current module
 relationships and the data flow of one `lookup` and one `store`. GitHub
 renders mermaid directly.
 
-### D2: Step-by-step tutorial
-
-Write one chapter per concept under `docs/tutorial/`: why reuse KV →
-chunking → prefix-aware keys → continuous prefix matching → why eviction
-must be prefix-safe → real tensors (after G1) → vLLM integration (after
-V4). Each chapter maps to a piece of code and ends with a small hands-on
-exercise.
-
-### D3: Concept map: nano-lmcache ↔ LMCache ↔ vLLM
-
-For each nano-lmcache concept, list the corresponding module or class in
-the LMCache and vLLM source, and explain what nano-lmcache deliberately
-simplifies. This lets people who finish the project go straight to
-reading the real systems.
-
-### D4: Animation: one `store` and one `lookup` step by step
-
-Make the data flow in `docs/architecture.md` move. Show a prompt being
-split into chunks, each chunk getting its prefix-aware key, and then the
-entries appearing in storage (`store`) or being matched one after another
-until the first miss (`lookup`).
-
-Format is open, as long as it can be viewed without installing anything
-heavy: a self-contained HTML/JS page, an animated SVG, or a GIF generated
-by a script kept in the repo (for example with Manim or matplotlib). Put
-it under `docs/animations/` and embed or link it from the README or
-architecture doc.
-
-Acceptance criteria: the animation uses the real chunking function (or
-data produced by it), not hand-drawn numbers that could drift from the
-code, and the source that generates it is committed.
-
-### D5: Animation: why eviction must be prefix-safe
-
-Show a chain of chunks `A → B → C → D` and what goes wrong if the oldest
-entry (`A`) is evicted first: `B`, `C`, `D` stay in storage but can never
-be matched. Then show the leaf-only policy, step by step, with capacity
-pressure. Same format and placement rules as D4.
-
-Acceptance criteria: the final frame states the invariant ("every stored
-entry has its whole ancestor chain stored") and links to the test that
-enforces it.
-
-### D6: Visualization: why only prefixes can be reused
-
-Explain visually that a token's KV depends on every earlier token and on
-its position, so the same tokens after a different prefix produce
-different KV. A heatmap or arrow diagram of causal attention works well.
-It could also be an interactive page where the reader edits the first
-token and sees which chunk keys change.
-
-Acceptance criteria: ties back to the negative test in G1 and to why the
-chunk key hashes in the parent key.
-
-### D7: Jupyter notebooks for each tutorial chapter
-
-For each D2 chapter, add a notebook under `notebooks/` that runs the real
-code cell by cell with printed intermediate values (chunks, keys, hit
-counts, cache contents). Notebooks must run on CPU, use only the core
-package unless the chapter is about tensors, and have outputs cleared in
-git (or be checked by CI with `nbmake`/`nbval`).
-
-### D8: Exercises with hidden tests and reference solutions
-
-Turn the "small hands-on exercise" at the end of each D2 chapter into a
-real exercise: a stub file with `TODO`s, tests the learner can run, and a
-separate reference solution. Exercises must not break the main test
-suite (for example by living under `exercises/` and being excluded from
-default collection).
-
 ### D9: Glossary and FAQ
+
+**Status: done** (`docs/glossary.md`).
 
 Write `docs/glossary.md` (KV cache, prefill, decode, TTFT, chunk, prefix,
 leaf, eviction, paged attention, ...) and an FAQ for questions newcomers
@@ -555,16 +731,9 @@ keep asking ("Why not cache by full prompt?", "Why is reuse sometimes
 slower?"). Each entry should be short and link to the code or chapter
 that explains it.
 
-### D10: Illustration: vLLM paged KV cache vs. nano-lmcache chunks
-
-Draw how a request's tokens map onto vLLM blocks, block tables, and slot
-mapping, and how those relate to nano-lmcache chunks, including the
-`chunk_size` vs. `block_size` alignment question. Complements the V0
-notes and prepares readers for V2 to V4.
-
 ### D11: Chinese translation of README and docs
 
-Translate the README, architecture doc, and tutorial into Chinese (for
+Translate the README and architecture doc into Chinese (for
 example `README.zh-CN.md`, `docs/zh-CN/`). Keep the English version the
 source of truth: each translated file should state which English commit
 it was translated from, so drift is easy to spot.
@@ -574,11 +743,12 @@ it was translated from, so drift is easy to spot.
 ## Hardware
 
 - The I, M, and D tasks, plus V0, need only an ordinary computer.
-- G1 can be done on a CPU; G2 and G3 need an NVIDIA GPU.
+- G1, G5, and G6 can be done on a CPU, and so can G4 (with
+  `pin_memory=False`); G2 and G3 need an NVIDIA GPU.
 - On Linux, `torch` comes from the CUDA 12.4 wheel index, which runs on
   NVIDIA drivers >= 525. Check with
   `uv run python -c "import torch; print(torch.cuda.is_available())"`.
 - V1 to V5 need an NVIDIA GPU that can run vLLM. A small model around
   0.5B parameters is enough, so memory requirements are modest.
-- Without a GPU you can still do V0 and D3, which are about reading
-  source and writing docs, and are just as valuable.
+- Without a GPU you can still do all M tasks, G4 to G6, and V0, which is
+  about reading vLLM's source and is just as valuable.
