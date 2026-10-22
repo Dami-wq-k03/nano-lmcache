@@ -41,6 +41,8 @@ uv run python examples/demo_chunking.py       # chunk keys in isolation
 uv run python examples/demo_prefix_cache.py   # full cache loop + metrics
 uv run python examples/demo_disk_cache.py     # run twice: reuse across restarts
 uv run python examples/demo_tiered_storage.py # memory in front of disk
+uv run python -m nano_lmcache.inspect /path/to/cache  # inspect disk cache
+uv run python -m nano_lmcache.inspect /path/to/cache --json  # JSON output
 ```
 
 With a real model (needs `uv sync --extra hf`):
