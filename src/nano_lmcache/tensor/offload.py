@@ -42,13 +42,14 @@ class CPUOffloadKVCache:
         *,
         device: str | torch.device = "cuda",
         max_entries: int | None = None,
+        max_bytes: int | None = None,
         pin_memory: bool = True,
         non_blocking: bool = True,
     ) -> None:
         self._device = torch.device(device)
         self._pin_memory = pin_memory
         self._non_blocking = non_blocking
-        self._index = PrefixLRUIndex(max_entries)
+        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
         self._tensors: dict[str, torch.Tensor] = {}
 
     @property
@@ -59,6 +60,11 @@ class CPUOffloadKVCache:
     @property
     def max_entries(self) -> int | None:
         return self._index.max_entries
+
+    @property
+    def max_bytes(self) -> int | None:
+        """Payload byte limit, or None when unbounded."""
+        return self._index.max_bytes
 
     @property
     def stats(self) -> StorageStats:
@@ -99,7 +105,7 @@ class CPUOffloadKVCache:
                 f"CPUOffloadKVCache stores tensors, got {type(value).__name__}"
             )
 
-        decision = self._index.admit(key, parent_key)
+        decision = self._index.admit(key, parent_key, size_bytes=value.nbytes)
         for victim in decision.evicted:
             # The caching host allocator only reuses this pinned buffer once
             # any copy still using it has finished, so dropping it is safe.
