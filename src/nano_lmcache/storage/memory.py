@@ -78,6 +78,12 @@ class MemoryKVCache:
         *,
         parent_key: str | None = None,
     ) -> None:
+        self.try_put(key, value, parent_key=parent_key)
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool:
+        """Store if admitted; return False without replacing a rejected value."""
         # Measure and validate before changing recency, values, or capacity.
         # This also measures writes later rejected for a missing parent.
         decision = self._index.admit(key, parent_key, size_bytes=self._size_fn(value))
@@ -86,6 +92,12 @@ class MemoryKVCache:
 
         if decision.admitted:
             self._values[key] = value
+        return decision.admitted
+
+    def invalidate(self, key: str) -> None:
+        """Remove a stale entry and its descendants, preserving prefix safety."""
+        for victim in self._index.invalidate(key):
+            del self._values[victim]
 
     def get(self, key: str) -> object | None:
         if key not in self._values:

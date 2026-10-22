@@ -164,6 +164,25 @@ class PrefixLRUIndex:
             self._add(key, parent_key, size_bytes)
         return Admission(admitted=True, evicted=tuple(evicted))
 
+    def invalidate(self, key: str) -> tuple[str, ...]:
+        """Remove a subtree, counting each removed entry as an eviction."""
+        if key not in self._parents:
+            return ()
+        children: dict[str, list[str]] = {}
+        for child, parent in self._parents.items():
+            if parent is not None:
+                children.setdefault(parent, []).append(child)
+        subtree = [key]
+        for parent in subtree:
+            subtree.extend(children.get(parent, ()))
+        # Recency need not put parents before children. Traverse the tree,
+        # then remove leaves first so _remove keeps child counts consistent.
+        victims = tuple(reversed(subtree))
+        for victim in victims:
+            self._remove(victim)
+            self._stats.evictions += 1
+        return victims
+
     def restore(self, key: str, parent_key: str | None, *, size_bytes: int = 0) -> None:
         """Re-add an entry that already exists, for example after a restart.
 

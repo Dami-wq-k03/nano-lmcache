@@ -153,3 +153,51 @@ def test_tiered_disk_fallback_and_prefix_safe_promotion(tmp_path, budget):
     assert tiered.tier_stats.fast_hits == budget // 2
     assert tiered.get("missing") is None
     assert tiered.tier_stats.misses == 1
+
+
+@pytest.mark.parametrize("size", [2, 3])
+def test_tiered_overwrite_returns_latest_value(tmp_path, size):
+    fast = make_cache(max_bytes=2)
+    slow = DiskKVCache(tmp_path, serializer=TensorSerializer())
+    tiered = TieredStorage(fast=fast, slow=slow)
+    tiered.put("a", payload(2))
+    replacement = payload(size) * 2
+    tiered.put("a", replacement)
+
+    assert torch.equal(slow.get("a"), replacement)
+    assert ("a" in fast) == (size == 2)
+    assert fast.nbytes == (2 if size == 2 else 0)
+    for _ in range(3):
+        assert torch.equal(tiered.get("a"), replacement)
+    assert tiered.tier_stats == (
+        TierStats(fast_hits=3) if size == 2 else TierStats(slow_hits=3)
+    )
+    assert fast.stats.rejected_no_room == (0 if size == 2 else 4)
+
+
+def test_rejected_parent_overwrite_invalidates_fast_subtree(tmp_path):
+    fast = make_cache(max_bytes=10)
+    tiered = TieredStorage(
+        fast=fast, slow=DiskKVCache(tmp_path, serializer=TensorSerializer())
+    )
+    for key, parent in [
+        ("a", None), ("b", "a"), ("c", "b"), ("d", "b"), ("x", None),
+    ]:
+        tiered.put(key, payload(2), parent_key=parent)
+    fast.get("b")  # Recency order is not a topological ordering.
+    tiered.put("b", payload(9) * 2)
+
+    assert_contents(fast, a=2, x=2)
+    assert fast.stats == StorageStats(evictions=3, rejected_no_room=1)
+    for key, size in [("b", 9), ("c", 2), ("d", 2), ("b", 9)]:
+        expected = payload(size) * (2 if key == "b" else 1)
+        assert torch.equal(tiered.get(key), expected)
+        assert_contents(fast, a=2, x=2)
+    assert tiered.tier_stats == TierStats(slow_hits=4)
+    assert fast.stats == StorageStats(
+        evictions=3, rejected_no_room=3, rejected_missing_parent=2
+    )
+    # a became a leaf again and retains its original LRU position.
+    tiered.put("y", payload(8))
+    assert_contents(fast, x=2, y=8)
+    assert fast.stats.evictions == 4

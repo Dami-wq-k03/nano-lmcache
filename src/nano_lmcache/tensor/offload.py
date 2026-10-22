@@ -99,6 +99,12 @@ class CPUOffloadKVCache:
         *,
         parent_key: str | None = None,
     ) -> None:
+        self.try_put(key, value, parent_key=parent_key)
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool:
+        """Store if admitted; return False without replacing a rejected value."""
         # Check before touching the index, so a bad payload evicts nothing.
         if not isinstance(value, torch.Tensor):
             raise TypeError(
@@ -112,7 +118,7 @@ class CPUOffloadKVCache:
             del self._tensors[victim]
 
         if not decision.admitted:
-            return
+            return False
 
         held = torch.empty(
             value.shape,
@@ -125,6 +131,12 @@ class CPUOffloadKVCache:
         # change the cached data by modifying their own tensor.
         held.copy_(value, non_blocking=self._non_blocking and self._pin_memory)
         self._tensors[key] = held
+        return True
+
+    def invalidate(self, key: str) -> None:
+        """Remove a stale entry and its descendants, preserving prefix safety."""
+        for victim in self._index.invalidate(key):
+            del self._tensors[victim]
 
     def get(self, key: str) -> torch.Tensor | None:
         held = self._tensors.get(key)

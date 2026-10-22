@@ -396,6 +396,13 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
   first, so the parent is normally promoted just before its child. If the
   fast tier refuses the parent (no room), it also refuses the child, and
   the slow tier keeps serving both.
+- **Rejected overwrites**: `MemoryKVCache` and `CPUOffloadKVCache` expose
+  `try_put` to report admission and `invalidate` to remove a key with its
+  descendants. If the fast tier rejects an overwrite, `TieredStorage`
+  invalidates that subtree so reads use the updated slow copy. Removed
+  entries count as evictions; unrelated entries retain their recency.
+  Standalone `put` still preserves the old payload on rejection. Custom
+  fast tiers that can reject overwrites should implement these methods.
 - **Invariant**: each tier keeps whole chains on its own, so their union
   does too. A randomized test checks this after every step.
 
