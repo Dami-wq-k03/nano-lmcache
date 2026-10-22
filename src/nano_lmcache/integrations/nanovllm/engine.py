@@ -211,6 +211,29 @@ def attach(llm: Any, external: NanoVLLMExternalCache) -> ExternalBlockManager:
     return manager
 
 
+
+def detach(llm: Any) -> BlockManager:
+    """Give the engine back plain nano-vLLM behavior, with an empty L1.
+
+    Installs a fresh nano-vLLM `BlockManager` and the original
+    `ModelRunner.run`, so nothing is restored from or stored into L2. The
+    L2 storage itself is untouched; `attach` it again to use it. Useful as
+    the no-cache baseline in tests and benchmarks: every prompt is then
+    computed in full.
+    """
+    if not llm.scheduler.is_finished():
+        raise RuntimeError("detach() while the engine has requests")
+
+    runner = llm.model_runner
+    previous = llm.scheduler.block_manager
+    plain = BlockManager(len(previous.blocks), previous.block_size)
+    llm.scheduler.block_manager = plain
+    original = getattr(runner, "_nano_lmcache_original_run", None)
+    if original is not None:
+        runner.run = original
+    return plain
+
+
 def _wrap_run(runner: Any, manager: ExternalBlockManager) -> None:
     """Copy fetched L2 payloads into the KV cache before every forward pass.
 

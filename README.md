@@ -71,10 +71,11 @@ New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for shor
    and disk and tiered memory + disk backends.
 3. **GPU** (done): Real KV tensors verified against a real model, GPU to
    CPU offload, and a GPU -> CPU -> disk hierarchy.
-4. **nano-vLLM integration** (in progress): nano-lmcache as the external
-   KV cache behind [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)'s
-   GPU prefix cache. Design:
-   [docs/nanovllm-integration.md](docs/nanovllm-integration.md).
+4. **nano-vLLM integration** (version 1 done, follow-ups open): nano-lmcache
+   as the external KV cache behind
+   [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)'s GPU prefix
+   cache. Design: [docs/nanovllm-integration.md](docs/nanovllm-integration.md);
+   when it pays off: [docs/nanovllm-benchmark.md](docs/nanovllm-benchmark.md).
 
 See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
 contributors to claim.

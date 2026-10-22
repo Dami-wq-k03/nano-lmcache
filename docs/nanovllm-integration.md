@@ -33,7 +33,8 @@ nano-lmcache does not replace L1; it only answers for blocks L1 does not
 have. An L1 hit is free: the block is already where attention reads it.
 **An L2 hit is not free**: the block has to be read from CPU memory or
 disk and copied into a GPU block before the forward pass. L2 pays off
-when that copy costs less than recomputing the block, which N4 measures.
+when that copy costs less than recomputing the block, which N4 measures
+([nanovllm-benchmark.md](nanovllm-benchmark.md)).
 
 ## What nano-vLLM looks like at `bb823b3`
 
@@ -290,29 +291,32 @@ is copied into nano-vLLM.
 
 ### What version 1 costs
 
-Measured with `examples/demo_nanovllm.py` (Qwen3-0.6B, bfloat16, one RTX
-4090, PCIe, 28 MiB per block), after warming up `torch.compile`:
+Measured by `benchmarks/bench_nanovllm.py` (Qwen3-0.6B, bfloat16, one RTX
+4090, 28 MiB per block); the full results and their explanation are in
+[nanovllm-benchmark.md](nanovllm-benchmark.md).
 
-| Step | Time |
+| Step | Time per block |
 | --- | --- |
-| Compute a 1,306-token prompt from scratch (5 complete blocks) | ~50 ms |
-| Store one block in `DiskKVCache` (serialize, write, `fsync`) | ~330 ms |
-| Read one block back from `DiskKVCache` (and promote it to memory) | ~20 to 50 ms |
-| Copy one block from CPU memory into the GPU KV cache | ~4 to 10 ms |
-| Same prompt in a new process, 5 blocks restored from disk | ~195 ms to first token |
+| Recompute a block (once prefill outgrows its ~45 to 55 ms floor) | ~1.5 to 2.5 ms |
+| Load a block from pinned CPU memory into the GPU KV cache | ~1.3 ms |
+| Load a block from `DiskKVCache`, page cache warm / cold | ~17 ms / ~150 ms |
+| Store a block in `CPUOffloadKVCache` / `DiskKVCache`, inside the request | ~5 to 9 ms / ~270 to 330 ms |
 
-Two consequences:
+Three consequences:
 
+- **A prefill step has a fixed floor.** nano-vLLM runs prefill eagerly, so
+  each step costs about 45 to 55 ms of launch overhead whatever its size.
+  Reuse, from L1 or L2, only shows once the prompt is long enough for
+  compute to exceed that: L2 in CPU memory is at least 10% faster than
+  recomputing from 4,096 reused tokens on.
+- **An L2 hit is not automatically faster.** For this model, reading a
+  block from disk costs far more than recomputing it, so the disk tier
+  never wins on latency here. What it always adds is reuse across
+  processes and restarts.
 - **Stores sit on the request's critical path.** `hash_blocks` runs inside
   the step, so a cold request with a disk-backed L2 waits for every new
-  block to be written; here that added ~1.9 s. Moving stores off the
-  critical path (a background writer, batched `fsync`) is the first
-  thing to change after version 1.
-- **An L2 hit is not automatically faster.** For a small model on a fast
-  GPU, recomputing a prompt is cheaper than reading it from disk. What L2
-  always adds is reuse across processes and restarts; whether it also
-  cuts latency depends on model size, prompt length, and the storage
-  tier. N4 measures exactly that.
+  block to be written. Moving stores off the critical path (a background
+  writer, batched `fsync`) is the first thing to change after version 1.
 
 Later: asynchronous stores and loads overlapped with compute, tensor
 parallelism (a namespace per rank, copies in every rank's process), and
@@ -326,4 +330,4 @@ scheduling that waits for L2 loads instead of blocking on them.
 | N1 | External prefix lookup over whole blocks, cache keys, and the model namespace (`integrations/nanovllm/layout.py`, `external_cache.py`) |
 | N2 | Restore: `ExternalBlockManager` and `attach()` (`integrations/nanovllm/engine.py`), rules 1 to 6 and 9 (done) |
 | N3 | Save: completed blocks exported in the `hash_blocks` hook and stored in L2, rules 7 and 8 (done) |
-| N4 | Correctness against a no-cache baseline, reuse across restarts, TTFT benchmarks (absorbs G3) |
+| N4 | Correctness against a no-cache baseline, reuse across restarts, TTFT benchmarks (absorbs G3), done: [nanovllm-benchmark.md](nanovllm-benchmark.md) |

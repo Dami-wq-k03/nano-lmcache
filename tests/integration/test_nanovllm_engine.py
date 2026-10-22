@@ -33,8 +33,11 @@ from nano_lmcache.integrations.nanovllm import (  # noqa: E402
 )
 from nano_lmcache.integrations.nanovllm.engine import (  # noqa: E402
     attach,
+    detach,
 )
+from nano_lmcache.storage.disk import DiskKVCache  # noqa: E402
 from nano_lmcache.storage.memory import MemoryKVCache  # noqa: E402
+from nano_lmcache.tensor.serializers import TensorSerializer  # noqa: E402
 
 pytestmark = pytest.mark.nanovllm
 
@@ -201,6 +204,52 @@ def test_attach_rejects_a_busy_engine():
 
     with pytest.raises(RuntimeError):
         attach(llm, NanoVLLMExternalCache(LAYOUT, MemoryKVCache()))
+
+
+def test_detach_gives_back_plain_nanovllm_with_an_empty_l1():
+    token_ids = prompt(3, extra=10)
+    reference = FakeLLM().generate([token_ids])
+    llm, external, manager = attached()
+    llm.generate([token_ids])
+
+    plain = detach(llm)
+
+    assert type(plain) is BlockManager
+    assert llm.scheduler.block_manager is plain
+    assert not plain.hash_to_block_id  # L1 starts empty
+    llm.model_runner.computed_tokens = 0
+    assert llm.generate([token_ids]) == reference
+    # Nothing came from L2 and nothing new went into it.
+    assert llm.model_runner.computed_tokens == len(token_ids) + 3
+    assert manager.stats.l2_hit_blocks == 0
+    assert len(external.storage) == 3
+
+
+def test_detach_then_attach_again_uses_l2():
+    token_ids = prompt(3, extra=10)
+    llm, external, _ = attached()
+    llm.generate([token_ids])
+    detach(llm)
+
+    manager = attach(llm, external)
+    llm.generate([token_ids])
+
+    assert manager.stats.l2_hit_blocks == 3
+
+
+def test_detach_works_on_an_engine_that_was_never_attached():
+    llm = FakeLLM()
+
+    assert type(detach(llm)) is BlockManager
+    assert llm.generate([prompt(1, extra=3)])
+
+
+def test_detach_rejects_a_busy_engine():
+    llm, _, _ = attached()
+    llm.scheduler.add(Sequence(prompt(1, extra=1)))
+
+    with pytest.raises(RuntimeError):
+        detach(llm)
 
 
 # ---- restoring --------------------------------------------------------
@@ -521,6 +570,20 @@ def llm():
     engine.exit()
 
 
+def empty_l1(engine, external):
+    """Attach a fresh block manager and scrub the GPU KV cache.
+
+    In one process, a fresh block manager hands out the same physical
+    blocks again, and they still hold the KV an earlier request computed.
+    A restore that copied nothing would then pass by accident. Filling the
+    whole KV cache with noise first means only blocks that were really
+    restored (or recomputed) hold correct KV.
+    """
+    manager = attach(engine, external)
+    engine.model_runner.kv_cache.normal_()
+    return manager
+
+
 def real_layout(engine):
     return KVBlockLayout.from_hf_config(
         engine.model_runner.config.hf_config, model="test-model", revision="local"
@@ -547,7 +610,7 @@ def test_real_engine_stores_restores_and_generates_the_same_tokens(llm):
     assert first.stats.stored_blocks == 3
 
     # A fresh block manager: L1 is empty, L2 has the prompt's blocks.
-    manager = attach(llm, external)
+    manager = empty_l1(llm, external)
     torch.manual_seed(0)
     (restored,) = llm.generate([token_ids], params, use_tqdm=False)
 
@@ -560,3 +623,117 @@ def test_real_engine_stores_restores_and_generates_the_same_tokens(llm):
     (warm,) = llm.generate([token_ids], params, use_tqdm=False)
     assert manager.stats.l1_hit_blocks == 3
     assert warm["token_ids"] == cold["token_ids"]
+
+
+# ---- N4: correctness against a no-cache baseline -----------------------
+#
+# Every test compares against `detach(llm)`: plain nano-vLLM with an empty
+# L1, so the whole prompt is computed. Generation uses a tiny temperature
+# (nano-vLLM forbids 0) and a fixed seed, because nano-vLLM breaks ties
+# between equally likely tokens with random noise.
+
+N4_PARAMS = SamplingParams(temperature=1e-6, max_tokens=12)
+
+
+def generate(engine, prompts):
+    torch.manual_seed(0)
+    return [out["token_ids"] for out in
+            engine.generate(prompts, N4_PARAMS, use_tqdm=False)]
+
+
+def no_cache(engine, prompts):
+    detach(engine)
+    return generate(engine, prompts)
+
+
+def document(engine, num_blocks, salt):
+    text = (f"Report {salt}: the committee reviewed budgets, schedules, and "
+            "staffing for the new library, the bridge repairs, and the park. ") * 120
+    return engine.tokenizer.encode(text)[: num_blocks * BLOCK]
+
+
+def question(engine, text):
+    return engine.tokenizer.encode(" Question: " + text + " Answer:")
+
+
+@pytest.mark.gpu
+def test_n4_a_batch_sharing_a_prefix_matches_no_cache(llm):
+    doc = document(llm, 3, "batch")
+    prompts = [doc + question(llm, "what was reviewed?"),
+               doc + question(llm, "which repairs are planned?")]
+    reference = no_cache(llm, prompts)
+    external = NanoVLLMExternalCache(real_layout(llm), MemoryKVCache())
+    attach(llm, external)
+    generate(llm, [prompts[0]])  # stores the shared document
+
+    manager = empty_l1(llm, external)  # empty L1: both requests restore
+    assert generate(llm, prompts) == reference
+    assert manager.stats.l2_hit_blocks == 3
+    # The second request of the batch found the blocks the first one
+    # restored, in L1 (or both restored them in the same step).
+    assert manager.stats.l1_hit_blocks + manager.stats.l2_hit_blocks >= 3
+
+
+@pytest.mark.gpu
+def test_n4_chunked_prefill_after_a_restore_matches_no_cache(llm):
+    token_ids = document(llm, 5, "chunked") + question(llm, "summarize")
+    reference = no_cache(llm, [token_ids])
+    external = NanoVLLMExternalCache(real_layout(llm), MemoryKVCache())
+    attach(llm, external)
+    generate(llm, [token_ids[: 2 * BLOCK + 5]])  # L2 gets the first 2 blocks
+
+    manager = empty_l1(llm, external)
+    budget = llm.scheduler.max_num_batched_tokens
+    llm.scheduler.max_num_batched_tokens = 300  # tail prefilled in chunks
+    try:
+        assert generate(llm, [token_ids]) == reference
+    finally:
+        llm.scheduler.max_num_batched_tokens = budget
+    assert manager.stats.l2_hit_blocks == 2
+    assert manager.stats.prefill_tokens == len(token_ids) - 2 * BLOCK
+
+
+@pytest.mark.gpu
+def test_n4_a_capacity_limited_l2_restores_what_it_kept(llm):
+    token_ids = document(llm, 4, "capacity") + question(llm, "why?")
+    reference = no_cache(llm, [token_ids])
+    external = NanoVLLMExternalCache(real_layout(llm), MemoryKVCache(max_entries=2))
+    attach(llm, external)
+    generate(llm, [token_ids])
+
+    manager = empty_l1(llm, external)
+    assert generate(llm, [token_ids]) == reference
+    assert manager.stats.l2_hit_blocks == 2
+
+
+@pytest.mark.gpu
+def test_n4_disk_l2_survives_a_restart_and_matches_no_cache(llm, tmp_path):
+    token_ids = document(llm, 3, "restart") + question(llm, "when?")
+    reference = no_cache(llm, [token_ids])
+    layout = real_layout(llm)
+    attach(llm, NanoVLLMExternalCache(
+        layout, DiskKVCache(tmp_path, serializer=TensorSerializer())))
+    generate(llm, [token_ids])
+
+    # A restart: new storage objects over the same directory, empty L1.
+    reopened = DiskKVCache(tmp_path, serializer=TensorSerializer())
+    assert len(reopened) == 3
+    manager = empty_l1(llm, NanoVLLMExternalCache(layout, reopened))
+    assert generate(llm, [token_ids]) == reference
+    assert manager.stats.l2_hit_blocks == 3
+
+
+@pytest.mark.gpu
+def test_n4_l2_restore_and_l1_hit_give_identical_tokens(llm):
+    """Restored blocks are bit-exact copies, so L2 and L1 must agree exactly."""
+    token_ids = document(llm, 3, "exact") + question(llm, "who?")
+    reference = no_cache(llm, [token_ids])
+    external = NanoVLLMExternalCache(real_layout(llm), MemoryKVCache())
+    attach(llm, external)
+    generate(llm, [token_ids])
+
+    empty_l1(llm, external)
+    restored = generate(llm, [token_ids])
+    from_l1 = generate(llm, [token_ids])  # same manager: L1 now holds them
+
+    assert restored == from_l1 == reference

@@ -116,15 +116,18 @@ open an issue to discuss it.
 | N1 | External prefix lookup, cache keys, model namespace | Medium | No | N0 | Done |
 | N2 | Restore L2 hits into nano-vLLM's GPU blocks | Hard | Yes | N1 | Done |
 | N3 | Save newly completed KV blocks | Medium | Yes | N2 | Done |
-| N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Open |
+| N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
+| N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
+| N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Good first contributions:** M6, M7, M8, and G6 (no GPU needed).
-**Most wanted next:** N4, which measures when the nano-vLLM L2 cache pays
-off (needs a GPU), and M6, a quick win for every disk-backed run.
+**Good first contributions:** M7, M8, and G6 (no GPU needed).
+**Most wanted next:** N5, which takes the ~300 ms per block of disk writes
+out of time to first token, and N6, which makes the disk tier worth reading
+(see `docs/nanovllm-benchmark.md`).
 
 **Dependencies:**
 
@@ -132,6 +135,8 @@ off (needs a GPU), and M6, a quick win for every disk-backed run.
 graph LR
   I1 --> G1 --> G2
   I1 --> N0 --> N1 --> N2 --> N3 --> N4
+  N4 --> N5
+  N4 --> N6
   G2 --> N4
   M4 --> M5
   I3 --> M2
@@ -737,6 +742,15 @@ be reused.
 
 ### N4: Correctness, reuse across restarts, TTFT benchmarks
 
+**Status: done.** Real-engine tests (`tests/integration/test_nanovllm_engine.py`)
+compare L2 restores against a no-cache baseline for a batch sharing a
+prefix, chunked prefill, capacity-limited L2, and a disk-backed L2 across a
+restart; preemption is covered by the scheduler-level tests. The benchmark
+is `benchmarks/bench_nanovllm.py`, and the write-up
+[`docs/nanovllm-benchmark.md`](docs/nanovllm-benchmark.md): for Qwen3-0.6B
+on an RTX 4090, L2 in CPU memory pays off from 4,096 reused tokens, and
+the disk tier never beats recomputing.
+
 To do:
 
 - With greedy decoding (temperature 0), compare outputs with L2 hits
@@ -750,13 +764,42 @@ To do:
   from recomputing it, across prefix lengths (this absorbs G3).
 
 - Measure the cost of storing too: in version 1 stores are synchronous, so
-  a cold request with a disk-backed L2 waits for its blocks to be written
-  (about 1.9 s for five 28 MiB blocks with Qwen3-0.6B; see "What version
-  1 costs" in the design doc).
+  a cold request with a disk-backed L2 waits for its blocks to be written.
 
 Acceptance criteria: identical token outputs in every scenario, and a
 benchmark write-up in `docs/` with the crossover point where L2 reuse
 starts to pay off.
+
+### N5: Store blocks off the request's critical path
+
+Version 1 stores inside `hash_blocks`, so a cold request with a disk-backed
+L2 waits about 300 ms per block for serialization, writing, and `fsync`
+(`docs/nanovllm-benchmark.md`).
+
+To do: export blocks in `hash_blocks` as today (they must be copied before
+`postprocess` frees them, design rule 7), but hand the copies to a
+background writer that stores them. Decide and document what a lookup
+sees while a block is still queued, how many queued blocks are allowed
+(they hold memory), and what happens to the queue on shutdown.
+
+Acceptance criteria: with a disk-backed L2, the cold request's time to
+first token is within 10% of the no-cache time; every block still ends up
+stored exactly once; the N4 correctness tests still pass.
+
+### N6: Faster disk tier reads
+
+Reading a 28 MiB block from `DiskKVCache` costs about 17 ms from the page
+cache (10 ms copying the file into Python bytes, 7 ms in `torch.load`) and
+about 150 ms cold on the benchmark machine, against about 2 ms to recompute
+it.
+
+To do: remove copies on the read path, for example by memory-mapping the
+entry or reading straight into a pinned buffer, and measure the result with
+`benchmarks/bench_nanovllm.py` on the same machine. Keep the safety
+property: reading an entry must never run code from the file.
+
+Acceptance criteria: a lower page-cache read time per block, with numbers
+before and after; all disk backend tests still pass.
 
 ---
 
