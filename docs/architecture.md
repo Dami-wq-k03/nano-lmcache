@@ -358,17 +358,20 @@ lives in GPU memory and is lost on restart.
 
 - **File names** are the SHA-256 of the key, so no key can address a path
   outside the directory. Each file starts with a JSON header recording the
-  key and its `parent_key`, which is what lets a new process rebuild the
-  prefix chains.
+  key, its `parent_key`, and a CRC32 of its payload. The parent link lets a
+  new process rebuild prefix chains; the checksum turns a damaged payload
+  into a cache miss instead of a deserialization failure.
 - **Crash safety**: a write goes to a temporary file that is then renamed
   into place. A rename within one directory is atomic, so a crash leaves
   the old file, the new file, or a stray temp file, never half an entry.
   Evicted entries are always leaves, so deleting them one at a time never
   leaves an orphan behind.
-- **Recovery** on open deletes stray temp files, unreadable files, and
-  entries whose ancestors are missing, then rebuilds the `PrefixLRUIndex`
-  parents-first. File modification times record last use, so LRU order
-  also survives a restart.
+- **Recovery** on open deletes stray temp files, unreadable files, entries
+  whose payload checksum is missing or mismatched, and entries whose
+  ancestors are missing, then rebuilds the `PrefixLRUIndex` parents-first.
+  An entry written before checksum support is discarded and regenerated on
+  demand. File modification times record last use, so LRU order also
+  survives a restart.
 - **Serialization** is pluggable. The default is JSON, not `pickle`:
   unpickling runs code chosen by whoever wrote the file, and a cache
   directory is easy to share. For KV tensors use `TensorSerializer`

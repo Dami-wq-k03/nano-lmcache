@@ -115,6 +115,37 @@ class PrefixLRUIndex:
         self._parents.move_to_end(key)
         self._record_access(key)
 
+    def discard_subtree(self, key: str) -> tuple[str, ...]:
+        """Remove `key` and its descendants, returning children first.
+
+        This is for a backend that discovers an entry is unusable, rather
+        than capacity-driven eviction. Removing descendants before their
+        parent keeps the prefix chain valid after every individual removal.
+        It deliberately does not count as an eviction.
+        """
+        if key not in self._parents:
+            return ()
+
+        children: dict[str, list[str]] = {}
+        for child, parent in self._parents.items():
+            if parent is not None:
+                children.setdefault(parent, []).append(child)
+
+        discarded: list[str] = []
+        # True marks a node ready for post-order removal
+        pending = [(key, False)]
+        while pending:
+            current, visited = pending.pop()
+            if visited:
+                discarded.append(current)
+                continue
+            pending.append((current, True))
+            pending.extend((child, False) for child in children.get(current, ()))
+
+        for victim in discarded:
+            self._remove(victim)
+        return tuple(discarded)
+
     def admit(
         self, key: str, parent_key: str | None, *, size_bytes: int = 0
     ) -> Admission:

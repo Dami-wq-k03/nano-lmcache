@@ -101,6 +101,22 @@ def test_evictions_are_counted():
     assert index.stats.evictions == 2
 
 
+def test_discard_subtree_removes_a_key_and_its_descendants():
+    index = PrefixLRUIndex()
+    index.admit("a", None)
+    index.admit("b", "a")
+    index.admit("c", "b")
+
+    discarded = index.discard_subtree("b")
+
+    assert discarded == ("c", "b")
+    assert "a" in index
+    assert "b" not in index
+    assert "c" not in index
+    assert index.parent_of("a") is None
+    assert index.stats.evictions == 0
+
+
 def test_restore_rebuilds_without_eviction_or_stats():
     index = PrefixLRUIndex(max_entries=2)
 

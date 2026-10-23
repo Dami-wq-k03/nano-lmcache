@@ -7,7 +7,7 @@ server, or another process on the same machine, can reuse them.
 File layout, one file per key inside `directory`:
 
     <sha256(key)>.entry   = one JSON header line + "\\n" + payload bytes
-    header                = {"key": ..., "parent_key": ...}
+    header                = {"key": ..., "parent_key": ..., "payload_crc32": ...}
 
 The file name is a hash of the key rather than the key itself, so no key
 (not even "../x") can address a path outside the directory. The header
@@ -16,7 +16,9 @@ prefix chains. A file's modification time records when it was last used,
 so least-recently-used order also survives a restart.
 
 The directory belongs to the cache: on open, the cache deletes leftover
-temporary files, unreadable entries, and entries whose parent is gone.
+temporary files, entries with missing or mismatched payload checksums, and
+entries whose parent is gone. Entries written before checksums were added are
+discarded on open and regenerated as cache misses.
 
 Only one process should write to a directory at a time: each process
 keeps its own index, so two writers would evict without seeing each
@@ -27,8 +29,10 @@ import hashlib
 import json
 import os
 import time
+import zlib
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 from nano_lmcache.storage.eviction import PrefixLRUIndex
 from nano_lmcache.storage.serializers import JsonSerializer, Serializer
@@ -36,6 +40,21 @@ from nano_lmcache.storage.stats import StorageStats
 
 ENTRY_SUFFIX = ".entry"
 TEMP_SUFFIX = ".tmp"
+EntryHeader = dict[str, str | int | None]
+
+
+def _payload_crc32(payload: bytes) -> int:
+    """Return the unsigned CRC32 recorded for one entry payload."""
+    return zlib.crc32(payload) & 0xFFFFFFFF
+
+
+def _has_matching_payload_crc32(header: EntryHeader, payload: bytes) -> bool:
+    """Whether an entry has an exact integer CRC32 matching its payload."""
+    expected_crc32 = header.get("payload_crc32")
+    return (
+        type(expected_crc32) is int
+        and expected_crc32 == _payload_crc32(payload)
+    )
 
 
 class DiskKVCache:
@@ -79,7 +98,7 @@ class DiskKVCache:
 
     @property
     def stats(self) -> StorageStats:
-        """Eviction and rejection totals since this object was created."""
+        """Eviction, rejection, and corruption totals for this object."""
         return self._index.stats
 
     def __len__(self) -> int:
@@ -117,7 +136,11 @@ class DiskKVCache:
 
         # The chain position of an existing key never changes, so keep the
         # parent recorded at first admission.
-        header = {"key": key, "parent_key": self._index.parent_of(key)}
+        header = {
+            "key": key,
+            "parent_key": self._index.parent_of(key),
+            "payload_crc32": _payload_crc32(payload),
+        }
         self._write_atomically(self._path(key), header, payload)
         self._mark_used(self._path(key))
 
@@ -127,20 +150,36 @@ class DiskKVCache:
 
         path = self._path(key)
         try:
-            _, payload = self._read(path)
+            header, payload = self._read(path)
         except FileNotFoundError:
+            self._discard_subtree(key)
+            return None
+        except (OSError, ValueError, UnicodeDecodeError):
+            self._discard_subtree(key)
+            self._index.stats.corrupted_entries += 1
+            return None
+
+        if not _has_matching_payload_crc32(header, payload):
+            self._discard_subtree(key)
+            if "payload_crc32" in header:
+                self._index.stats.corrupted_entries += 1
             return None
 
         self._index.touch(key)
         self._mark_used(path)
         return self._serializer.loads(payload)
 
+    def _discard_subtree(self, key: str) -> None:
+        """Remove an unusable entry and every descendant from disk and index."""
+        for victim in self._index.discard_subtree(key):
+            self._path(victim).unlink(missing_ok=True)
+
     def _path(self, key: str) -> Path:
         name = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self._directory / f"{name}{ENTRY_SUFFIX}"
 
     def _write_atomically(
-        self, path: Path, header: dict[str, str | None], payload: bytes
+        self, path: Path, header: EntryHeader, payload: bytes
     ) -> None:
         """Write to a temp file, then rename it into place.
 
@@ -157,7 +196,7 @@ class DiskKVCache:
             os.fsync(handle.fileno())
         os.replace(temp, path)
 
-    def _read(self, path: Path) -> tuple[dict[str, str | None], bytes]:
+    def _read(self, path: Path) -> tuple[EntryHeader, bytes]:
         data = path.read_bytes()
         header_line, separator, payload = data.partition(b"\n")
         if not separator:
@@ -181,19 +220,24 @@ class DiskKVCache:
         found: dict[str, tuple[str | None, int]] = {}
         for path in self._directory.glob(f"*{ENTRY_SUFFIX}"):
             try:
-                header, _ = self._read(path)
+                header, payload = self._read(path)
             except (OSError, ValueError, UnicodeDecodeError):
                 path.unlink(missing_ok=True)
                 continue
             key = header["key"]
-            assert key is not None
+            assert isinstance(key, str)
             # A file must live at the path its own key hashes to; anything
             # else is a stray copy that the cache would never find or delete.
             if path != self._path(key):
                 path.unlink(missing_ok=True)
                 continue
+            if not _has_matching_payload_crc32(header, payload):
+                path.unlink(missing_ok=True)
+                if "payload_crc32" in header:
+                    self._index.stats.corrupted_entries += 1
+                continue
             mtime = path.stat().st_mtime_ns
-            found[key] = (header.get("parent_key"), mtime)
+            found[key] = (cast(str | None, header.get("parent_key")), mtime)
             self._last_tick = max(self._last_tick, mtime)
 
         restorable = list(_parents_first(found))
