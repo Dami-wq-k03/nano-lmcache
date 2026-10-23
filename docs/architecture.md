@@ -342,12 +342,15 @@ remaining tokens, and stores the chunks of the whole sequence for the next
 request. A fully cached prompt still recomputes its last token, because
 the model needs one forward step to produce next-token logits.
 
-Reuse is exact, not approximate. In a causal model the K and V of a token
-depend only on that token and the tokens before it, so identical leading
+With lossless storage, prefix reuse preserves the cached K/V. In a causal
+model the K and V of a token depend only on that token and the tokens
+before it, so identical leading
 tokens have identical K/V. The same tokens after a different prefix do
 not, which is why chunk keys hash the whole prefix. The tests check
 reused-prefix logits against a from-scratch forward pass, and check that a
-chunk with a different prefix has different K/V.
+chunk with a different prefix has different K/V. Low-precision full-prefill
+and suffix-only execution can still differ numerically. The optional INT8
+serializer below additionally changes the cached K/V through quantization.
 
 ### Disk storage
 
@@ -378,6 +381,72 @@ lives in GPU memory and is lost on restart.
 
 Only one process should write to a directory at a time, since each keeps
 its own index.
+
+### Optional INT8 KV compression
+
+`QuantizedTensorSerializer` trades numerical accuracy for smaller disk
+payloads. It is always opt-in; `TensorSerializer` remains the lossless
+choice for tensor storage. For a chunk shaped
+`[layers, 2, kv_heads, tokens, head_dim]`, it computes one FP32 scale per
+layer, K/V, head, and channel over the token axis (`-2`):
+
+```text
+scale = max(abs(values_across_tokens)) / 127
+quantized = round(values / scale), clamped to [-127, 127]
+restored = quantized * scale, cast back to the original dtype
+```
+
+An all-zero channel uses scale 1 and remains zero. Separating channels
+keeps an outlier in one channel from reducing another channel's precision.
+The serializer accepts FP16, BF16, and FP32 chunks, preserves shape and
+dtype, and restores them on CPU. Inputs are not modified, and loading
+uses `torch.load(weights_only=True)`.
+
+Try a round trip on CPU after `uv sync --locked --group tensor-test`:
+
+```python
+import tempfile
+
+import torch
+
+from nano_lmcache.storage.disk import DiskKVCache
+from nano_lmcache.tensor.serializers import QuantizedTensorSerializer
+
+torch.manual_seed(0)
+original = torch.randn(2, 2, 2, 16, 8, dtype=torch.float16)
+with tempfile.TemporaryDirectory() as directory:
+    disk = DiskKVCache(directory, serializer=QuantizedTensorSerializer())
+    disk.put("prefix-0", original)
+    restored = disk.get("prefix-0")
+    print(restored.shape, restored.dtype, restored.device)
+    print("maximum error:", (restored.float() - original.float()).abs().max().item())
+```
+
+Use a separate cache directory when changing serializers: existing
+lossless tensor files and quantized files have different payload formats.
+Reading back a quantized chunk does not restore the discarded precision.
+
+INT8 values take one byte each, but each scale adds four bytes per channel.
+Before serialization overhead, a chunk with `T` tokens uses about
+`1 + 4 / T` bytes per value, versus two for FP16/BF16. At 16 tokens this
+is about 1.6x compression; very short chunks may not shrink at all. Encoding
+and decoding also cost time, so smaller files alone do not establish a
+latency improvement.
+
+Whether the error is acceptable depends on the model and workload. Compare
+maximum K/V error, logits error, greedy token agreement, and task quality
+against a full recompute on representative inputs and generation lengths.
+Choose acceptance thresholds for that workload before enabling compression;
+there is no universal safe error threshold. A small logit change can change
+the highest-scoring token and affect later generated tokens. This is why
+quantization is never the default and why the tiny-model checks do not
+guarantee equivalent generation on other models.
+
+The [compression experiment](quantized-kv.md) provides CPU reproduction
+commands, measured sizes and times, separate K/V errors, and the G1
+full-prefill versus lossless/INT8 reuse comparison. Exercise: change the
+chunk's token count from 16 to 4 or 32 and predict how scale overhead
+changes the compression ratio before measuring it.
 
 ### Tiered storage
 

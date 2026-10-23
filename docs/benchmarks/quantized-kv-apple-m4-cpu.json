@@ -1,0 +1,136 @@
+{
+  "environment": {
+    "torch": "2.14.1",
+    "device": "cpu",
+    "gpu": null,
+    "model": "tiny Qwen3 (random seed 0)",
+    "threads": 1,
+    "warmup": 5,
+    "repeats": 30,
+    "date": "2026-10-23",
+    "cpu": "Apple M4",
+    "os": "Darwin 27.0.0 arm64",
+    "python": "3.11.12",
+    "transformers": "5.20.2",
+    "source_commit": "23d76334e13e87844240ad50a91f14d41f36a0e9",
+    "command": ".venv/bin/python benchmarks/bench_quantized_kv.py"
+  },
+  "results": [
+    {
+      "dtype": "torch.float16",
+      "tensor": {
+        "shape": [
+          28,
+          2,
+          8,
+          16,
+          128
+        ],
+        "raw_bytes": 1835008,
+        "lossless_bytes": 1836585,
+        "int8_bytes": 1148773,
+        "raw_over_int8": 1.5973634477829823,
+        "encode_ms": 0.7281875004991889,
+        "decode_ms": 0.2899169994634576,
+        "max_abs": 0.01806640625,
+        "relative_l2": 0.004701463971287012
+      },
+      "model": {
+        "prompt_tokens": 15,
+        "cached_tokens": 12,
+        "B_lossless": {
+          "logits_vs_A": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          },
+          "greedy_matches": 3,
+          "greedy_positions": 3,
+          "next_token_match": true,
+          "K_error": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          },
+          "V_error": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        "C_int8": {
+          "logits_vs_A": {
+            "max_abs": 0.00048828125,
+            "relative_l2": 0.0013924002414569259
+          },
+          "greedy_matches": 3,
+          "greedy_positions": 3,
+          "next_token_match": true,
+          "K_error": {
+            "max_abs": 0.009765625,
+            "relative_l2": 0.0030017481185495853
+          },
+          "V_error": {
+            "max_abs": 0.00140380859375,
+            "relative_l2": 0.003212800482288003
+          }
+        }
+      }
+    },
+    {
+      "dtype": "torch.bfloat16",
+      "tensor": {
+        "shape": [
+          28,
+          2,
+          8,
+          16,
+          128
+        ],
+        "raw_bytes": 1835008,
+        "lossless_bytes": 1836585,
+        "int8_bytes": 1148773,
+        "raw_over_int8": 1.5973634477829823,
+        "encode_ms": 0.739937495382037,
+        "decode_ms": 0.35974999627796933,
+        "max_abs": 0.017578125,
+        "relative_l2": 0.004957295022904873
+      },
+      "model": {
+        "prompt_tokens": 15,
+        "cached_tokens": 12,
+        "B_lossless": {
+          "logits_vs_A": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          },
+          "greedy_matches": 3,
+          "greedy_positions": 3,
+          "next_token_match": true,
+          "K_error": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          },
+          "V_error": {
+            "max_abs": 0.0,
+            "relative_l2": 0.0
+          }
+        },
+        "C_int8": {
+          "logits_vs_A": {
+            "max_abs": 0.001953125,
+            "relative_l2": 0.005068264435976744
+          },
+          "greedy_matches": 3,
+          "greedy_positions": 3,
+          "next_token_match": true,
+          "K_error": {
+            "max_abs": 0.01171875,
+            "relative_l2": 0.0032837968319654465
+          },
+          "V_error": {
+            "max_abs": 0.001953125,
+            "relative_l2": 0.0035101482644677162
+          }
+        }
+      }
+    }
+  ]
+}
