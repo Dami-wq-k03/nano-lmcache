@@ -1,5 +1,6 @@
 import json
 import os
+import zlib
 
 import pytest
 
@@ -11,6 +12,25 @@ from nano_lmcache.storage.serializers import JsonSerializer
 
 def entry_files(directory):
     return sorted(p for p in directory.iterdir() if p.suffix == ".entry")
+
+
+def store_three_chunk_chain(directory):
+    storage = DiskKVCache(directory)
+    cache = ChunkedPrefixCache(
+        chunk_size=2, namespace="corruption-test", storage=storage
+    )
+    tokens = [1, 2, 3, 4, 5, 6]
+    values = ["kv-0", "kv-1", "kv-2"]
+    cache.store(tokens, values)
+    keys = cache.lookup(tokens).keys
+
+    return storage, cache, tokens, keys
+
+
+def replace_payload(path, transform):
+    header, separator, payload = path.read_bytes().partition(b"\n")
+    assert separator
+    path.write_bytes(header + separator + transform(payload))
 
 
 # ---- basic contract ---------------------------------------------------
@@ -45,6 +65,17 @@ def test_one_file_per_entry(tmp_path):
     cache.put("b", 2, parent_key="a")
 
     assert len(entry_files(tmp_path)) == 2
+
+
+def test_entry_header_records_the_payload_crc32(tmp_path):
+    cache = DiskKVCache(tmp_path)
+    cache.put("a", "kv-a")
+
+    header_line, separator, payload = cache._path("a").read_bytes().partition(b"\n")
+    assert separator
+    header = json.loads(header_line)
+
+    assert header["payload_crc32"] == zlib.crc32(payload) & 0xFFFFFFFF
 
 
 def test_overwrite_replaces_the_payload(tmp_path):
@@ -219,6 +250,96 @@ def test_unreadable_entries_are_removed_on_open(tmp_path):
 
     assert len(reopened) == 1
     assert reopened.get("a") == 1
+
+
+# ---- corruption recovery ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        pytest.param(
+            lambda payload: payload[:-1] + bytes([payload[-1] ^ 1]),
+            id="flipped-byte",
+        ),
+        pytest.param(lambda payload: payload[:-1], id="truncated-payload"),
+    ],
+)
+def test_corrupt_payload_is_a_prefix_miss_and_drops_its_subtree(tmp_path, damage):
+    storage, cache, tokens, keys = store_three_chunk_chain(tmp_path)
+    damaged_path = storage._path(keys[1])
+    descendant_path = storage._path(keys[2])
+    replace_payload(damaged_path, damage)
+
+    result = cache.lookup(tokens)
+
+    assert result.matched_chunks == 1
+    assert result.values == ("kv-0",)
+    assert keys[0] in storage
+    assert keys[1] not in storage
+    assert keys[2] not in storage
+    assert not damaged_path.exists()
+    assert not descendant_path.exists()
+    assert len(storage) == 1
+    assert storage.parent_of(keys[0]) is None
+    assert storage.stats.corrupted_entries == 1
+
+
+def test_corrupt_header_is_a_prefix_miss_and_drops_its_subtree(tmp_path):
+    storage, cache, tokens, keys = store_three_chunk_chain(tmp_path)
+    damaged_path = storage._path(keys[1])
+    descendant_path = storage._path(keys[2])
+    _, separator, payload = damaged_path.read_bytes().partition(b"\n")
+    assert separator
+    damaged_path.write_bytes(b"not valid JSON" + separator + payload)
+
+    result = cache.lookup(tokens)
+
+    assert result.matched_chunks == 1
+    assert result.values == ("kv-0",)
+    assert keys[0] in storage
+    assert keys[1] not in storage
+    assert keys[2] not in storage
+    assert not damaged_path.exists()
+    assert not descendant_path.exists()
+    assert len(storage) == 1
+    assert storage.parent_of(keys[0]) is None
+    assert storage.stats.corrupted_entries == 1
+
+
+def test_recovery_discards_a_corrupt_entry_and_its_descendants(tmp_path):
+    storage, _, _, keys = store_three_chunk_chain(tmp_path)
+    replace_payload(storage._path(keys[1]), lambda payload: payload[:-1])
+
+    reopened = DiskKVCache(tmp_path)
+
+    assert keys[0] in reopened
+    assert keys[1] not in reopened
+    assert keys[2] not in reopened
+    assert not reopened._path(keys[1]).exists()
+    assert not reopened._path(keys[2]).exists()
+    assert len(reopened) == 1
+    assert reopened.stats.corrupted_entries == 1
+
+
+def test_recovery_discards_entries_without_a_checksum(tmp_path):
+    storage = DiskKVCache(tmp_path)
+    storage.put("a", "kv-a")
+    path = storage._path("a")
+    header_line, separator, payload = path.read_bytes().partition(b"\n")
+    assert separator
+    header = json.loads(header_line)
+    header.pop("payload_crc32")
+    path.write_bytes(
+        json.dumps(header, separators=(",", ":")).encode("utf-8")
+        + separator
+        + payload
+    )
+
+    reopened = DiskKVCache(tmp_path)
+
+    assert len(reopened) == 0
+    assert entry_files(tmp_path) == []
 
 
 # ---- eviction ---------------------------------------------------------

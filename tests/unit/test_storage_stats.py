@@ -6,6 +6,7 @@ from nano_lmcache.storage.stats import StorageStats
 def test_new_stats_start_at_zero():
     stats = StorageStats()
 
+    assert stats.corrupted_entries == 0
     assert stats.evictions == 0
     assert stats.rejected_no_room == 0
     assert stats.rejected_missing_parent == 0
