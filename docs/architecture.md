@@ -202,10 +202,10 @@ the sum of recorded payload sizes to B bytes. Either limit can be omitted;
 when both are set, **both must be satisfied**. With neither, the cache is
 unbounded. `max_bytes` must be a positive integer.
 
-Byte capacity is currently exposed only by `MemoryKVCache`. Although
-`PrefixLRUIndex` is shared, `DiskKVCache` and `CPUOffloadKVCache` do not
-expose `max_bytes` and omit `size_bytes` when admitting entries. Their
-index sizes therefore default to zero; they enforce entry limits only.
+`CPUOffloadKVCache` also exposes `max_bytes`, using each tensor's exact
+`value.nbytes` as its payload size in the shared `PrefixLRUIndex`.
+`DiskKVCache` enforces entry limits only; it omits `size_bytes` when
+admitting entries, so its index sizes default to zero.
 
 The injectable `size_fn(value) -> int` must return a non-negative integer
 (zero is allowed). It defaults to `sys.getsizeof`, which measures the
@@ -396,6 +396,13 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
   first, so the parent is normally promoted just before its child. If the
   fast tier refuses the parent (no room), it also refuses the child, and
   the slow tier keeps serving both.
+- **Rejected overwrites**: `MemoryKVCache` and `CPUOffloadKVCache` expose
+  `try_put` to report admission and `invalidate` to remove a key with its
+  descendants. If the fast tier rejects an overwrite, `TieredStorage`
+  invalidates that subtree so reads use the updated slow copy. Removed
+  entries count as evictions; unrelated entries retain their recency.
+  Standalone `put` still preserves the old payload on rejection. Custom
+  fast tiers that can reject overwrites should implement these methods.
 - **Invariant**: each tier keeps whole chains on its own, so their union
   does too. A randomized test checks this after every step.
 
@@ -412,6 +419,14 @@ prefixes. It satisfies `CacheStorage` and evicts with `PrefixLRUIndex`, so
 it can be used on its own or as the fast tier of a `TieredStorage`.
 `run_with_prefix_cache` moves reused chunks to the model's device, so any
 backend may hand chunks back on the CPU.
+
+`CPUOffloadKVCache(max_bytes=B)` limits cached tensor payloads to B bytes,
+excluding keys, bookkeeping, and allocator overhead. The read-only
+`max_bytes` property is `None` by default; `nbytes` reports the actual cached
+payload total. If `max_entries` is also set, both limits must be satisfied.
+Only LRU leaves may be evicted. A tensor whose required prefix cannot fit
+is rejected without evicting existing data. Overwrites account for the new
+tensor size. Use `device="cpu", pin_memory=False` to run without a GPU.
 
 Two copy details matter, measured with `benchmarks/bench_offload.py` on an
 RTX 4090 (PCIe), 28 MiB per copy (one 256-token Qwen3-0.6B chunk in
@@ -448,13 +463,17 @@ TieredStorage(
 The model computes on the GPU, cached chunks live in pinned CPU memory,
 and every chunk is written through to disk, so a restarted process reuses
 them. `examples/demo_kv_reuse.py --offload --disk DIR` runs exactly this.
+With a byte-limited fast tier, disk hits still return data when promotion
+is rejected for insufficient capacity or a missing parent; each tier keeps
+its own complete prefix chains.
 
 ## Mini: Extend the cache model
 
 The storage interface is in place: cache logic depends on the
 `CacheStorage` protocol, so file, CPU, GPU, or remote backends can be
 added without touching the cache loop. Capacity limits and prefix-safe
-eviction, including byte-based capacity, are implemented in `MemoryKVCache`;
+eviction, including byte-based capacity, are implemented in `MemoryKVCache`
+and `CPUOffloadKVCache`;
 other eviction policies are future work.
 
 Those backends are not implemented ahead of need.

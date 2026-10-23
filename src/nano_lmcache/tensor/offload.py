@@ -42,13 +42,14 @@ class CPUOffloadKVCache:
         *,
         device: str | torch.device = "cuda",
         max_entries: int | None = None,
+        max_bytes: int | None = None,
         pin_memory: bool = True,
         non_blocking: bool = True,
     ) -> None:
         self._device = torch.device(device)
         self._pin_memory = pin_memory
         self._non_blocking = non_blocking
-        self._index = PrefixLRUIndex(max_entries)
+        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
         self._tensors: dict[str, torch.Tensor] = {}
 
     @property
@@ -59,6 +60,11 @@ class CPUOffloadKVCache:
     @property
     def max_entries(self) -> int | None:
         return self._index.max_entries
+
+    @property
+    def max_bytes(self) -> int | None:
+        """Payload byte limit, or None when unbounded."""
+        return self._index.max_bytes
 
     @property
     def stats(self) -> StorageStats:
@@ -93,20 +99,26 @@ class CPUOffloadKVCache:
         *,
         parent_key: str | None = None,
     ) -> None:
+        self.try_put(key, value, parent_key=parent_key)
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool:
+        """Store if admitted; return False without replacing a rejected value."""
         # Check before touching the index, so a bad payload evicts nothing.
         if not isinstance(value, torch.Tensor):
             raise TypeError(
                 f"CPUOffloadKVCache stores tensors, got {type(value).__name__}"
             )
 
-        decision = self._index.admit(key, parent_key)
+        decision = self._index.admit(key, parent_key, size_bytes=value.nbytes)
         for victim in decision.evicted:
             # The caching host allocator only reuses this pinned buffer once
             # any copy still using it has finished, so dropping it is safe.
             del self._tensors[victim]
 
         if not decision.admitted:
-            return
+            return False
 
         held = torch.empty(
             value.shape,
@@ -119,6 +131,12 @@ class CPUOffloadKVCache:
         # change the cached data by modifying their own tensor.
         held.copy_(value, non_blocking=self._non_blocking and self._pin_memory)
         self._tensors[key] = held
+        return True
+
+    def invalidate(self, key: str) -> None:
+        """Remove a stale entry and its descendants, preserving prefix safety."""
+        for victim in self._index.invalidate(key):
+            del self._tensors[victim]
 
     def get(self, key: str) -> torch.Tensor | None:
         held = self._tensors.get(key)

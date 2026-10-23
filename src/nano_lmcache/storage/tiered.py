@@ -43,6 +43,17 @@ class FastTier(CacheStorage, Protocol):
     def __contains__(self, key: object) -> bool: ...
 
 
+@runtime_checkable
+class _AdmissionAwareFastTier(FastTier, Protocol):
+    """Optional support for backends that can reject overwrites."""
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool: ...
+
+    def invalidate(self, key: str) -> None: ...
+
+
 @dataclass
 class TierStats:
     """Where each `get` was served from."""
@@ -107,7 +118,13 @@ class TieredStorage:
         # Slow tier first: if it raises (for example, a payload it cannot
         # serialize), the fast tier is left untouched.
         self._slow.put(key, value, parent_key=parent_key)
-        self._fast.put(key, value, parent_key=parent_key)
+        if isinstance(self._fast, _AdmissionAwareFastTier):
+            if not self._fast.try_put(key, value, parent_key=parent_key):
+                # The slow tier has the current value. A rejected overwrite
+                # must not leave an older fast copy (or orphan its children).
+                self._fast.invalidate(key)
+        else:
+            self._fast.put(key, value, parent_key=parent_key)
 
     def get(self, key: str) -> object | None:
         value = self._fast.get(key)

@@ -176,3 +176,35 @@ def test_contains_checks_both_tiers_without_counting_a_use(tmp_path):
     assert "missing" not in tiered
     assert tiered.tier_stats == TierStats()
     assert "a" not in tiered.fast  # membership does not promote
+
+
+def test_byte_limited_memory_rejected_overwrite_does_not_serve_stale_data(tmp_path):
+    fast = MemoryKVCache(max_bytes=6, size_fn=len)
+    tiered = TieredStorage(fast=fast, slow=DiskKVCache(tmp_path))
+    tiered.put("a", "aa")
+    tiered.put("b", "bb", parent_key="a")
+    tiered.put("x", "xx")
+    tiered.put("a", "updated")
+
+    assert "a" not in fast and "b" not in fast
+    assert "x" in fast
+    assert len(fast) == 1 and fast.nbytes == 2
+    assert fast.stats.evictions == 2
+    for _ in range(3):
+        assert tiered.get("a") == "updated"
+        assert tiered.get("b") == "bb"
+    assert tiered.tier_stats == TierStats(slow_hits=6)
+    assert fast.nbytes == 2
+    tiered.put("a", "new")
+    assert tiered.get("a") == "new"
+    assert fast.nbytes == 5
+    assert tiered.tier_stats.fast_hits == 1
+
+
+def test_slow_write_exception_preserves_fast_entry(tmp_path):
+    tiered = make_tiered(tmp_path)
+    tiered.put("a", "old")
+    with pytest.raises(TypeError):
+        tiered.put("a", object())
+    assert tiered.fast.get("a") == "old"
+    assert tiered.slow.get("a") == "old"
