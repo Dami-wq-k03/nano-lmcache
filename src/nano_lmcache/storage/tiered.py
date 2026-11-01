@@ -4,12 +4,13 @@ This mirrors one of LMCache's core ideas: keep hot chunks in fast memory
 and the long tail in a bigger, slower store such as local disk.
 
 Write policy: write-through. Every `put` goes to the slow tier and then to
-the fast tier, so the slow tier always has its own copy. The alternative,
+the fast tier, so the slow tier keeps a copy of admitted writes. The alternative,
 write-back (write to the slow tier only when the fast tier evicts), saves
 writes but breaks prefix safety in a subtle way: the fast tier evicts
 leaves, and when a leaf is demoted its parent may still exist only in the
 fast tier, so a prefix-safe slow tier must reject it and the data is lost.
-Write-through also means a crash never loses anything that was stored.
+A rejected slow-tier overwrite leaves both copies unchanged. Entries stored
+only in the fast tier are not persisted.
 
 Read policy: promote on hit. A slow-tier hit is copied into the fast tier
 with its recorded parent, so the fast tier keeps prefix safety too. A
@@ -44,13 +45,14 @@ class FastTier(CacheStorage, Protocol):
 
 
 @runtime_checkable
-class _AdmissionAwareFastTier(FastTier, Protocol):
-    """Optional support for backends that can reject overwrites."""
-
+class _AdmissionAwareTier(Protocol):
     def try_put(
         self, key: str, value: object, *, parent_key: str | None = None
     ) -> bool: ...
 
+
+@runtime_checkable
+class _AdmissionAwareFastTier(FastTier, _AdmissionAwareTier, Protocol):
     def invalidate(self, key: str) -> None: ...
 
 
@@ -117,7 +119,14 @@ class TieredStorage:
     ) -> None:
         # Slow tier first: if it raises (for example, a payload it cannot
         # serialize), the fast tier is left untouched.
-        self._slow.put(key, value, parent_key=parent_key)
+        if isinstance(self._slow, _AdmissionAwareTier):
+            present = key in self._slow
+            admitted = self._slow.try_put(key, value, parent_key=parent_key)
+            # A rejected overwrite must not leave the two tiers disagreeing.
+            if present and not admitted:
+                return
+        else:
+            self._slow.put(key, value, parent_key=parent_key)
         if isinstance(self._fast, _AdmissionAwareFastTier):
             if not self._fast.try_put(key, value, parent_key=parent_key):
                 # The slow tier has the current value. A rejected overwrite

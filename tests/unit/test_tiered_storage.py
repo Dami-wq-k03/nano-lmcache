@@ -208,3 +208,26 @@ def test_slow_write_exception_preserves_fast_entry(tmp_path):
         tiered.put("a", object())
     assert tiered.fast.get("a") == "old"
     assert tiered.slow.get("a") == "old"
+
+
+@pytest.mark.parametrize("key,fast_copy", [("a", False), ("a", True), ("new", False)])
+def test_byte_limited_disk_rejection_keeps_tiers_consistent(tmp_path, key, fast_copy):
+    slow = DiskKVCache(tmp_path / "disk")
+    slow.put("a", "old")
+    budget = slow.nbytes
+    slow = DiskKVCache(slow.directory, max_bytes=budget)
+    fast = MemoryKVCache(max_entries=1)
+    if fast_copy:
+        fast.put("a", "old")
+    tiered = TieredStorage(fast=fast, slow=slow)
+    value = "x" * budget
+
+    tiered.put(key, value)
+
+    assert slow.nbytes == budget
+    assert slow.stats.rejected_no_room == 1
+    assert slow.get("a") == "old"
+    assert fast.get("a") == ("old" if fast_copy else None)
+    assert tiered.get(key) == (value if key == "new" else "old")
+    fast.invalidate(key)
+    assert tiered.get(key) == (None if key == "new" else "old")

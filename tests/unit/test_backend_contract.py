@@ -11,14 +11,35 @@ from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.tiered import TieredStorage
 
+
+def byte_limited_disk(tmp_path, capacity):
+    """Measure a real prefix's files to set a byte-only capacity."""
+    if capacity is None:
+        return DiskKVCache(tmp_path / "byte-limited")
+    reference = DiskKVCache(tmp_path / "reference")
+    reference_cache = ChunkedPrefixCache(
+        chunk_size=2, namespace="model-a", storage=reference
+    )
+    reference_cache.store(
+        list(range(2 * capacity)), [f"kv-{index}" for index in range(capacity)]
+    )
+    return DiskKVCache(tmp_path / "byte-limited", max_bytes=reference.nbytes)
+
+
 BACKENDS = {
     "memory": lambda tmp_path, max_entries: MemoryKVCache(max_entries=max_entries),
     "disk": lambda tmp_path, max_entries: DiskKVCache(
         tmp_path / "disk", max_entries=max_entries
     ),
+    "disk-bytes": byte_limited_disk,
     "tiered": lambda tmp_path, max_entries: TieredStorage(
         fast=MemoryKVCache(max_entries=max_entries),
         slow=DiskKVCache(tmp_path / "tiered", max_entries=max_entries),
+    ),
+    "tiered-disk-bytes": lambda tmp_path, max_entries: TieredStorage(
+        # A one-entry fast tier cannot hide missing disk descendants.
+        fast=MemoryKVCache(max_entries=1),
+        slow=byte_limited_disk(tmp_path, max_entries),
     ),
 }
 

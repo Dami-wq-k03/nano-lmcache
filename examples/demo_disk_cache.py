@@ -8,7 +8,7 @@ Run it twice:
 Each run is a fresh Python process, so the second run's hits can only come
 from files the first run left behind. vLLM's built-in prefix caching lives
 in GPU memory and is lost on restart; this is the gap an external KV cache
-fills. Pass --clear to start over.
+fills. Use --max-bytes to limit entry-file bytes; --clear starts over.
 """
 
 import argparse
@@ -33,6 +33,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     parser.add_argument("--clear", action="store_true")
+    parser.add_argument(
+        "--max-bytes", type=int, help="Limit the total size of complete entry files."
+    )
     args = parser.parse_args()
 
     if args.clear:
@@ -40,14 +43,17 @@ def main() -> None:
         print(f"Cleared {args.dir}")
         return
 
-    storage = DiskKVCache(args.dir)
+    storage = DiskKVCache(args.dir, max_bytes=args.max_bytes)
     cache = ChunkedPrefixCache(
         chunk_size=CHUNK_SIZE, namespace="demo-model", storage=storage
     )
     tokens = [101, 205, 307, 409, 511, 613]
 
     print(f"Cache directory: {args.dir}")
-    print(f"Entries found on disk at startup: {len(storage)}\n")
+    if storage.max_bytes is not None:
+        print(f"Byte limit: {storage.max_bytes}")
+    print(f"Entries found on disk at startup: {len(storage)}")
+    print(f"Entry-file bytes at startup: {storage.nbytes}\n")
 
     result = cache.lookup(tokens)
     chunks = [c for c in chunk_tokens(tokens, CHUNK_SIZE) if len(c) == CHUNK_SIZE]
@@ -60,8 +66,9 @@ def main() -> None:
     cache.store(tokens, list(result.values) + recomputed)
 
     print(f"\nReused {result.matched_chunks}/{len(chunks)} chunks.")
-    if result.matched_chunks == 0:
-        print("Run the script again: the next process will find these on disk.")
+    print(f"Stored {len(storage)} entries using {storage.nbytes} bytes.")
+    if result.matched_chunks == 0 and len(storage):
+        print("Run the script again: the next process can reuse the stored prefix.")
 
 
 if __name__ == "__main__":

@@ -48,6 +48,16 @@ def _payload_crc32(payload: bytes) -> int:
     return zlib.crc32(payload) & 0xFFFFFFFF
 
 
+def _encode_header(key: str, parent_key: str | None, payload: bytes) -> bytes:
+    """Encode one entry's header, including the newline."""
+    header = {
+        "key": key,
+        "parent_key": parent_key,
+        "payload_crc32": _payload_crc32(payload),
+    }
+    return json.dumps(header, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
 def _has_matching_payload_crc32(header: EntryHeader, payload: bytes) -> bool:
     """Whether an entry has an exact integer CRC32 matching its payload."""
     expected_crc32 = header.get("payload_crc32")
@@ -62,6 +72,8 @@ class DiskKVCache:
 
     Eviction follows the same rules as `MemoryKVCache`, through a shared
     `PrefixLRUIndex`; evicting an entry deletes its file.
+    Byte capacity counts complete entry files: header, newline, and payload.
+    Reopen after an I/O exception to rebuild the index from disk.
     """
 
     def __init__(
@@ -69,12 +81,13 @@ class DiskKVCache:
         directory: str | os.PathLike[str],
         *,
         max_entries: int | None = None,
+        max_bytes: int | None = None,
         serializer: Serializer | None = None,
     ) -> None:
         self._directory = Path(directory)
         self._directory.mkdir(parents=True, exist_ok=True)
         self._serializer = serializer if serializer is not None else JsonSerializer()
-        self._index = PrefixLRUIndex(max_entries)
+        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
         # Last-used times are written as file mtimes. Keeping them strictly
         # increasing makes the order exact even when two accesses land in
         # the same clock tick.
@@ -95,6 +108,16 @@ class DiskKVCache:
     def max_entries(self) -> int | None:
         """Entry limit, or None when unbounded."""
         return self._index.max_entries
+
+    @property
+    def max_bytes(self) -> int | None:
+        """Entry-file byte limit, or None when unbounded."""
+        return self._index.max_bytes
+
+    @property
+    def nbytes(self) -> int:
+        """Sum of complete entry-file sizes, including headers."""
+        return self._index.nbytes
 
     @property
     def stats(self) -> StorageStats:
@@ -121,28 +144,32 @@ class DiskKVCache:
         *,
         parent_key: str | None = None,
     ) -> None:
+        self.try_put(key, value, parent_key=parent_key)
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool:
+        """Store if admitted; return False without replacing a rejected file."""
         # Encode first: a payload that cannot be stored must not change the
         # index or evict anything.
         payload = self._serializer.dumps(value)
 
-        decision = self._index.admit(key, parent_key)
-        # Victims are always leaves, so deleting them one at a time never
-        # leaves an orphan on disk, even if the process dies halfway.
+        # Overwrites keep their original parent.
+        if key in self._index:
+            parent_key = self._index.parent_of(key)
+        header = _encode_header(key, parent_key, payload)
+        decision = self._index.admit(
+            key, parent_key, size_bytes=len(header) + len(payload)
+        )
+        if not decision.admitted:
+            return False
+
+        # Victims are leaves, so interrupted deletion cannot orphan files.
         for victim in decision.evicted:
             self._path(victim).unlink(missing_ok=True)
-
-        if not decision.admitted:
-            return
-
-        # The chain position of an existing key never changes, so keep the
-        # parent recorded at first admission.
-        header = {
-            "key": key,
-            "parent_key": self._index.parent_of(key),
-            "payload_crc32": _payload_crc32(payload),
-        }
         self._write_atomically(self._path(key), header, payload)
         self._mark_used(self._path(key))
+        return True
 
     def get(self, key: str) -> object | None:
         if key not in self._index:
@@ -178,9 +205,7 @@ class DiskKVCache:
         name = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self._directory / f"{name}{ENTRY_SUFFIX}"
 
-    def _write_atomically(
-        self, path: Path, header: EntryHeader, payload: bytes
-    ) -> None:
+    def _write_atomically(self, path: Path, header: bytes, payload: bytes) -> None:
         """Write to a temp file, then rename it into place.
 
         A rename within one directory is atomic, so a crash leaves either
@@ -189,8 +214,7 @@ class DiskKVCache:
         """
         temp = path.with_name(f"{path.name}.{os.getpid()}{TEMP_SUFFIX}")
         with open(temp, "wb") as handle:
-            handle.write(json.dumps(header, separators=(",", ":")).encode("utf-8"))
-            handle.write(b"\n")
+            handle.write(header)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -216,8 +240,8 @@ class DiskKVCache:
         for temp in self._directory.glob(f"*{TEMP_SUFFIX}"):
             temp.unlink(missing_ok=True)
 
-        # key -> (parent_key, last-used time)
-        found: dict[str, tuple[str | None, int]] = {}
+        # key -> (parent_key, last-used time, complete file size)
+        found: dict[str, tuple[str | None, int, int]] = {}
         for path in self._directory.glob(f"*{ENTRY_SUFFIX}"):
             try:
                 header, payload = self._read(path)
@@ -236,9 +260,13 @@ class DiskKVCache:
                 if "payload_crc32" in header:
                     self._index.stats.corrupted_entries += 1
                 continue
-            mtime = path.stat().st_mtime_ns
-            found[key] = (cast(str | None, header.get("parent_key")), mtime)
-            self._last_tick = max(self._last_tick, mtime)
+            stat = path.stat()
+            found[key] = (
+                cast(str | None, header.get("parent_key")),
+                stat.st_mtime_ns,
+                stat.st_size,
+            )
+            self._last_tick = max(self._last_tick, stat.st_mtime_ns)
 
         restorable = list(_parents_first(found))
         if self.max_entries is not None and len(restorable) > self.max_entries:
@@ -247,9 +275,16 @@ class DiskKVCache:
                 f"max_entries={self.max_entries}; open it with a larger limit "
                 "or clear the directory"
             )
+        total_bytes = sum(found[key][2] for key in restorable)
+        if self.max_bytes is not None and total_bytes > self.max_bytes:
+            raise ValueError(
+                f"{self._directory} holds {total_bytes} bytes, more than "
+                f"max_bytes={self.max_bytes}; open it with a larger limit "
+                "or clear the directory"
+            )
 
         for key in restorable:
-            self._index.restore(key, found[key][0])
+            self._index.restore(key, found[key][0], size_bytes=found[key][2])
         # Restore had to go parents-first; now replay true recency.
         for key in sorted(restorable, key=lambda k: found[k][1]):
             self._index.touch(key)
@@ -259,10 +294,10 @@ class DiskKVCache:
             self._path(key).unlink(missing_ok=True)
 
 
-def _parents_first(found: dict[str, tuple[str | None, int]]) -> Iterator[str]:
+def _parents_first(found: dict[str, tuple[str | None, int, int]]) -> Iterator[str]:
     """Yield keys whose whole ancestor chain is present, parents first."""
     children: dict[str | None, list[str]] = {}
-    for key, (parent_key, _) in found.items():
+    for key, (parent_key, _, _) in found.items():
         children.setdefault(parent_key, []).append(key)
 
     pending = list(children.get(None, []))

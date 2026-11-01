@@ -38,9 +38,8 @@ class Admission:
 class PrefixLRUIndex:
     """Tracks keys, their parents, recency, and backend-reported sizes.
 
-    Byte accounting requires the backend to supply `size_bytes`; it
-    defaults to zero for entry-only backends. Currently only MemoryKVCache
-    exposes a byte limit. Disk and CPU-offload caches use entry limits.
+    Backends report `size_bytes`, which defaults to zero.
+    Both entry and byte limits are enforced when supplied.
     """
 
     def __init__(
@@ -83,12 +82,12 @@ class PrefixLRUIndex:
 
     @property
     def max_bytes(self) -> int | None:
-        """Payload byte limit, or None when unbounded."""
+        """Backend-reported byte limit, or None when unbounded."""
         return self._max_bytes
 
     @property
     def nbytes(self) -> int:
-        """Sum of the recorded payload sizes."""
+        """Sum of the recorded entry sizes."""
         return self._nbytes
 
     @property

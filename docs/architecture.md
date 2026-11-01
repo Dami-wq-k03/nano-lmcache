@@ -204,8 +204,8 @@ unbounded. `max_bytes` must be a positive integer.
 
 `CPUOffloadKVCache` also exposes `max_bytes`, using each tensor's exact
 `value.nbytes` as its payload size in the shared `PrefixLRUIndex`.
-`DiskKVCache` enforces entry limits only; it omits `size_bytes` when
-admitting entries, so its index sizes default to zero.
+`DiskKVCache` exposes the same limit, counting the complete serialized
+entry files instead of in-memory payload sizes (see **Disk storage**).
 
 The injectable `size_fn(value) -> int` must return a non-negative integer
 (zero is allowed). It defaults to `sys.getsizeof`, which measures the
@@ -359,6 +359,9 @@ outlive the process that computed them. That is the main thing an
 external KV cache adds over an inference engine's own prefix cache, which
 lives in GPU memory and is lost on restart.
 
+`max_bytes` limits the total size of complete `.entry` files.
+`nbytes` reports that total even when no byte limit is set.
+
 - **File names** are the SHA-256 of the key, so no key can address a path
   outside the directory. Each file starts with a JSON header recording the
   key, its `parent_key`, and a CRC32 of its payload. The parent link lets a
@@ -369,12 +372,15 @@ lives in GPU memory and is lost on restart.
   the old file, the new file, or a stray temp file, never half an entry.
   Evicted entries are always leaves, so deleting them one at a time never
   leaves an orphan behind.
+- **I/O exceptions**: if an operation raises `OSError`, resolve the filesystem
+  error and reopen before further use. Completed evictions are not rolled back.
 - **Recovery** on open deletes stray temp files, unreadable files, entries
   whose payload checksum is missing or mismatched, and entries whose
   ancestors are missing, then rebuilds the `PrefixLRUIndex` parents-first.
   An entry written before checksum support is discarded and regenerated on
-  demand. File modification times record last use, so LRU order also
-  survives a restart.
+  demand. Sizes come from `stat().st_size`; file modification times restore
+  LRU order. Opening above `max_bytes` or `max_entries` raises `ValueError`
+  without evicting valid entries.
 - **Serialization** is pluggable. The default is JSON, not `pickle`:
   unpickling runs code chosen by whoever wrote the file, and a cache
   directory is easy to share. For KV tensors use `TensorSerializer`
@@ -384,6 +390,9 @@ lives in GPU memory and is lost on restart.
 
 Only one process should write to a directory at a time, since each keeps
 its own index.
+
+Try `examples/demo_disk_cache.py --dir /tmp/limited-kv --max-bytes 400`
+with a fresh directory to see a byte budget.
 
 ### Optional INT8 KV compression
 
@@ -461,8 +470,8 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
   tier. Write-back (demote to disk only when memory evicts) would save
   writes, but it breaks prefix safety: memory evicts a leaf whose parent
   may still exist only in memory, so a prefix-safe disk tier has to reject
-  it and the chunk is lost. Write-through also means a crash never loses a
-  stored chunk.
+  it and the chunk is lost. A disk-backed slow tier persists the writes it
+  admits; an entry held only by the fast tier is lost on restart.
 - **Promote on hit**: a slow-tier hit is copied into the fast tier with
   the parent the slow tier recorded. A prefix lookup walks a chain root
   first, so the parent is normally promoted just before its child. If the
@@ -475,6 +484,8 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
   entries count as evictions; unrelated entries retain their recency.
   Standalone `put` still preserves the old payload on rejection. Custom
   fast tiers that can reject overwrites should implement these methods.
+  `DiskKVCache.try_put` also reports admission: rejected slow-tier overwrites
+  leave the fast copy unchanged. Rejected new entries may still fit fast memory.
 - **Invariant**: each tier keeps whole chains on its own, so their union
   does too. A randomized test checks this after every step.
 
