@@ -59,7 +59,12 @@ const events = DATA.events || [], requests = DATA.requests || [];
 function statusClass(value) {{ return String(value).toLowerCase(); }}
 function renderSummary() {{
   const s = DATA.summary || {{}};
-  $("summary").innerHTML = [["Requests",s.requests||0],["Chunks",s.total_chunks||0],["Reused",s.matched_chunks||0],["Hit rate",((s.hit_rate||0)*100).toFixed(1)+"%"]].map(x=>`<div class="metric"><span class="muted">${{x[0]}}</span><b>${{x[1]}}</b></div>`).join("");
+  const storage = events.filter(e=>e.event_type.startsWith("storage_")).length;
+  const evictions = events.filter(e=>e.event_type === "eviction").length;
+  const gpu = events.filter(e=>["gpu_export","cpu_offload","gpu_import","l2_restore","l1_hit","l2_hit"].includes(e.event_type)).length;
+  const promotions = events.filter(e=>e.event_type === "promotion").length;
+  const metrics = [["Requests",s.requests||0],["Chunks",s.total_chunks||0],["Reused",s.matched_chunks||0],["Hit rate",((s.hit_rate||0)*100).toFixed(1)+"%"],["Storage events",storage],["Evictions",evictions],["Tier promotions",promotions],["GPU events",gpu]];
+  $("summary").innerHTML = metrics.map(x=>`<div class="metric"><span class="muted">${{x[0]}}</span><b>${{x[1]}}</b></div>`).join("");
 }}
 function currentEvent() {{ return step >= 0 ? events[step] : null; }}
 function renderRequests() {{
