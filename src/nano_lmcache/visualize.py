@@ -56,16 +56,30 @@ def main() -> None:
     )
 
 
-def _make_storage(args: argparse.Namespace, recorder: TraceRecorder) -> TracingStorage:
+def _make_storage(
+    args: argparse.Namespace, recorder: TraceRecorder
+) -> CacheStorage:
     backend: CacheStorage
     if args.storage == "memory":
         backend = MemoryKVCache(max_entries=args.max_entries)
     elif args.storage == "disk":
         backend = DiskKVCache(args.storage_dir, max_entries=args.max_entries)
     else:
-        fast = MemoryKVCache(max_entries=args.max_entries)
-        slow = DiskKVCache(args.storage_dir, max_entries=args.max_entries)
-        backend = TieredStorage(fast=fast, slow=slow)
+        fast = TracingStorage(
+            MemoryKVCache(max_entries=args.max_entries),
+            recorder,
+            name="memory",
+        )
+        slow = TracingStorage(
+            DiskKVCache(args.storage_dir, max_entries=args.max_entries),
+            recorder,
+            name="disk",
+        )
+        return TieredStorage(
+            fast=fast,
+            slow=slow,
+            trace_recorder=recorder,
+        )
     return TracingStorage(backend, recorder, name=args.storage)
 
 

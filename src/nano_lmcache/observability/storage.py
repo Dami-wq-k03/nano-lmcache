@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from typing import Any, cast
 
+from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.protocol import CacheStorage
 
@@ -27,7 +28,7 @@ class TracingStorage:
         self._backend = backend
         self._recorder = recorder
         self._name = name
-        self._request_id = request_id or recorder.request_id or "storage"
+        self._request_id = request_id
         self._known_keys: set[str] = set()
 
     @property
@@ -88,6 +89,7 @@ class TracingStorage:
         self._record(
             "storage_put",
             key=key,
+            parent_key=parent_key,
             result="admitted" if admitted else "rejected",
             duration_ns=time.perf_counter_ns() - started,
             metadata={"backend": self._name, "parent_key": parent_key},
@@ -108,6 +110,7 @@ class TracingStorage:
         self._record(
             "storage_get",
             key=key,
+            parent_key=self._parent_or_none(key),
             result="hit" if value is not None else "miss",
             duration_ns=time.perf_counter_ns() - started,
             metadata={"backend": self._name},
@@ -174,6 +177,7 @@ class TracingStorage:
         event_type: str,
         *,
         key: str | None = None,
+        parent_key: str | None = None,
         result: str | None = None,
         duration_ns: int | None = None,
         metadata: dict[str, Any] | None = None,
@@ -182,9 +186,24 @@ class TracingStorage:
             return
         self._recorder.record(
             event_type,
-            request_id=self._request_id,
+            request_id=(
+                current_request_id()
+                or self._request_id
+                or self._recorder.request_id
+                or "storage"
+            ),
             key=key,
+            parent_key=parent_key,
             result=result,
             duration_ns=duration_ns,
             metadata=metadata,
         )
+
+    def _parent_or_none(self, key: str) -> str | None:
+        backend = cast(Any, self._backend)
+        if key not in backend:
+            return None
+        parent_of = getattr(backend, "parent_of", None)
+        if parent_of is None:
+            return None
+        return cast(str | None, parent_of(key))

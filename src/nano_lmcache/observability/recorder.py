@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.events import TraceEvent, TraceEventType
 
 
@@ -85,7 +86,11 @@ class TraceRecorder:
         if not self._enabled:
             return None
 
-        event_request_id = request_id if request_id is not None else self._request_id
+        event_request_id = (
+            request_id
+            if request_id is not None
+            else self._request_id or current_request_id()
+        )
         if event_request_id is None:
             raise ValueError(
                 "request_id is required; bind one on TraceRecorder or pass it "

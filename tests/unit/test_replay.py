@@ -20,6 +20,35 @@ def test_workload_replay_stores_missing_chunks_and_reuses_them():
     assert any(event.event_type == "chunk_not_checked" for event in report.events)
 
 
+def test_prefix_branching_replay_keeps_parent_keys_for_the_tree():
+    report = WorkloadReplayRunner(chunk_size=2).run(
+        generate_synthetic("prefix_branching")
+    )
+
+    nodes = {
+        event.key: event.parent_key
+        for event in report.events
+        if event.key is not None
+    }
+    child_keys = [key for key, parent in nodes.items() if parent is not None]
+    assert child_keys
+    assert all(nodes[key] in nodes for key in child_keys)
+
+
+def test_html_escapes_external_request_text_and_merges_tree_nodes():
+    report = WorkloadReplayRunner(chunk_size=2).run(
+        generate_synthetic("full_prefix_hit")
+    )
+    payload = report.to_dict()
+    payload["requests"][0]["request_id"] = '<img src=x onerror="alert(1)">'
+    page = render_html(payload)
+
+    assert "escapeText(r.request_id)" in page
+    assert "escapeText(e.request_id)" in page
+    assert "previous && previous.parent" in page
+    assert "<img src=x onerror" not in page
+
+
 def test_opaque_block_replay_does_not_treat_block_ids_as_token_ids():
     records = [
         {

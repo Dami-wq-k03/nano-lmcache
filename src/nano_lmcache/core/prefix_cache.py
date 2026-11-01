@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.core.metrics import CacheMetrics
+from nano_lmcache.observability.context import request_context
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.protocol import CacheStorage
@@ -78,6 +79,8 @@ class ChunkedPrefixCache:
         self, token_ids: Sequence[int],
         chunk_values: Sequence[object],
         start_chunk: int = 0,
+        *,
+        request_id: str | None = None,
     ) -> None:
         complete_chunks = self._complete_chunks(token_ids)
         num_chunks = len(complete_chunks)
@@ -113,11 +116,12 @@ class ChunkedPrefixCache:
             )
 
             if index >= start_chunk:
-                self._storage.put(
-                    key,
-                    chunk_values[index - start_chunk],
-                    parent_key=prefix_key,
-                )
+                with request_context(request_id):
+                    self._storage.put(
+                        key,
+                        chunk_values[index - start_chunk],
+                        parent_key=prefix_key,
+                    )
             prefix_key = key
 
     def lookup(
@@ -175,7 +179,8 @@ class ChunkedPrefixCache:
             started_ns = (
                 time.perf_counter_ns() if trace_enabled else 0
             )
-            value = self._storage.get(key)
+            with request_context(trace_request_id):
+                value = self._storage.get(key)
             duration_ns = (
                 time.perf_counter_ns() - started_ns
                 if trace_enabled

@@ -137,9 +137,13 @@ class WorkloadReplayRunner:
         sort_by_arrival: bool = True,
         store_missing: bool = True,
     ) -> ReplayReport:
-        ordered = list(requests)
+        ordered: Iterable[WorkloadRequest] = requests
         if sort_by_arrival:
-            ordered.sort(key=lambda item: (item.arrival_time_ms, item.request_id))
+            sorted_requests = list(requests)
+            sorted_requests.sort(
+                key=lambda item: (item.arrival_time_ms, item.request_id)
+            )
+            ordered = sorted_requests
 
         results: list[ReplayRequestResult] = []
         for request in ordered:
@@ -174,6 +178,7 @@ class WorkloadReplayRunner:
                     request.token_ids,
                     values,
                     start_chunk=lookup.matched_chunks,
+                    request_id=request.request_id,
                 )
 
             results.append(
@@ -235,9 +240,13 @@ class BlockTraceReplayRunner:
         sort_by_arrival: bool = True,
         store_missing: bool = True,
     ) -> ReplayReport:
-        ordered = list(requests)
+        ordered: Iterable[WorkloadRequest] = requests
         if sort_by_arrival:
-            ordered.sort(key=lambda item: (item.arrival_time_ms, item.request_id))
+            sorted_requests = list(requests)
+            sorted_requests.sort(
+                key=lambda item: (item.arrival_time_ms, item.request_id)
+            )
+            ordered = sorted_requests
         results: list[ReplayRequestResult] = []
 
         for request in ordered:

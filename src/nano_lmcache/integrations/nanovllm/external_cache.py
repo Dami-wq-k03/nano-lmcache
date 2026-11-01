@@ -35,6 +35,7 @@ import torch
 
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
+from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.protocol import CacheStorage
 
@@ -291,7 +292,11 @@ class NanoVLLMExternalCache:
             return
         self._trace_recorder.record(
             event_type,
-            request_id=self._trace_recorder.request_id or "nanovllm",
+            request_id=(
+                current_request_id()
+                or self._trace_recorder.request_id
+                or "nanovllm"
+            ),
             result=result,
             metadata=metadata,
         )

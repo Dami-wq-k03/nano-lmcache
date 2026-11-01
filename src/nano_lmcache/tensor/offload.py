@@ -25,6 +25,7 @@ from collections.abc import Iterator
 
 import torch
 
+from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.eviction import PrefixLRUIndex
 from nano_lmcache.storage.stats import StorageStats
@@ -197,7 +198,11 @@ class CPUOffloadKVCache:
             return
         self._trace_recorder.record(
             event_type,
-            request_id=self._trace_recorder.request_id or "gpu",
+            request_id=(
+                current_request_id()
+                or self._trace_recorder.request_id
+                or "gpu"
+            ),
             key=key,
             result=result,
             metadata=metadata,

@@ -26,6 +26,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from nano_lmcache.observability.context import current_request_id
+from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.protocol import CacheStorage
 
 
@@ -90,10 +92,17 @@ class TierStats:
 class TieredStorage:
     """Write-through, promote-on-hit combination of two backends."""
 
-    def __init__(self, *, fast: FastTier, slow: SlowTier) -> None:
+    def __init__(
+        self,
+        *,
+        fast: FastTier,
+        slow: SlowTier,
+        trace_recorder: TraceRecorder | None = None,
+    ) -> None:
         self._fast = fast
         self._slow = slow
         self._tier_stats = TierStats()
+        self._trace_recorder = trace_recorder
 
     @property
     def fast(self) -> FastTier:
@@ -153,15 +162,43 @@ class TieredStorage:
         value = self._fast.get(key)
         if value is not None:
             self._tier_stats.fast_hits += 1
+            self._record("tier_hit", result="fast", metadata={"tier": "fast"})
             return value
 
         value = self._slow.get(key)
         if value is None:
             self._tier_stats.misses += 1
+            self._record("tier_miss", result="miss", metadata={"tier": "slow"})
             return None
 
         self._tier_stats.slow_hits += 1
+        self._record("tier_hit", result="slow", metadata={"tier": "slow"})
         self._fast.put(key, value, parent_key=self._slow.parent_of(key))
         if key in self._fast:
             self._tier_stats.promotions += 1
+            self._record(
+                "promotion",
+                result="slow_to_fast",
+                metadata={"from": "slow", "to": "fast"},
+            )
         return value
+
+    def _record(
+        self,
+        event_type: str,
+        *,
+        result: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        if self._trace_recorder is None or not self._trace_recorder.enabled:
+            return
+        self._trace_recorder.record(
+            event_type,
+            request_id=(
+                current_request_id()
+                or self._trace_recorder.request_id
+                or "tiered"
+            ),
+            result=result,
+            metadata=metadata,
+        )

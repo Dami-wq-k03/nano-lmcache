@@ -2,7 +2,8 @@ import pytest
 
 from nano_lmcache.core.metrics import CacheMetrics
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
-from nano_lmcache.observability import TraceRecorder
+from nano_lmcache.observability import TraceRecorder, TracingStorage
+from nano_lmcache.storage.memory import MemoryKVCache
 
 
 def test_store_then_lookup_returns_all_chunks():
@@ -261,3 +262,24 @@ def test_lookup_without_request_id_gets_anonymous_trace_id():
     cache.lookup([101, 205])
 
     assert recorder.events[0].request_id == "lookup-0"
+
+
+def test_storage_events_inherit_the_lookup_request_context():
+    recorder = TraceRecorder()
+    storage = TracingStorage(MemoryKVCache(), recorder, name="memory")
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+        storage=storage,
+        trace_recorder=recorder,
+    )
+
+    cache.lookup([101, 205], request_id="request-a")
+    cache.store([101, 205], ["kv-0"], request_id="request-a")
+
+    storage_events = [
+        event for event in recorder.events if event.event_type.startswith("storage_")
+    ]
+    assert storage_events
+    assert {event.request_id for event in storage_events} == {"request-a"}
+    assert storage_events[-1].parent_key is None

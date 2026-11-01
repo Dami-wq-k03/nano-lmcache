@@ -41,6 +41,7 @@ from nanovllm.engine.block_manager import BlockManager
 from nano_lmcache.integrations.nanovllm.external_cache import NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.kv_blocks import export_block, import_block
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
+from nano_lmcache.observability.context import request_context
 
 
 @dataclass
@@ -93,9 +94,11 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         if l1_hits == -1:
             return -1
         self._l1_hits[seq.seq_id] = l1_hits
-        self.external.record_l1_hit(l1_hits)
-        # Membership checks only (rule 3); never past the last block (rule 1).
-        return l1_hits + self.external.count_hits(seq.token_ids, l1_hits)
+        with request_context(f"seq-{seq.seq_id}"):
+            self.external.record_l1_hit(l1_hits)
+            # Membership checks only (rule 3); never past the last block (rule 1).
+            l2_hits = self.external.count_hits(seq.token_ids, l1_hits)
+        return l1_hits + l2_hits
 
     def allocate(self, seq: Any, num_cached_blocks: int) -> None:
         try:
@@ -109,7 +112,12 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         self.stats.l1_hit_blocks += l1_hits
 
         wanted = num_cached_blocks - l1_hits
-        payloads = self.external.fetch(seq.token_ids, l1_hits, wanted) if wanted else []
+        with request_context(f"seq-{seq.seq_id}"):
+            payloads = (
+                self.external.fetch(seq.token_ids, l1_hits, wanted)
+                if wanted
+                else []
+            )
         restored_end = l1_hits + len(payloads)
         block_ids = seq.block_table[l1_hits:restored_end]
         self._pending_loads.extend(zip(block_ids, payloads, strict=True))
@@ -138,15 +146,17 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
 
         # Usually starts at `start`, but can start earlier: if L2 lost
         # blocks that L1 still holds, they are stored again from the GPU.
-        missing = self.external.missing_blocks(seq.token_ids, end)
+        with request_context(f"seq-{seq.seq_id}"):
+            missing = self.external.missing_blocks(seq.token_ids, end)
         if not missing:
             return
         payloads = [
             export_block(self.kv_cache, seq.block_table[index]) for index in missing
         ]
-        self.stats.stored_blocks += self.external.store(
-            seq.token_ids, missing.start, payloads
-        )
+        with request_context(f"seq-{seq.seq_id}"):
+            self.stats.stored_blocks += self.external.store(
+                seq.token_ids, missing.start, payloads
+            )
 
     def take_pending_loads(self) -> list[tuple[int, torch.Tensor]]:
         """Payloads to copy into the KV cache before the next forward pass."""

@@ -67,27 +67,39 @@ function renderSummary() {{
   $("summary").innerHTML = metrics.map(x=>`<div class="metric"><span class="muted">${{x[0]}}</span><b>${{x[1]}}</b></div>`).join("");
 }}
 function currentEvent() {{ return step >= 0 ? events[step] : null; }}
+function escapeText(value) {{
+  return String(value ?? "").replace(/[&<>\"']/g, function(char) {{
+    if (char === "&") return "&amp;";
+    if (char === "<") return "&lt;";
+    if (char === ">") return "&gt;";
+    if (char === '\"') return "&quot;";
+    return "&#39;";
+  }});
+}}
 function renderRequests() {{
   const e = currentEvent();
   $("requests").innerHTML = requests.map(r => {{
     const active = e && e.request_id === r.request_id;
-    const chunks = (r.statuses || []).map((s,i)=>`<span class="chunk ${{statusClass(s)}} ${{active && e.chunk_index === i ? "active":""}}"><b>${{i}}</b> · ${{s}}</span>`).join("");
-    return `<div class="request"><div class="request-title"><b>${{r.request_id}}</b><span class="muted">${{r.matched_chunks}}/${{r.total_chunks}} chunks</span></div><div class="chunks">${{chunks || '<span class="muted">no chunks</span>'}}</div></div>`;
+    const chunks = (r.statuses || []).map((s,i)=>`<span class="chunk ${{escapeText(statusClass(s))}} ${{active && e.chunk_index === i ? "active":""}}"><b>${{i}}</b> · ${{escapeText(s)}}</span>`).join("");
+    return `<div class="request"><div class="request-title"><b>${{escapeText(r.request_id)}}</b><span class="muted">${{r.matched_chunks}}/${{r.total_chunks}} chunks</span></div><div class="chunks">${{chunks || '<span class="muted">no chunks</span>'}}</div></div>`;
   }}).join("");
 }}
 function renderTimeline() {{
-  $("timeline").innerHTML = events.map((e,i)=>`<div class="event ${{i===step?"current":""}}" data-index="${{i}}"><div class="event-name">${{i}} · ${{e.event_type}}</div><div class="event-detail">request=${{e.request_id}}${{e.chunk_index == null ? "":" · chunk="+e.chunk_index}}${{e.result == null ? "":" · "+e.result}}</div></div>`).join("");
+  $("timeline").innerHTML = events.map((e,i)=>`<div class="event ${{i===step?"current":""}}" data-index="${{i}}"><div class="event-name">${{i}} · ${{escapeText(e.event_type)}}</div><div class="event-detail">request=${{escapeText(e.request_id)}}${{e.chunk_index == null ? "":" · chunk="+e.chunk_index}}${{e.result == null ? "":" · "+escapeText(e.result)}}</div></div>`).join("");
   document.querySelectorAll(".event").forEach(n=>n.onclick=()=>{{ step=Number(n.dataset.index); render(); }});
 }}
 function renderTree() {{
   const nodes = new Map();
-  events.forEach(e=>{{ if(e.key) nodes.set(e.key, {{key:e.key,parent:e.parent_key,active:e===currentEvent()}}); }});
+  events.forEach(e=>{{ if(e.key) {{
+    const previous = nodes.get(e.key);
+    nodes.set(e.key, {{key:e.key,parent:e.parent_key ?? (previous && previous.parent),active:(previous && previous.active) || e===currentEvent()}});
+  }} }});
   const list = [...nodes.values()]; if(!list.length) {{ $("tree").innerHTML='<span class="muted">No key events</span>'; return; }}
   const depth = n => n.parent && nodes.has(n.parent) ? depth(nodes.get(n.parent))+1 : 0;
   list.forEach(n=>n.depth=depth(n)); const max=Math.max(...list.map(n=>n.depth)); const width=Math.max(500,(max+1)*180), byDepth={{}};
   list.forEach(n=>(byDepth[n.depth] ||= []).push(n)); list.forEach(n=>n.x=(byDepth[n.depth].indexOf(n)+1)*width/(byDepth[n.depth].length+1));
   const edges=list.filter(n=>n.parent&&nodes.has(n.parent)).map(n=>`<line class="tree-edge" x1="${{nodes.get(n.parent).x}}" y1="${{70+nodes.get(n.parent).depth*70}}" x2="${{n.x}}" y2="${{70+n.depth*70}}"/>`).join("");
-  const labels=list.map(n=>`<g><circle class="tree-node ${{n.active?"current":""}}" cx="${{n.x}}" cy="${{70+n.depth*70}}" r="20"/><text class="tree-label" x="${{n.x}}" y="${{74+n.depth*70}}">${{n.key.slice(0,6)}}</text></g>`).join("");
+  const labels=list.map(n=>`<g><circle class="tree-node ${{n.active?"current":""}}" cx="${{n.x}}" cy="${{70+n.depth*70}}" r="20"/><text class="tree-label" x="${{n.x}}" y="${{74+n.depth*70}}">${{escapeText(n.key.slice(0,6))}}</text></g>`).join("");
   $("tree").innerHTML=`<svg viewBox="0 0 ${{width}} ${{90+max*70}}">${{edges}}${{labels}}</svg>`;
 }}
 function render() {{
