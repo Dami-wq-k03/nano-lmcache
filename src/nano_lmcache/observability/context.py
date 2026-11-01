@@ -18,6 +18,9 @@ def current_request_id() -> str | None:
 @contextmanager
 def request_context(request_id: str | None) -> Iterator[None]:
     """Temporarily associate storage and engine callbacks with a request."""
+    if request_id is None:
+        yield
+        return
     token: Token[str | None] = _REQUEST_ID.set(request_id)
     try:
         yield
