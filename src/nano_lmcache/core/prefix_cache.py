@@ -1,10 +1,12 @@
 """Chunked prefix cache built on an in-memory KV store."""
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.core.metrics import CacheMetrics
+from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.protocol import CacheStorage
 
@@ -34,6 +36,7 @@ class ChunkedPrefixCache:
         namespace: str,
         storage: CacheStorage | None = None,
         metrics: CacheMetrics | None = None,
+        trace_recorder: TraceRecorder | None = None,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
@@ -42,6 +45,8 @@ class ChunkedPrefixCache:
         self._namespace = namespace
         self._storage = storage if storage is not None else MemoryKVCache()
         self._metrics = metrics if metrics is not None else CacheMetrics()
+        self._trace_recorder = trace_recorder
+        self._trace_request_sequence = 0
 
     @property
     def storage(self) -> CacheStorage:
@@ -110,8 +115,46 @@ class ChunkedPrefixCache:
                 )
             prefix_key = key
 
-    def lookup(self, token_ids: Sequence[int]) -> PrefixLookupResult:
-        complete_chunks = self._complete_chunks(token_ids)
+    def lookup(
+        self,
+        token_ids: Sequence[int],
+        *,
+        request_id: str | None = None,
+    ) -> PrefixLookupResult:
+        all_chunks = chunk_tokens(token_ids, self._chunk_size)
+        complete_chunks = [
+            chunk for chunk in all_chunks if len(chunk) == self._chunk_size
+        ]
+        incomplete_chunk = (
+            all_chunks[-1]
+            if all_chunks and len(all_chunks[-1]) != self._chunk_size
+            else None
+        )
+
+        trace_enabled = (
+            self._trace_recorder is not None and self._trace_recorder.enabled
+        )
+        trace_request_id = request_id
+        if (
+            trace_enabled
+            and self._trace_recorder is not None
+            and trace_request_id is None
+            and self._trace_recorder.request_id is None
+        ):
+            trace_request_id = f"lookup-{self._trace_request_sequence}"
+        if trace_enabled:
+            self._trace_request_sequence += 1
+
+        self._record_trace(
+            "lookup_started",
+            request_id=trace_request_id,
+            metadata={
+                "token_count": len(token_ids),
+                "chunk_size": self._chunk_size,
+                "complete_chunks": len(complete_chunks),
+                "has_incomplete_chunk": incomplete_chunk is not None,
+            },
+        )
 
         matched_chunks = 0
         matched_tokens = 0
@@ -119,19 +162,93 @@ class ChunkedPrefixCache:
         keys: list[str] = []
 
         prefix_key: str | None = None
-        for chunk in complete_chunks:
+        miss_index: int | None = None
+        for index, chunk in enumerate(complete_chunks):
             key = make_chunk_key(
                 chunk, namespace=self._namespace, prefix_key=prefix_key
             )
+            started_ns = (
+                time.perf_counter_ns() if trace_enabled else 0
+            )
             value = self._storage.get(key)
+            duration_ns = (
+                time.perf_counter_ns() - started_ns
+                if trace_enabled
+                else None
+            )
             if value is None:
+                miss_index = index
+                self._record_trace(
+                    "chunk_miss",
+                    request_id=trace_request_id,
+                    chunk_index=index,
+                    key=key,
+                    parent_key=prefix_key,
+                    result="miss",
+                    duration_ns=duration_ns,
+                )
+                self._record_trace(
+                    "lookup_stopped",
+                    request_id=trace_request_id,
+                    chunk_index=index,
+                    key=key,
+                    parent_key=prefix_key,
+                    result="first_miss",
+                    metadata={"reason": "first_miss"},
+                )
                 break
 
             matched_chunks += 1
             matched_tokens += len(chunk)
             values.append(value)
             keys.append(key)
+            self._record_trace(
+                "chunk_hit",
+                request_id=trace_request_id,
+                chunk_index=index,
+                key=key,
+                parent_key=prefix_key,
+                result="hit",
+                duration_ns=duration_ns,
+            )
             prefix_key = key
+
+        if miss_index is not None:
+            candidate_parent_key = make_chunk_key(
+                complete_chunks[miss_index],
+                namespace=self._namespace,
+                prefix_key=prefix_key,
+            )
+            for index in range(miss_index + 1, len(complete_chunks)):
+                key = make_chunk_key(
+                    complete_chunks[index],
+                    namespace=self._namespace,
+                    prefix_key=candidate_parent_key,
+                )
+                self._record_trace(
+                    "chunk_not_checked",
+                    request_id=trace_request_id,
+                    chunk_index=index,
+                    key=key,
+                    parent_key=candidate_parent_key,
+                    result="not_checked",
+                    metadata={"reason": "previous_miss"},
+                )
+                candidate_parent_key = key
+            prefix_key = candidate_parent_key
+
+        if incomplete_chunk is not None:
+            self._record_trace(
+                "chunk_incomplete",
+                request_id=trace_request_id,
+                chunk_index=len(all_chunks) - 1,
+                parent_key=prefix_key,
+                result="incomplete",
+                metadata={
+                    "token_count": len(incomplete_chunk),
+                    "chunk_size": self._chunk_size,
+                },
+            )
 
         self._metrics.record_lookup(
             hit_chunks=matched_chunks,
@@ -139,9 +256,52 @@ class ChunkedPrefixCache:
             hit_tokens=matched_tokens,
         )
 
+        self._record_trace(
+            "lookup_completed",
+            request_id=trace_request_id,
+            result="completed",
+            metadata={
+                "matched_chunks": matched_chunks,
+                "matched_tokens": matched_tokens,
+                "miss_chunks": len(complete_chunks) - matched_chunks,
+                "checked_chunks": matched_chunks + (1 if miss_index is not None else 0),
+                "unchecked_chunks": (
+                    len(complete_chunks) - miss_index - 1
+                    if miss_index is not None
+                    else 0
+                ),
+                "incomplete_chunks": 1 if incomplete_chunk is not None else 0,
+            },
+        )
+
         return PrefixLookupResult(
             matched_chunks=matched_chunks,
             matched_tokens=matched_tokens,
             values=tuple(values),
             keys=tuple(keys),
+        )
+
+    def _record_trace(
+        self,
+        event_type: str,
+        *,
+        request_id: str | None,
+        chunk_index: int | None = None,
+        key: str | None = None,
+        parent_key: str | None = None,
+        result: str | None = None,
+        duration_ns: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        if self._trace_recorder is None or not self._trace_recorder.enabled:
+            return
+        self._trace_recorder.record(
+            event_type,
+            request_id=request_id,
+            chunk_index=chunk_index,
+            key=key,
+            parent_key=parent_key,
+            result=result,
+            duration_ns=duration_ns,
+            metadata=metadata,
         )

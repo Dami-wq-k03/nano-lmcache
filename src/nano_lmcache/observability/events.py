@@ -17,6 +17,8 @@ class TraceEventType(StrEnum):
     LOOKUP_STARTED = "lookup_started"
     CHUNK_HIT = "chunk_hit"
     CHUNK_MISS = "chunk_miss"
+    CHUNK_NOT_CHECKED = "chunk_not_checked"
+    CHUNK_INCOMPLETE = "chunk_incomplete"
     LOOKUP_STOPPED = "lookup_stopped"
     LOOKUP_COMPLETED = "lookup_completed"
     CHUNK_STORED = "chunk_stored"

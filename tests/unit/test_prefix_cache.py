@@ -2,6 +2,7 @@ import pytest
 
 from nano_lmcache.core.metrics import CacheMetrics
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.observability import TraceRecorder
 
 
 def test_store_then_lookup_returns_all_chunks():
@@ -185,3 +186,78 @@ def test_chunk_size_is_exposed():
     cache = ChunkedPrefixCache(chunk_size=4, namespace="model-a")
 
     assert cache.chunk_size == 4
+
+
+def test_lookup_trace_distinguishes_hit_miss_and_not_checked():
+    recorder = TraceRecorder()
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+        trace_recorder=recorder,
+    )
+    cache.store([101, 205, 307, 409], ["kv-0", "kv-1"])
+
+    result = cache.lookup(
+        [101, 205, 307, 409, 777, 888, 999, 1001],
+        request_id="request-b",
+    )
+
+    assert result.matched_chunks == 2
+    assert [event.event_type for event in recorder.events] == [
+        "lookup_started",
+        "chunk_hit",
+        "chunk_hit",
+        "chunk_miss",
+        "lookup_stopped",
+        "chunk_not_checked",
+        "lookup_completed",
+    ]
+    assert [event.chunk_index for event in recorder.events[1:6]] == [
+        0,
+        1,
+        2,
+        2,
+        3,
+    ]
+    completed = recorder.events[-1]
+    assert completed.metadata == {
+        "matched_chunks": 2,
+        "matched_tokens": 4,
+        "miss_chunks": 2,
+        "checked_chunks": 3,
+        "unchecked_chunks": 1,
+        "incomplete_chunks": 0,
+    }
+    assert all(event.request_id == "request-b" for event in recorder.events)
+
+
+def test_lookup_trace_marks_incomplete_trailing_chunk():
+    recorder = TraceRecorder(request_id="request-a")
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+        trace_recorder=recorder,
+    )
+    cache.store([101, 205, 307, 409], ["kv-0", "kv-1"])
+
+    cache.lookup([101, 205, 307, 409, 511])
+
+    incomplete = recorder.events[-2]
+    assert incomplete.event_type == "chunk_incomplete"
+    assert incomplete.chunk_index == 2
+    assert incomplete.key is None
+    assert incomplete.metadata == {"token_count": 1, "chunk_size": 2}
+    assert recorder.events[-1].metadata["incomplete_chunks"] == 1
+
+
+def test_lookup_without_request_id_gets_anonymous_trace_id():
+    recorder = TraceRecorder()
+    cache = ChunkedPrefixCache(
+        chunk_size=2,
+        namespace="model-a",
+        trace_recorder=recorder,
+    )
+
+    cache.lookup([101, 205])
+
+    assert recorder.events[0].request_id == "lookup-0"

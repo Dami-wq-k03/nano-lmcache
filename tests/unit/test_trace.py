@@ -105,3 +105,8 @@ def test_event_metadata_is_copied_and_invalid_values_are_rejected():
         TraceEvent(0, "request-a", "lookup_started", duration_ns=-1)
     with pytest.raises(ValueError):
         TraceEvent(0, "request-a", "lookup_started", chunk_index=-1)
+
+
+def test_trace_event_types_include_unchecked_and_incomplete_states():
+    assert TraceEventType.CHUNK_NOT_CHECKED.value == "chunk_not_checked"
+    assert TraceEventType.CHUNK_INCOMPLETE.value == "chunk_incomplete"
