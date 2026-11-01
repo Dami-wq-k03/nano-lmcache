@@ -93,6 +93,7 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         if l1_hits == -1:
             return -1
         self._l1_hits[seq.seq_id] = l1_hits
+        self.external.record_l1_hit(l1_hits)
         # Membership checks only (rule 3); never past the last block (rule 1).
         return l1_hits + self.external.count_hits(seq.token_ids, l1_hits)
 

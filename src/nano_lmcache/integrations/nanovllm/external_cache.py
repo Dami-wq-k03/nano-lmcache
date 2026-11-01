@@ -271,6 +271,15 @@ class NanoVLLMExternalCache:
             metadata={"blocks": block_count},
         )
 
+    def record_l1_hit(self, block_count: int) -> None:
+        """Record blocks already resident in nano-vLLM's GPU cache."""
+        if block_count:
+            self._record(
+                "l1_hit",
+                result="hit",
+                metadata={"blocks": block_count},
+            )
+
     def _record(
         self,
         event_type: str,
