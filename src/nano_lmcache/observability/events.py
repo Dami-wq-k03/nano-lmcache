@@ -23,6 +23,18 @@ class TraceEventType(StrEnum):
     LOOKUP_COMPLETED = "lookup_completed"
     CHUNK_STORED = "chunk_stored"
     EVICTION = "eviction"
+    STORAGE_GET = "storage_get"
+    STORAGE_PUT = "storage_put"
+    TIER_HIT = "tier_hit"
+    TIER_MISS = "tier_miss"
+    PROMOTION = "promotion"
+    GPU_EXPORT = "gpu_export"
+    CPU_OFFLOAD = "cpu_offload"
+    L2_LOOKUP = "l2_lookup"
+    L2_RESTORE = "l2_restore"
+    GPU_IMPORT = "gpu_import"
+    L1_HIT = "l1_hit"
+    L2_HIT = "l2_hit"
 
 
 # Short alias for callers that prefer ``EventType.CHUNK_HIT``.

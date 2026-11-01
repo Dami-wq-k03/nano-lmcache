@@ -63,6 +63,11 @@ class ChunkedPrefixCache:
         """Hit/miss totals accumulated by this cache's lookups."""
         return self._metrics
 
+    @property
+    def trace_recorder(self) -> TraceRecorder | None:
+        """The optional recorder receiving lookup events."""
+        return self._trace_recorder
+
     def _complete_chunks(
         self, token_ids: Sequence[int]
     ) -> list[tuple[int, ...]]:

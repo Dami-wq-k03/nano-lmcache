@@ -35,6 +35,7 @@ import torch
 
 from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
+from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.protocol import CacheStorage
 
 
@@ -75,7 +76,12 @@ class ExternalCacheStats:
 class NanoVLLMExternalCache:
     """nano-lmcache storage addressed by nano-vLLM token blocks."""
 
-    def __init__(self, layout: KVBlockLayout, storage: MembershipStorage) -> None:
+    def __init__(
+        self,
+        layout: KVBlockLayout,
+        storage: MembershipStorage,
+        trace_recorder: TraceRecorder | None = None,
+    ) -> None:
         if not isinstance(storage, MembershipStorage):
             raise TypeError(
                 "storage must support `key in storage` (__contains__) so hits "
@@ -85,6 +91,7 @@ class NanoVLLMExternalCache:
         self._storage = storage
         self._namespace = layout.namespace()
         self._stats = ExternalCacheStats()
+        self._trace_recorder = trace_recorder
 
     @property
     def layout(self) -> KVBlockLayout:
@@ -140,6 +147,17 @@ class NanoVLLMExternalCache:
             hits += 1
 
         self._stats.hit_blocks += hits
+        self._record(
+            "l2_lookup",
+            result="hit" if hits else "miss",
+            metadata={
+                "hit_blocks": hits,
+                "l1_blocks": num_gpu_cached_blocks,
+                "block_tokens": self._layout.block_size,
+            },
+        )
+        if hits:
+            self._record("l2_hit", result="hit", metadata={"blocks": hits})
         return hits
 
     def fetch(
@@ -175,6 +193,11 @@ class NanoVLLMExternalCache:
             payloads.append(payload)
 
         self._stats.fetched_blocks += len(payloads)
+        self._record(
+            "l2_restore",
+            result="hit" if payloads else "miss",
+            metadata={"blocks": len(payloads), "start_block": start_block},
+        )
         return payloads
 
     def missing_blocks(
@@ -228,4 +251,38 @@ class NanoVLLMExternalCache:
 
         stored = sum(key in self._storage for key in keys[start_block:])
         self._stats.stored_blocks += stored
+        self._record(
+            "gpu_export",
+            result="exported",
+            metadata={"blocks": len(payloads), "start_block": start_block},
+        )
+        self._record(
+            "chunk_stored",
+            result="stored",
+            metadata={"blocks": stored, "start_block": start_block},
+        )
         return stored
+
+    def record_gpu_import(self, block_count: int) -> None:
+        """Record payloads copied from L2 into nano-vLLM GPU blocks."""
+        self._record(
+            "gpu_import",
+            result="restored",
+            metadata={"blocks": block_count},
+        )
+
+    def _record(
+        self,
+        event_type: str,
+        *,
+        result: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        if self._trace_recorder is None or not self._trace_recorder.enabled:
+            return
+        self._trace_recorder.record(
+            event_type,
+            request_id=self._trace_recorder.request_id or "nanovllm",
+            result=result,
+            metadata=metadata,
+        )

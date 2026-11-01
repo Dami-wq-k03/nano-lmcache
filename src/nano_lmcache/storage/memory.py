@@ -1,7 +1,7 @@
 """In-memory key-value cache, standing in for a real KV-tensor store."""
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 from nano_lmcache.storage.eviction import PrefixLRUIndex
 from nano_lmcache.storage.stats import StorageStats
@@ -60,6 +60,10 @@ class MemoryKVCache:
 
     def __len__(self) -> int:
         return len(self._values)
+
+    def keys(self) -> Iterator[str]:
+        """Stored keys from least to most recently used."""
+        return self._index.keys_by_recency()
 
     def __contains__(self, key: object) -> bool:
         """Whether `key` is stored; unlike `get`, does not count as a use."""

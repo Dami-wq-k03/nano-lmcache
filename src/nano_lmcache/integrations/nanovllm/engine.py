@@ -249,8 +249,11 @@ def _wrap_run(runner: Any, manager: ExternalBlockManager) -> None:
     def run(seqs: Sequence[Any], is_prefill: bool) -> list[int]:
         # Same CUDA stream as the forward pass, so attention cannot read a
         # block before its copy has finished (rule 6).
-        for block_id, payload in manager.take_pending_loads():
+        pending_loads = manager.take_pending_loads()
+        for block_id, payload in pending_loads:
             import_block(runner.kv_cache, block_id, payload)
+        if pending_loads:
+            manager.external.record_gpu_import(len(pending_loads))
         if is_prefill:
             manager.stats.prefill_tokens += sum(
                 seq.num_scheduled_tokens for seq in seqs

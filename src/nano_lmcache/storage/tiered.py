@@ -22,6 +22,7 @@ Each tier enforces the prefix-safety invariant on its own (every entry's
 whole ancestor chain is in that tier), so their union does as well.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -109,6 +110,19 @@ class TieredStorage:
     def __contains__(self, key: object) -> bool:
         """Whether either tier has `key`; does not promote or count a use."""
         return key in self._fast or key in self._slow
+
+    def __len__(self) -> int:
+        """Number of distinct keys present in either tier."""
+        return sum(1 for _ in self.keys())
+
+    def keys(self) -> Iterator[str]:
+        """Yield the union of keys present in either tier."""
+        keys: set[str] = set()
+        for tier in (self._fast, self._slow):
+            iterator = getattr(tier, "keys", None)
+            if iterator is not None:
+                keys.update(iterator())
+        return iter(keys)
 
     def put(
         self,

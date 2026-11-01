@@ -49,11 +49,29 @@ uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
 前缀缓存示例会使用同一个缓存处理四个请求，并输出每个分块的命中或未命中情况，以及累计复用指标。
 
+也可以直接回放可控工作负载并生成离线 Trace 可视化页面：
+
+```bash
+uv run python -m nano_lmcache.visualize \
+  --scenario partial_prefix_hit \
+  --output trace.html
+```
+
+生成的 HTML 不依赖 CDN 或常驻服务，包含 Chunk 状态、Prefix Key、Prefix Tree、事件详情和逐步播放控制。FreeInference JSONL 会使用独立的 opaque block replay，不会把数据集中的 Block ID 当作模型 Token ID：
+
+```bash
+uv run python -m nano_lmcache.visualize \
+  --freeinference-jsonl sample.jsonl \
+  --limit 100 \
+  --output freeinference.html
+```
+
 ## 路线图
 
 1. **Nano（已完成）**：Token 分块、感知前缀的分块键、内存后端、连续前缀查询，以及命中/未命中指标。
-2. **Mini（进行中）**：存储接口和有界且保持前缀安全的淘汰机制已经就绪；磁盘和分层后端即将实现。
-3. **GPU 和 vLLM**：使用真实模型验证真实 KV 张量、GPU 到 CPU 的卸载，以及 vLLM KV 连接器。
+2. **Mini（已完成）**：存储接口、有界且保持前缀安全的淘汰机制、磁盘后端和内存/磁盘分层后端。
+3. **GPU 和 nano-vLLM（V1 已完成）**：真实 KV 张量、GPU 到 CPU 的卸载，以及 nano-vLLM 外部 KV Cache 集成。
+4. **Visualization Lab（进行中）**：Trace、Synthetic/FreeInference Workload Replay、离线 HTML 播放、Storage 事件和可选的 GPU/nano-vLLM 传输事件。
 
 完整任务列表请参阅 [ROADMAP.md](ROADMAP.md)。欢迎贡献者认领开放任务。
 

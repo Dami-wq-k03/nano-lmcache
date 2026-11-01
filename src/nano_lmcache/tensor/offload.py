@@ -25,6 +25,7 @@ from collections.abc import Iterator
 
 import torch
 
+from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.eviction import PrefixLRUIndex
 from nano_lmcache.storage.stats import StorageStats
 
@@ -45,10 +46,12 @@ class CPUOffloadKVCache:
         max_bytes: int | None = None,
         pin_memory: bool = True,
         non_blocking: bool = True,
+        trace_recorder: TraceRecorder | None = None,
     ) -> None:
         self._device = torch.device(device)
         self._pin_memory = pin_memory
         self._non_blocking = non_blocking
+        self._trace_recorder = trace_recorder
         self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
         self._tensors: dict[str, torch.Tensor] = {}
 
@@ -111,6 +114,12 @@ class CPUOffloadKVCache:
                 f"CPUOffloadKVCache stores tensors, got {type(value).__name__}"
             )
 
+        self._record(
+            "gpu_export" if value.device.type == "cuda" else "cpu_offload",
+            key=key,
+            metadata={"bytes": value.nbytes, "shape": list(value.shape)},
+        )
+
         decision = self._index.admit(key, parent_key, size_bytes=value.nbytes)
         for victim in decision.evicted:
             # The caching host allocator only reuses this pinned buffer once
@@ -131,6 +140,12 @@ class CPUOffloadKVCache:
         # change the cached data by modifying their own tensor.
         held.copy_(value, non_blocking=self._non_blocking and self._pin_memory)
         self._tensors[key] = held
+        self._record(
+            "cpu_offload",
+            key=key,
+            result="stored",
+            metadata={"bytes": held.nbytes},
+        )
         return True
 
     def invalidate(self, key: str) -> None:
@@ -141,13 +156,22 @@ class CPUOffloadKVCache:
     def get(self, key: str) -> torch.Tensor | None:
         held = self._tensors.get(key)
         if held is None:
+            self._record("l2_lookup", key=key, result="miss")
             return None
 
         self._index.touch(key)
+        self._record("l2_lookup", key=key, result="hit")
         # Always a new tensor on `device`, so callers can modify what they
         # get without corrupting the cache.
         restored = torch.empty_like(held, device=self._device)
         restored.copy_(held, non_blocking=self._non_blocking and self._pin_memory)
+        self._record(
+            "gpu_import",
+            key=key,
+            result="restored",
+            metadata={"bytes": restored.nbytes, "device": str(self._device)},
+        )
+        self._record("l2_restore", key=key, result="restored")
         return restored
 
     def peek(self, key: str) -> torch.Tensor | None:
@@ -160,3 +184,21 @@ class CPUOffloadKVCache:
         if held is not None and torch.cuda.is_available():
             torch.cuda.synchronize()
         return held
+
+    def _record(
+        self,
+        event_type: str,
+        *,
+        key: str | None = None,
+        result: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        if self._trace_recorder is None or not self._trace_recorder.enabled:
+            return
+        self._trace_recorder.record(
+            event_type,
+            request_id=self._trace_recorder.request_id or "gpu",
+            key=key,
+            result=result,
+            metadata=metadata,
+        )

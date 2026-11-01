@@ -6,10 +6,12 @@ from nano_lmcache.observability.events import (
     TraceEventType,
 )
 from nano_lmcache.observability.recorder import TraceRecorder
+from nano_lmcache.observability.storage import TracingStorage
 
 __all__ = [
     "EventType",
     "TraceEvent",
     "TraceEventType",
     "TraceRecorder",
+    "TracingStorage",
 ]

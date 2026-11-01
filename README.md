@@ -63,6 +63,26 @@ uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B  # run twice
 The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 
+To replay a deterministic workload and open an offline trace visualizer:
+
+```bash
+uv run python -m nano_lmcache.visualize \
+  --scenario partial_prefix_hit \
+  --output trace.html
+```
+
+The generated HTML has no CDN or server dependency. It includes chunk
+statuses, prefix keys, a prefix tree, event details, and step-by-step
+timeline controls. FreeInference JSONL traces use an opaque block replay so
+their block IDs are never treated as model token IDs:
+
+```bash
+uv run python -m nano_lmcache.visualize \
+  --freeinference-jsonl sample.jsonl \
+  --limit 100 \
+  --output freeinference.html
+```
+
 New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for short definitions and beginner-friendly answers.
 
 ## Roadmap
@@ -78,6 +98,9 @@ New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for shor
    [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)'s GPU prefix
    cache. Design: [docs/nanovllm-integration.md](docs/nanovllm-integration.md);
    when it pays off: [docs/nanovllm-benchmark.md](docs/nanovllm-benchmark.md).
+5. **Visualization Lab (in progress)**: trace instrumentation, synthetic and
+   real workload replay, offline HTML playback, storage events, and optional
+   GPU/nano-vLLM transfer events.
 
 See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
 contributors to claim.

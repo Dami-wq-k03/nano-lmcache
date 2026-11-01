@@ -127,6 +127,10 @@ class DiskKVCache:
     def __len__(self) -> int:
         return len(self._index)
 
+    def keys(self) -> Iterator[str]:
+        """Stored keys from least to most recently used."""
+        return self._index.keys_by_recency()
+
     def __contains__(self, key: object) -> bool:
         """Whether `key` is stored; unlike `get`, does not count as a use."""
         return key in self._index
