@@ -11,7 +11,7 @@ from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.protocol import CacheStorage
 from nano_lmcache.storage.tiered import TieredStorage
-from nano_lmcache.visualization import write_html
+from nano_lmcache.visualization import load_trace_json, write_html
 
 
 def main() -> None:
@@ -21,6 +21,7 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--scenario", choices=sorted(SYNTHETIC_SCENARIOS))
     source.add_argument("--freeinference-jsonl", type=Path)
+    source.add_argument("--trace-json", type=Path, help="recorded engine Trace JSON")
     parser.add_argument("--output", type=Path, default=Path("trace.html"))
     parser.add_argument("--chunk-size", type=int, default=2)
     parser.add_argument("--limit", type=int, default=None)
@@ -34,7 +35,13 @@ def main() -> None:
     parser.add_argument("--max-entries", type=int, default=None)
     args = parser.parse_args()
 
-    if args.scenario is not None:
+    if args.trace_json is not None:
+        try:
+            payload = load_trace_json(args.trace_json)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        title = "nano-lmcache · Engine trace"
+    elif args.scenario is not None:
         recorder = TraceRecorder()
         storage = _make_storage(args, recorder)
         report = WorkloadReplayRunner(
@@ -43,16 +50,18 @@ def main() -> None:
             storage=storage,
             recorder=recorder,
         ).run(generate_synthetic(args.scenario))
+        payload = report.to_dict()
         title = f"nano-lmcache · {args.scenario}"
     else:
         requests = iter_freeinference_jsonl(args.freeinference_jsonl, limit=args.limit)
         report = BlockTraceReplayRunner().run(requests)
+        payload = report.to_dict()
         title = "nano-lmcache · FreeInference opaque block replay"
 
-    output = write_html(args.output, report, title=title)
+    output = write_html(args.output, payload, title=title)
     print(
-        f"wrote {output} ({len(report.events)} events, "
-        f"{len(report.requests)} requests)"
+        f"wrote {output} ({len(payload['events'])} events, "
+        f"{len(payload['requests'])} requests)"
     )
 
 

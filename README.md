@@ -60,6 +60,20 @@ As the external KV cache of nano-vLLM (Linux and an NVIDIA GPU; needs
 uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B  # run twice
 ```
 
+Record the real engine and turn its metadata-only trace into offline HTML:
+
+```bash
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
+  --trace-output engine.json
+uv run python -m nano_lmcache.visualize \
+  --trace-json engine.json --output engine-trace.html
+```
+
+The viewer shows L1/L2 reuse, GPU imports/exports, per-tier storage events,
+and measured one-token TTFT. Run the demo twice with the same `--dir` to
+observe disk restoration after restart. See [Real engine traces](docs/engine-traces.md)
+for event semantics, timing limits, and the two-process experiment.
+
 The prefix-cache demo serves four requests against one cache and prints
 per-chunk hit/miss decisions plus cumulative reuse metrics.
 
@@ -100,7 +114,7 @@ New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for shor
    when it pays off: [docs/nanovllm-benchmark.md](docs/nanovllm-benchmark.md).
 5. **Visualization Lab (in progress)**: trace instrumentation, synthetic and
    real workload replay, offline HTML playback, storage events, and optional
-   GPU/nano-vLLM transfer events.
+   real nano-vLLM traces with L1/L2 reuse and GPU transfer events.
 
 See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
 contributors to claim.

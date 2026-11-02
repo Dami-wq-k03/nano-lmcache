@@ -26,6 +26,7 @@ which roadmap task N4 measures.
 
 import argparse
 import atexit
+import json
 import shutil
 import tempfile
 import time
@@ -36,6 +37,7 @@ from nanovllm import LLM, SamplingParams
 
 from nano_lmcache.integrations.nanovllm import KVBlockLayout, NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.engine import attach
+from nano_lmcache.observability import TraceRecorder, TracingStorage, request_context
 from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.tiered import TieredStorage
@@ -55,7 +57,7 @@ QUESTIONS = [
 ]
 
 
-def ask(llm, manager, token_ids, label):  # type: ignore[no-untyped-def]
+def ask(llm, manager, token_ids, label, recorder=None):  # type: ignore[no-untyped-def]
     """Generate one token (time to first token), then a short answer."""
     before = (manager.stats.l1_hit_blocks, manager.stats.l2_hit_blocks,
               manager.stats.prefill_tokens, manager.stats.stored_blocks)
@@ -63,10 +65,13 @@ def ask(llm, manager, token_ids, label):  # type: ignore[no-untyped-def]
     torch.cuda.synchronize()
     start = time.perf_counter()
     torch.manual_seed(0)
-    llm.generate([token_ids], SamplingParams(temperature=1e-6, max_tokens=1),
-                 use_tqdm=False)
+    trace_start = len(recorder) if recorder is not None else 0
+    with request_context(label + "/ttft"):
+        llm.generate([token_ids], SamplingParams(temperature=1e-6, max_tokens=1),
+                     use_tqdm=False)
     torch.cuda.synchronize()
     ttft = time.perf_counter() - start
+    finish_trace(recorder, trace_start, ttft_ms=ttft * 1000)
 
     l1, l2, computed, stored = (
         now - then
@@ -81,9 +86,13 @@ def ask(llm, manager, token_ids, label):  # type: ignore[no-untyped-def]
     # tokens with random noise; bfloat16 logits tie often. A fixed seed makes
     # the answer repeatable across runs.
     torch.manual_seed(0)
-    (answer,) = llm.generate(
-        [token_ids], SamplingParams(temperature=1e-6, max_tokens=24), use_tqdm=False
-    )
+    trace_start = len(recorder) if recorder is not None else 0
+    with request_context(label + "/answer"):
+        (answer,) = llm.generate(
+            [token_ids], SamplingParams(temperature=1e-6, max_tokens=24),
+            use_tqdm=False,
+        )
+    finish_trace(recorder, trace_start)
     print(f"{label}")
     print(f"  prompt {len(token_ids)} tokens: {l1} blocks from L1 (GPU), "
           f"{l2} from L2 (disk), {computed} tokens computed, {stored} blocks stored")
@@ -91,11 +100,30 @@ def ask(llm, manager, token_ids, label):  # type: ignore[no-untyped-def]
     print(f"  answer: {answer['text'].strip()!r}\n")
 
 
+def finish_trace(recorder, start, **metadata):  # type: ignore[no-untyped-def]
+    """Complete this generate call's requests without capturing text/tensors."""
+    if recorder is None:
+        return
+    for event in recorder.events[start:]:
+        if event.event_type == "request_started":
+            recorder.record(
+                "request_completed",
+                request_id=event.request_id,
+                result="completed",
+                metadata=metadata,
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", required=True, help="local model directory")
     parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
     parser.add_argument("--clear", action="store_true")
+    parser.add_argument("--trace-output", type=Path, help="metadata-only Trace JSON")
+    parser.add_argument(
+        "--memory-max-entries", type=int, default=None,
+        help="limit the memory L2 tier to observe disk restores and eviction",
+    )
     args = parser.parse_args()
 
     if args.clear:
@@ -105,36 +133,54 @@ def main() -> None:
 
     llm = LLM(args.model, enforce_eager=True, tensor_parallel_size=1,
               gpu_memory_utilization=0.5, max_model_len=4096)
-    atexit.unregister(llm.exit)
+    try:
+        layout = KVBlockLayout.from_hf_config(
+            llm.model_runner.config.hf_config,
+            model=Path(args.model).name,
+            revision="local",  # use a commit or checksum of the weights in practice
+        )
+        disk = DiskKVCache(args.dir, serializer=TensorSerializer())
+        print(f"L2 on disk: {args.dir} ({len(disk)} blocks from earlier runs)\n")
+        # Memory in front of disk; every stored block is written through to disk.
+        recorder = TraceRecorder() if args.trace_output is not None else None
+        memory = MemoryKVCache(max_entries=args.memory_max_entries)
+        if recorder is None:
+            storage = TieredStorage(fast=memory, slow=disk)
+        else:
+            storage = TieredStorage(
+                fast=TracingStorage(memory, recorder, name="memory"),
+                slow=TracingStorage(disk, recorder, name="disk"),
+                trace_recorder=recorder,
+            )
+        # Warm up first. nano-vLLM compiles several layers and its sampler with
+        # torch.compile, and the first new sequence length or batch size
+        # triggers a recompile. That costs hundreds of milliseconds, has nothing
+        # to do with caching, and would otherwise land on the first measured
+        # request. One request at a time (batch size 1, like the measured ones),
+        # with a long prompt twice so both the cold and the prefix-cache
+        # attention paths are compiled. Done before attach(), so L2 stays clean.
+        for warmup in ["Hello", "warm up " * 650, "warm up " * 650]:
+            llm.generate([warmup], SamplingParams(temperature=1e-6, max_tokens=2),
+                         use_tqdm=False)
+        manager = attach(llm, NanoVLLMExternalCache(layout, storage, recorder))
 
-    layout = KVBlockLayout.from_hf_config(
-        llm.model_runner.config.hf_config,
-        model=Path(args.model).name,
-        revision="local",  # use a commit or checksum of the weights in practice
-    )
-    disk = DiskKVCache(args.dir, serializer=TensorSerializer())
-    print(f"L2 on disk: {args.dir} ({len(disk)} blocks from earlier runs)\n")
-    # Memory in front of disk; every stored block is written through to disk.
-    storage = TieredStorage(fast=MemoryKVCache(), slow=disk)
-    # Warm up first. nano-vLLM compiles several layers and its sampler with
-    # torch.compile, and the first new sequence length or batch size
-    # triggers a recompile. That costs hundreds of milliseconds, has nothing
-    # to do with caching, and would otherwise land on the first measured
-    # request. One request at a time (batch size 1, like the measured ones),
-    # with a long prompt twice so both the cold and the prefix-cache
-    # attention paths are compiled. Done before attach(), so L2 stays clean.
-    for warmup in ["Hello", "warm up " * 650, "warm up " * 650]:
-        llm.generate([warmup], SamplingParams(temperature=1e-6, max_tokens=2),
-                     use_tqdm=False)
-    manager = attach(llm, NanoVLLMExternalCache(layout, storage))
+        for index, question in enumerate(QUESTIONS, start=1):
+            ask(llm, manager, llm.tokenizer.encode(DOCUMENT + question),
+                f"question-{index}", recorder)
 
-    for question in QUESTIONS:
-        ask(llm, manager, llm.tokenizer.encode(DOCUMENT + question), question)
-
-    print(f"L2 now holds {len(disk)} blocks on disk.")
-    if manager.stats.l2_hit_blocks == 0:
-        print("Run the script again: the next process restores them from disk.")
-    llm.exit()
+        print(f"L2 now holds {len(disk)} blocks on disk.")
+        if manager.stats.l2_hit_blocks == 0:
+            print("Run the script again: the next process restores them from disk.")
+        if recorder is not None:
+            args.trace_output.write_text(json.dumps({
+                "format_version": 1,
+                "source": "nanovllm",
+                "events": recorder.to_list(),
+            }, indent=2), encoding="utf-8")
+            print(f"Trace written to {args.trace_output}")
+    finally:
+        atexit.unregister(llm.exit)
+        llm.exit()
 
 
 if __name__ == "__main__":

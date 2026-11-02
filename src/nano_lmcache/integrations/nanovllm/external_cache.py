@@ -106,6 +106,11 @@ class NanoVLLMExternalCache:
     def stats(self) -> ExternalCacheStats:
         return self._stats
 
+    @property
+    def tracing(self) -> bool:
+        """Whether engine callbacks should collect trace metadata."""
+        return self._trace_recorder is not None and self._trace_recorder.enabled
+
     def block_keys(
         self, token_ids: Sequence[int], num_blocks: int | None = None
     ) -> tuple[str, ...]:
@@ -142,23 +147,23 @@ class NanoVLLMExternalCache:
             )
 
         hits = 0
-        for key in self.block_keys(token_ids, limit)[num_gpu_cached_blocks:]:
-            if key not in self._storage:
+        keys = self.block_keys(token_ids, limit)
+        for index in range(num_gpu_cached_blocks, limit):
+            key = keys[index]
+            present = key in self._storage
+            self.record_event(
+                "l2_lookup",
+                chunk_index=index,
+                key=key,
+                parent_key=keys[index - 1] if index else None,
+                result="available" if present else "miss",
+                metadata={"phase": "membership_probe"},
+            )
+            if not present:
                 break
             hits += 1
 
         self._stats.hit_blocks += hits
-        self._record(
-            "l2_lookup",
-            result="hit" if hits else "miss",
-            metadata={
-                "hit_blocks": hits,
-                "l1_blocks": num_gpu_cached_blocks,
-                "block_tokens": self._layout.block_size,
-            },
-        )
-        if hits:
-            self._record("l2_hit", result="hit", metadata={"blocks": hits})
         return hits
 
     def fetch(
@@ -181,24 +186,32 @@ class NanoVLLMExternalCache:
                 "is always computed)"
             )
 
-        keys = self.block_keys(token_ids, start_block + num_blocks)[start_block:]
+        keys = self.block_keys(token_ids, start_block + num_blocks)
         payloads: list[torch.Tensor] = []
-        for key in keys:
+        for index in range(start_block, start_block + num_blocks):
+            key = keys[index]
             payload = self._storage.get(key)
             if payload is None:
+                self.record_event(
+                    "l2_restore", chunk_index=index, key=key, result="miss"
+                )
                 break
             if not isinstance(payload, torch.Tensor):
                 raise TypeError(
                     f"stored payload for {key} is {type(payload).__name__}"
                 )
             payloads.append(payload)
+            for event_type in ("l2_hit", "l2_restore"):
+                self.record_event(
+                    event_type,
+                    chunk_index=index,
+                    key=key,
+                    parent_key=keys[index - 1] if index else None,
+                    result="hit" if event_type == "l2_hit" else "restored",
+                    metadata={"blocks": 1, "bytes": payload.nbytes},
+                )
 
         self._stats.fetched_blocks += len(payloads)
-        self._record(
-            "l2_restore",
-            result="hit" if payloads else "miss",
-            metadata={"blocks": len(payloads), "start_block": start_block},
-        )
         return payloads
 
     def missing_blocks(
@@ -249,24 +262,22 @@ class NanoVLLMExternalCache:
         for index, payload in enumerate(payloads, start=start_block):
             parent_key = keys[index - 1] if index > 0 else None
             self._storage.put(keys[index], payload, parent_key=parent_key)
+            self.record_event(
+                "chunk_stored",
+                chunk_index=index,
+                key=keys[index],
+                parent_key=parent_key,
+                result="stored" if keys[index] in self._storage else "rejected",
+                metadata={"blocks": 1},
+            )
 
         stored = sum(key in self._storage for key in keys[start_block:])
         self._stats.stored_blocks += stored
-        self._record(
-            "gpu_export",
-            result="exported",
-            metadata={"blocks": len(payloads), "start_block": start_block},
-        )
-        self._record(
-            "chunk_stored",
-            result="stored",
-            metadata={"blocks": stored, "start_block": start_block},
-        )
         return stored
 
     def record_gpu_import(self, block_count: int) -> None:
         """Record payloads copied from L2 into nano-vLLM GPU blocks."""
-        self._record(
+        self.record_event(
             "gpu_import",
             result="restored",
             metadata={"blocks": block_count},
@@ -275,19 +286,27 @@ class NanoVLLMExternalCache:
     def record_l1_hit(self, block_count: int) -> None:
         """Record blocks already resident in nano-vLLM's GPU cache."""
         if block_count:
-            self._record(
+            self.record_event(
                 "l1_hit",
                 result="hit",
                 metadata={"blocks": block_count},
             )
 
-    def _record(
+    def record_event(
         self,
         event_type: str,
         *,
+        chunk_index: int | None = None,
+        key: str | None = None,
+        parent_key: str | None = None,
         result: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> None:
+        """Record a metadata-only observation from an engine callback.
+
+        GPU transfer events describe copies enqueued on the engine stream;
+        they do not synchronize CUDA or claim device-completion timings.
+        """
         if self._trace_recorder is None or not self._trace_recorder.enabled:
             return
         self._trace_recorder.record(
@@ -297,6 +316,9 @@ class NanoVLLMExternalCache:
                 or self._trace_recorder.request_id
                 or "nanovllm"
             ),
+            chunk_index=chunk_index,
+            key=key,
+            parent_key=parent_key,
             result=result,
             metadata=metadata,
         )

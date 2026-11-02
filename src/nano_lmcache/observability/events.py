@@ -35,6 +35,9 @@ class TraceEventType(StrEnum):
     GPU_IMPORT = "gpu_import"
     L1_HIT = "l1_hit"
     L2_HIT = "l2_hit"
+    REQUEST_STARTED = "request_started"
+    REQUEST_COMPLETED = "request_completed"
+    PREFILL_STEP = "prefill_step"
 
 
 # Short alias for callers that prefer ``EventType.CHUNK_HIT``.

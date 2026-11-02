@@ -35,9 +35,20 @@ from nano_lmcache.integrations.nanovllm.engine import (  # noqa: E402
     attach,
     detach,
 )
+from nano_lmcache.observability import (  # noqa: E402
+    TraceRecorder,
+    TracingStorage,
+    request_context,
+)
 from nano_lmcache.storage.disk import DiskKVCache  # noqa: E402
 from nano_lmcache.storage.memory import MemoryKVCache  # noqa: E402
+from nano_lmcache.storage.tiered import TieredStorage  # noqa: E402
 from nano_lmcache.tensor.serializers import TensorSerializer  # noqa: E402
+from nano_lmcache.visualization import (  # noqa: E402
+    load_trace_json,
+    report_from_events,
+    write_html,
+)
 
 pytestmark = pytest.mark.nanovllm
 
@@ -549,6 +560,84 @@ def test_steps_that_complete_no_block_do_no_work(monkeypatch):
     assert len(calls) == 1
 
 
+def test_trace_cold_disk_restart_and_l1_hit_round_trip(tmp_path):
+    recorder = TraceRecorder()
+    token_ids = prompt(3, extra=10)
+
+    def traced_disk():
+        return TracingStorage(
+            DiskKVCache(tmp_path / "kv", serializer=TensorSerializer()),
+            recorder, name="disk",
+        )
+
+    writer = FakeLLM()
+    attach(writer, NanoVLLMExternalCache(LAYOUT, traced_disk(), recorder))
+    with request_context("cold"):
+        cold = writer.generate([token_ids], max_tokens=1)
+    # New engine + new disk object: no L1 or in-memory payloads survive.
+    reader = FakeLLM()
+    external = NanoVLLMExternalCache(LAYOUT, traced_disk(), recorder)
+    attach(reader, external)
+    with request_context("restart"):
+        restored = reader.generate([token_ids], max_tokens=1)
+    with request_context("warm"):
+        warm = reader.generate([token_ids], max_tokens=1)
+
+    assert cold == restored == warm
+    report = report_from_events(recorder.events, source="nanovllm")
+    first, second, third = report["requests"]
+    assert first["l1_hit_blocks"] == first["l2_hit_blocks"] == 0
+    assert second["l1_hit_blocks"] == 0 and second["l2_hit_blocks"] == 3
+    assert third["l1_hit_blocks"] == 3 and third["l2_hit_blocks"] == 0
+    for event in recorder.events:
+        assert event.request_id.startswith(("cold/seq-", "restart/seq-", "warm/seq-"))
+    exported = [e for e in recorder.events if e.event_type == "gpu_export"]
+    imported = [e for e in recorder.events if e.event_type == "gpu_import"]
+    assert len(exported) == len(imported) == 3
+    assert all(e.request_id == first["request_id"] for e in exported)
+    assert all(e.request_id == second["request_id"] for e in imported)
+    assert {e.key for e in exported} == {e.key for e in imported}
+
+    path = tmp_path / "engine.json"
+    recorder.write_json(path)
+    imported_report = load_trace_json(path)
+    assert imported_report["summary"] == report["summary"]
+    assert write_html(tmp_path / "engine.html", imported_report).exists()
+
+
+def test_trace_batched_gpu_import_keeps_ownership_after_context_ends():
+    recorder = TraceRecorder(enabled=False)
+    storage = TracingStorage(MemoryKVCache(), recorder, name="memory")
+    llm = FakeLLM()
+    external = NanoVLLMExternalCache(LAYOUT, storage, recorder)
+    manager = attach(llm, external)
+    inputs = [prompt(2, extra=5, first=1000), prompt(2, extra=5, first=9000)]
+    for token_ids in inputs:
+        seed_l2(external, token_ids, 2)
+    recorder.enable()
+    sequences = [Sequence(token_ids) for token_ids in inputs]
+    for seq in sequences:
+        with request_context("batch"):
+            manager.can_allocate(seq)  # A repeated availability probe.
+            manager.allocate(seq, manager.can_allocate(seq))
+    assert not [e for e in recorder.events if e.event_type == "gpu_import"]
+    # Imports execute with an unrelated caller context; ownership must travel
+    # with the queued payloads rather than depend on the current context.
+    with request_context("unrelated"):
+        llm.model_runner.run([], True)
+    for seq in sequences:
+        request_id = f"batch/seq-{seq.seq_id}"
+        events = [e for e in recorder.events if e.request_id == request_id]
+        imported = [e for e in events if e.event_type == "gpu_import"]
+        assert len(imported) == 2
+        assert [e.key for e in imported] == list(external.block_keys(seq.token_ids, 2))
+        assert {e.metadata["gpu_block_id"] for e in imported} == set(
+            seq.block_table[:2]
+        )
+        assert len([e for e in events if e.event_type == "l2_hit"]) == 2
+    assert not any(e.request_id in ("nanovllm", "unrelated") for e in recorder.events)
+
+
 # ---- the real engine --------------------------------------------------
 
 
@@ -623,6 +712,50 @@ def test_real_engine_stores_restores_and_generates_the_same_tokens(llm):
     (warm,) = llm.generate([token_ids], params, use_tqdm=False)
     assert manager.stats.l1_hit_blocks == 3
     assert warm["token_ids"] == cold["token_ids"]
+
+
+@pytest.mark.gpu
+def test_real_engine_trace_cold_restart_l1_and_html(llm, tmp_path):
+    recorder = TraceRecorder()
+    layout = real_layout(llm)
+    token_ids = long_prompt(llm)
+    params = SamplingParams(temperature=1e-6, max_tokens=1)
+
+    def external_cache():
+        return NanoVLLMExternalCache(layout, TieredStorage(
+            fast=TracingStorage(MemoryKVCache(), recorder, name="memory"),
+            slow=TracingStorage(
+                DiskKVCache(tmp_path / "kv", serializer=TensorSerializer()),
+                recorder, name="disk",
+            ),
+            trace_recorder=recorder,
+        ), recorder)
+
+    empty_l1(llm, external_cache())
+    with request_context("cold"):
+        torch.manual_seed(0)
+        cold = llm.generate([token_ids], params, use_tqdm=False)
+    empty_l1(llm, external_cache())  # Reopen disk and scrub GPU contents.
+    with request_context("restart"):
+        torch.manual_seed(0)
+        restored = llm.generate([token_ids], params, use_tqdm=False)
+    with request_context("warm"):
+        torch.manual_seed(0)
+        warm = llm.generate([token_ids], params, use_tqdm=False)
+    assert cold[0]["token_ids"] == restored[0]["token_ids"] == warm[0]["token_ids"]
+
+    path = tmp_path / "engine-trace.json"
+    recorder.write_json(path)
+    report = load_trace_json(path)
+    first, second, third = report["requests"]
+    assert first["l1_hit_blocks"] == first["l2_hit_blocks"] == 0
+    assert second["l2_hit_blocks"] == third["l1_hit_blocks"] == 3
+    assert second["l1_hit_blocks"] == third["l2_hit_blocks"] == 0
+    assert all(e.request_id.startswith(("cold/", "restart/", "warm/"))
+               for e in recorder.events)
+    assert len([e for e in recorder.events if e.event_type == "gpu_import"]) == 3
+    assert any(e.event_type == "promotion" for e in recorder.events)
+    assert write_html(tmp_path / "engine-trace.html", report).exists()
 
 
 # ---- N4: correctness against a no-cache baseline -----------------------

@@ -41,7 +41,7 @@ from nanovllm.engine.block_manager import BlockManager
 from nano_lmcache.integrations.nanovllm.external_cache import NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.kv_blocks import export_block, import_block
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
-from nano_lmcache.observability.context import request_context
+from nano_lmcache.observability.context import current_request_id, request_context
 
 
 @dataclass
@@ -56,6 +56,26 @@ class EngineCacheStats:
     prefill_tokens: int = 0
     # Completed blocks exported from the GPU and kept by L2.
     stored_blocks: int = 0
+
+
+@dataclass(frozen=True)
+class _PendingLoad:
+    request_id: str
+    chunk_index: int
+    block_id: int
+    key: str
+    parent_key: str | None
+    payload: torch.Tensor
+
+
+def _request_id(seq: Any) -> str:
+    """Keep a sequence's trace identity across scheduling and batched copies."""
+    existing: str | None = getattr(seq, "_nano_lmcache_request_id", None)
+    if existing is None:
+        context = current_request_id()
+        existing = f"{context}/seq-{seq.seq_id}" if context else f"seq-{seq.seq_id}"
+        seq._nano_lmcache_request_id = existing
+    return existing
 
 
 class ExternalBlockManager(BlockManager):  # type: ignore[misc]
@@ -83,9 +103,9 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         self.stats = EngineCacheStats()
         # seq_id -> L1 hits found by the latest can_allocate for that request.
         self._l1_hits: dict[int, int] = {}
-        # (GPU block ID, payload) pairs fetched in allocate, waiting to be
-        # copied into the KV cache before the next forward pass.
-        self._pending_loads: list[tuple[int, torch.Tensor]] = []
+        # Keep ownership with each copy: one forward pass can restore several
+        # requests, after their allocation contexts have already ended.
+        self._pending_loads: list[_PendingLoad] = []
 
     def can_allocate(self, seq: Any) -> int:
         # The original check also makes sure there are enough free GPU
@@ -94,8 +114,7 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         if l1_hits == -1:
             return -1
         self._l1_hits[seq.seq_id] = l1_hits
-        with request_context(f"seq-{seq.seq_id}"):
-            self.external.record_l1_hit(l1_hits)
+        with request_context(_request_id(seq)):
             # Membership checks only (rule 3); never past the last block (rule 1).
             l2_hits = self.external.count_hits(seq.token_ids, l1_hits)
         return l1_hits + l2_hits
@@ -112,7 +131,27 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
         self.stats.l1_hit_blocks += l1_hits
 
         wanted = num_cached_blocks - l1_hits
-        with request_context(f"seq-{seq.seq_id}"):
+        keys = self.external.block_keys(seq.token_ids, num_cached_blocks)
+        with request_context(_request_id(seq)):
+            if not getattr(seq, "_nano_lmcache_trace_started", False):
+                self.external.record_event(
+                    "request_started",
+                    metadata={
+                        "prompt_tokens": seq.num_prompt_tokens,
+                        "block_size": self.block_size,
+                        "model_id": self.external.layout.model,
+                    },
+                )
+                seq._nano_lmcache_trace_started = True
+            for index in range(l1_hits):
+                self.external.record_event(
+                    "l1_hit",
+                    chunk_index=index,
+                    key=keys[index],
+                    parent_key=keys[index - 1] if index else None,
+                    result="hit",
+                    metadata={"blocks": 1},
+                )
             payloads = (
                 self.external.fetch(seq.token_ids, l1_hits, wanted)
                 if wanted
@@ -120,7 +159,19 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
             )
         restored_end = l1_hits + len(payloads)
         block_ids = seq.block_table[l1_hits:restored_end]
-        self._pending_loads.extend(zip(block_ids, payloads, strict=True))
+        self._pending_loads.extend(
+            _PendingLoad(
+                request_id=_request_id(seq),
+                chunk_index=index,
+                block_id=block_id,
+                key=keys[index],
+                parent_key=keys[index - 1] if index else None,
+                payload=payload,
+            )
+            for index, (block_id, payload) in enumerate(
+                zip(block_ids, payloads, strict=True), start=l1_hits
+            )
+        )
 
         # Only blocks that will really receive their KV get an L1 hash
         # (rule 2), and the request counts as cached up to there (rule 5).
@@ -146,14 +197,31 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
 
         # Usually starts at `start`, but can start earlier: if L2 lost
         # blocks that L1 still holds, they are stored again from the GPU.
-        with request_context(f"seq-{seq.seq_id}"):
+        with request_context(_request_id(seq)):
             missing = self.external.missing_blocks(seq.token_ids, end)
         if not missing:
             return
-        payloads = [
-            export_block(self.kv_cache, seq.block_table[index]) for index in missing
-        ]
-        with request_context(f"seq-{seq.seq_id}"):
+        with request_context(_request_id(seq)):
+            keys = self.external.block_keys(seq.token_ids, end)
+            payloads = []
+            for index in missing:
+                block_id = seq.block_table[index]
+                payload = export_block(self.kv_cache, block_id)
+                payloads.append(payload)
+                self.external.record_event(
+                    "gpu_export",
+                    chunk_index=index,
+                    key=keys[index],
+                    parent_key=keys[index - 1] if index else None,
+                    result="exported",
+                    metadata={
+                        "blocks": 1,
+                        "gpu_block_id": block_id,
+                        "bytes": payload.nbytes,
+                        "device": str(payload.device),
+                        "timing": "stream_enqueued",
+                    },
+                )
             self.stats.stored_blocks += self.external.store(
                 seq.token_ids, missing.start, payloads
             )
@@ -161,7 +229,7 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
     def take_pending_loads(self) -> list[tuple[int, torch.Tensor]]:
         """Payloads to copy into the KV cache before the next forward pass."""
         pending, self._pending_loads = self._pending_loads, []
-        return pending
+        return [(item.block_id, item.payload) for item in pending]
 
     def _register_l1_hashes(self, seq: Any, start: int, end: int) -> None:
         """Hash restored blocks exactly as `hash_blocks` would have.
@@ -260,15 +328,37 @@ def _wrap_run(runner: Any, manager: ExternalBlockManager) -> None:
     def run(seqs: Sequence[Any], is_prefill: bool) -> list[int]:
         # Same CUDA stream as the forward pass, so attention cannot read a
         # block before its copy has finished (rule 6).
-        pending_loads = manager.take_pending_loads()
-        for block_id, payload in pending_loads:
-            import_block(runner.kv_cache, block_id, payload)
-        if pending_loads:
-            manager.external.record_gpu_import(len(pending_loads))
+        pending_loads, manager._pending_loads = manager._pending_loads, []
+        for item in pending_loads:
+            with request_context(item.request_id):
+                import_block(runner.kv_cache, item.block_id, item.payload)
+                manager.external.record_event(
+                    "gpu_import",
+                    chunk_index=item.chunk_index,
+                    key=item.key,
+                    parent_key=item.parent_key,
+                    result="restored",
+                    metadata={
+                        "blocks": 1,
+                        "gpu_block_id": item.block_id,
+                        "bytes": item.payload.nbytes,
+                        "device": str(runner.kv_cache.device),
+                        "timing": "stream_enqueued",
+                    },
+                )
         if is_prefill:
             manager.stats.prefill_tokens += sum(
                 seq.num_scheduled_tokens for seq in seqs
             )
-        return original(seqs, is_prefill)
+        outputs = original(seqs, is_prefill)
+        if is_prefill:
+            for seq in seqs:
+                with request_context(_request_id(seq)):
+                    manager.external.record_event(
+                        "prefill_step",
+                        result="computed",
+                        metadata={"computed_tokens": seq.num_scheduled_tokens},
+                    )
+        return outputs
 
     runner.run = run
