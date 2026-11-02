@@ -98,9 +98,9 @@ open an issue to discuss it.
 | M4 | Local disk backend | Medium | No | – | Done |
 | M5 | Tiered memory + disk storage | Hard | No | M4 | Done |
 | M6 | Skip rewriting chunks that are already cached | Easy | No | – | Done |
-| M7 | Detect corrupted disk entries | Easy | No | – | Open |
-| M8 | Cache inspector CLI | Easy | No | – | Open |
-| M9 | Byte-based capacity for the disk backend | Medium | No | – | Open |
+| M7 | Detect corrupted disk entries | Easy | No | – | Done |
+| M8 | Cache inspector CLI | Easy | No | – | Done |
+| M9 | Byte-based capacity for the disk backend | Medium | No | – | Done |
 | M10 | Thread-safe storage | Medium | No | – | Open |
 | M11 | Pluggable eviction policies | Hard | No | – | Open |
 | M12 | Shared cache server for several processes | Hard | No | M10 | Open |
@@ -108,8 +108,8 @@ open an issue to discuss it.
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
 | G2 | GPU to CPU offload backend | Hard | Yes | G1 | Done |
 | G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Merged into N4 |
-| G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Open |
-| G5 | Compress cached KV with int8 quantization | Medium | No | – | Open |
+| G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Done |
+| G5 | Compress cached KV with int8 quantization | Medium | No | – | Done |
 | G6 | Model-aware cache namespaces | Easy | No | – | Open |
 | **nano-vLLM integration** | | | | | |
 | N0 | KV block format: export and import nano-vLLM blocks | Medium | No | I1 | Done |
@@ -119,15 +119,24 @@ open an issue to discuss it.
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
+| **Visualization Lab and datasets** | | | | | |
+| VIS-1–3 | Trace schema, recorder, cache instrumentation | Medium | No | – | Done |
+| VIS-4–6 | Offline HTML, timeline, prefix tree, trace correctness | Medium | No | VIS-1–3 | Done |
+| VIS-7–8 | Per-tier storage events, eviction, promotion | Medium | No | VIS-4–6 | Done |
+| DATA-1 | Synthetic workload replay | Medium | No | VIS-1–3 | Done |
+| DATA-2 | FreeInference opaque block replay | Hard | No | DATA-1 | Initial version |
+| VIS-10 | Real nano-vLLM Trace JSON → offline HTML | Hard | Yes for recording | N4, VIS-4–6 | Done |
+| VIS-11 | Streaming replay, bounded reports and event sampling | Hard | No | DATA-2 | Open |
+| DOC-1 | Guided learning path from prefix matching to engine traces | Medium | No | VIS-10 | Open |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Good first contributions:** M7, M8, and G6 (no GPU needed).
-**Most wanted next:** N5, which takes the ~300 ms per block of disk writes
-out of time to first token, and N6, which makes the disk tier worth reading
-(see `docs/nanovllm-benchmark.md`).
+**Next priorities:** VIS-11 (bounded replay) and DOC-1 (guided learning).
+N5 and N6 remain performance follow-ups (see `docs/nanovllm-benchmark.md`).
+Check the corresponding GitHub issue before starting work; G6 and M10 may
+already be claimed.
 
 **Dependencies:**
 
@@ -336,13 +345,15 @@ amplification can eat the savings.
 
 ### M7: Detect corrupted disk entries
 
-Entry files can be damaged by a full disk, a bad sector, or someone
-editing the directory. `_recover` only checks that a file's header
-parses, so a damaged payload is found later, inside `get`, where
-`serializer.loads` raises and the whole lookup crashes. A cache must never
-take serving down: a damaged entry should simply be a miss.
+**Status: done** (`storage/disk.py`: checksums and subtree recovery).
 
-To do: record a checksum of the payload in the header (compare SHA-256
+Entry files can be damaged by a full disk, a bad sector, or someone
+editing the directory. Before M7, recovery checked only file headers, so
+a damaged payload could make `serializer.loads` raise during lookup. The
+implemented checksum validation treats damaged entries as misses and removes
+their descendants to preserve prefix safety.
+
+Original design: record a checksum of the payload in the header (compare SHA-256
 with `zlib.crc32` and justify your choice), verify it on `get` and during
 recovery, and on a mismatch delete the entry. Careful: deleting an entry
 that has children would strand them, breaking the prefix-safety
@@ -363,7 +374,9 @@ input.
 
 ### M8: Cache inspector CLI
 
-Add `python -m nano_lmcache.inspect <directory>`, which prints what a
+**Status: done** (`inspect.py`: read-only tree, LRU, and JSON inspection).
+
+`python -m nano_lmcache.inspect <directory>` prints what a
 `DiskKVCache` directory holds:
 
 - the number of entries and total bytes;
@@ -387,11 +400,13 @@ fastest way to debug it.
 
 ### M9: Byte-based capacity for the disk backend
 
+**Status: done** (`storage/disk.py`: file-size admission and restart checks).
+
 M3 added `max_bytes` to `MemoryKVCache` only. On disk, the scarce
 resource is disk space, and size is exact: the entry file's length
 (header plus payload).
 
-To do: add `max_bytes` to `DiskKVCache`, passing each file's size to
+Implemented: `max_bytes` on `DiskKVCache`, passing each file's size to
 `PrefixLRUIndex.admit`. On restart, recover sizes from the files with
 `restore(..., size_bytes=...)`. Opening a directory that already exceeds
 the limit should behave like the existing `max_entries` check.
@@ -566,12 +581,14 @@ implementing the cache itself.
 
 ### G4: Byte-based capacity for CPU offload
 
-`CPUOffloadKVCache` reports `nbytes` but can only limit entries. Pinned
+**Status: done** (`tensor/offload.py`: exact tensor-byte capacity).
+
+`CPUOffloadKVCache` reports `nbytes` and limits entries or bytes. Pinned
 host memory is the scarce resource here, and tensor sizes are exact
 (`tensor.nbytes`), unlike the `sys.getsizeof` default in the memory
 backend.
 
-To do: add `max_bytes` to `CPUOffloadKVCache`, passing each tensor's
+Implemented: `max_bytes` on `CPUOffloadKVCache`, passing each tensor's
 size to `PrefixLRUIndex.admit`.
 
 Acceptance criteria:
@@ -585,14 +602,16 @@ Acceptance criteria:
 
 ### G5: Compress cached KV with int8 quantization
 
+**Status: done** (`tensor/serializers.py`: opt-in `QuantizedTensorSerializer`;
+see `docs/architecture.md` for accuracy and compression trade-offs).
+
 KV chunks are large: layers × 2 × heads × tokens × head_dim, at 2 bytes
 per value in fp16. LMCache's CacheGen work compresses KV before storing
-it. Start simple, with int8 quantization.
+it. This implementation uses opt-in int8 quantization.
 
-To do: add an opt-in `QuantizedTensorSerializer` that stores int8 values
-plus scales and decodes back to the original dtype. Choose the scale
-granularity (per tensor, per head, or per channel) and justify it.
-Measure:
+Implemented: `QuantizedTensorSerializer` stores int8 values and FP32
+scales per layer, K/V, head, and channel over the token axis, then decodes
+to the original dtype. Its tests and architecture notes cover:
 
 - compression ratio;
 - encode and decode time;
@@ -800,6 +819,26 @@ property: reading an entry must never run code from the file.
 
 Acceptance criteria: a lower page-cache read time per block, with numbers
 before and after; all disk backend tests still pass.
+
+---
+
+## Visualization Lab and datasets
+
+**VIS-10: done.** `examples/demo_nanovllm.py --trace-output` records real
+engine and per-tier storage events. `python -m nano_lmcache.visualize
+--trace-json` imports them without engine dependencies. Tests cover cold
+KV computation, disk restoration with empty L1, warm L1 reuse, and ownership
+of batched GPU imports. See [the experiment guide](docs/engine-traces.md).
+
+**VIS-11: open.** Large FreeInference inputs still require bounded replay:
+already-sorted streaming input, incremental statistics, optional event
+sampling, and a cap on events embedded in HTML. Preserve the distinction
+between dataset-observed cached tokens and simulated hits.
+
+**DOC-1: open.** Build `docs/tutorial/` with a runnable sequence: chunking,
+first-miss stopping, branching prefixes, leaf-only eviction, storage tiers,
+and real engine restoration. Link each explanation to tests and a small
+experiment. The engine trace guide is available; the full tutorial is not.
 
 ---
 
