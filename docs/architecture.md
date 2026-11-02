@@ -492,6 +492,30 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
 `TieredStorage.tier_stats` counts hits per tier, misses, and promotions,
 which shows how much of the working set fits in the fast tier.
 
+### Thread safety
+
+Each `MemoryKVCache`, `DiskKVCache`, and `TieredStorage` instance owns one
+`threading.RLock`. The lock covers a backend's complete state change, not
+only `PrefixLRUIndex`: the index decides admission and eviction, while the
+backend also owns the corresponding payload dictionary or files. Holding one
+backend lock across both prevents a reader from seeing a payload after its
+index entry was removed, or an index entry before its file exists.
+
+`TieredStorage` additionally holds its own lock around a complete slow-tier
+write -> fast-tier write/invalidation or fast lookup -> slow lookup ->
+promotion sequence. Its child backends retain their own locks for standalone
+use; callers that need the cross-tier transaction use `TieredStorage` itself.
+The lock order is always tiered storage first, then a child backend; child
+backends never acquire a parent lock.
+
+Runtime entry-file operations in `DiskKVCache` run under its lock: reads,
+writes, `fsync`, replacement, deletion, mtime updates, and corruption
+cleanup. This favors a simple consistent view of the index and files over
+parallel disk I/O. It applies only to threads sharing one backend object;
+it does not make mutable payloads safe to modify in place, make a multi-chunk
+lookup a snapshot, or allow multiple cache objects or processes to write the
+same disk directory.
+
 ### GPU to CPU offload
 
 `CPUOffloadKVCache(device="cuda")` keeps chunk tensors in CPU memory and

@@ -1,7 +1,9 @@
 """In-memory key-value cache, standing in for a real KV-tensor store."""
 
 import sys
+import threading
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 
 from nano_lmcache.storage.eviction import PrefixLRUIndex
 from nano_lmcache.storage.stats import StorageStats
@@ -37,6 +39,7 @@ class MemoryKVCache:
         self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
         self._size_fn = size_fn
         self._values: dict[str, object] = {}
+        self._lock = threading.RLock()
 
     @property
     def max_entries(self) -> int | None:
@@ -51,29 +54,35 @@ class MemoryKVCache:
     @property
     def nbytes(self) -> int:
         """Sum of payload sizes measured at their last successful put."""
-        return self._index.nbytes
+        with self._lock:
+            return self._index.nbytes
 
     @property
     def stats(self) -> StorageStats:
-        """Eviction and rejection totals for this cache."""
-        return self._index.stats
+        """Snapshot of eviction and rejection totals for this cache."""
+        with self._lock:
+            return replace(self._index.stats)
 
     def __len__(self) -> int:
-        return len(self._values)
+        with self._lock:
+            return len(self._values)
 
     def keys(self) -> Iterator[str]:
         """Stored keys from least to most recently used."""
-        return self._index.keys_by_recency()
+        with self._lock:
+            return iter(tuple(self._index.keys_by_recency()))
 
     def __contains__(self, key: object) -> bool:
         """Whether `key` is stored; unlike `get`, does not count as a use."""
-        return key in self._values
+        with self._lock:
+            return key in self._values
 
     def parent_of(self, key: str) -> str | None:
         """The parent recorded for a stored `key`; KeyError if absent."""
-        if key not in self._values:
-            raise KeyError(key)
-        return self._index.parent_of(key)
+        with self._lock:
+            if key not in self._values:
+                raise KeyError(key)
+            return self._index.parent_of(key)
 
     def put(
         self,
@@ -90,22 +99,26 @@ class MemoryKVCache:
         """Store if admitted; return False without replacing a rejected value."""
         # Measure and validate before changing recency, values, or capacity.
         # This also measures writes later rejected for a missing parent.
-        decision = self._index.admit(key, parent_key, size_bytes=self._size_fn(value))
-        for victim in decision.evicted:
-            del self._values[victim]
+        size_bytes = self._size_fn(value)
+        with self._lock:
+            decision = self._index.admit(key, parent_key, size_bytes=size_bytes)
+            for victim in decision.evicted:
+                del self._values[victim]
 
-        if decision.admitted:
-            self._values[key] = value
-        return decision.admitted
+            if decision.admitted:
+                self._values[key] = value
+            return decision.admitted
 
     def invalidate(self, key: str) -> None:
         """Remove a stale entry and its descendants, preserving prefix safety."""
-        for victim in self._index.invalidate(key):
-            del self._values[victim]
+        with self._lock:
+            for victim in self._index.invalidate(key):
+                del self._values[victim]
 
     def get(self, key: str) -> object | None:
-        if key not in self._values:
-            return None
+        with self._lock:
+            if key not in self._values:
+                return None
 
-        self._index.touch(key)
-        return self._values[key]
+            self._index.touch(key)
+            return self._values[key]

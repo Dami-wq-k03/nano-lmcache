@@ -22,8 +22,9 @@ Each tier enforces the prefix-safety invariant on its own (every entry's
 whole ancestor chain is in that tier), so their union does as well.
 """
 
+import threading
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, runtime_checkable
 
 from nano_lmcache.observability.context import current_request_id
@@ -103,6 +104,7 @@ class TieredStorage:
         self._slow = slow
         self._tier_stats = TierStats()
         self._trace_recorder = trace_recorder
+        self._lock = threading.RLock()
 
     @property
     def fast(self) -> FastTier:
@@ -114,11 +116,14 @@ class TieredStorage:
 
     @property
     def tier_stats(self) -> TierStats:
-        return self._tier_stats
+        """Snapshot of the tier hit and promotion totals."""
+        with self._lock:
+            return replace(self._tier_stats)
 
     def __contains__(self, key: object) -> bool:
         """Whether either tier has `key`; does not promote or count a use."""
-        return key in self._fast or key in self._slow
+        with self._lock:
+            return key in self._fast or key in self._slow
 
     def __len__(self) -> int:
         """Number of distinct keys present in either tier."""
@@ -126,12 +131,13 @@ class TieredStorage:
 
     def keys(self) -> Iterator[str]:
         """Yield the union of keys present in either tier."""
-        keys: set[str] = set()
-        for tier in (self._fast, self._slow):
-            iterator = getattr(tier, "keys", None)
-            if iterator is not None:
-                keys.update(iterator())
-        return iter(keys)
+        with self._lock:
+            keys: set[str] = set()
+            for tier in (self._fast, self._slow):
+                iterator = getattr(tier, "keys", None)
+                if iterator is not None:
+                    keys.update(iterator())
+            return iter(keys)
 
     def put(
         self,
@@ -140,48 +146,50 @@ class TieredStorage:
         *,
         parent_key: str | None = None,
     ) -> None:
-        # Slow tier first: if it raises (for example, a payload it cannot
-        # serialize), the fast tier is left untouched.
-        if isinstance(self._slow, _AdmissionAwareTier):
-            present = key in self._slow
-            admitted = self._slow.try_put(key, value, parent_key=parent_key)
-            # A rejected overwrite must not leave the two tiers disagreeing.
-            if present and not admitted:
-                return
-        else:
-            self._slow.put(key, value, parent_key=parent_key)
-        if isinstance(self._fast, _AdmissionAwareFastTier):
-            if not self._fast.try_put(key, value, parent_key=parent_key):
-                # The slow tier has the current value. A rejected overwrite
-                # must not leave an older fast copy (or orphan its children).
-                self._fast.invalidate(key)
-        else:
-            self._fast.put(key, value, parent_key=parent_key)
+        with self._lock:
+            # Slow tier first: if it raises (for example, a payload it cannot
+            # serialize), the fast tier is left untouched.
+            if isinstance(self._slow, _AdmissionAwareTier):
+                present = key in self._slow
+                admitted = self._slow.try_put(key, value, parent_key=parent_key)
+                # A rejected overwrite must not leave the two tiers disagreeing.
+                if present and not admitted:
+                    return
+            else:
+                self._slow.put(key, value, parent_key=parent_key)
+            if isinstance(self._fast, _AdmissionAwareFastTier):
+                if not self._fast.try_put(key, value, parent_key=parent_key):
+                    # The slow tier has the current value. A rejected overwrite
+                    # must not leave an older fast copy (or orphan its children).
+                    self._fast.invalidate(key)
+            else:
+                self._fast.put(key, value, parent_key=parent_key)
 
     def get(self, key: str) -> object | None:
-        value = self._fast.get(key)
-        if value is not None:
-            self._tier_stats.fast_hits += 1
-            self._record("tier_hit", result="fast", metadata={"tier": "fast"})
+        with self._lock:
+            value = self._fast.get(key)
+            if value is not None:
+                self._tier_stats.fast_hits += 1
+                self._record("tier_hit", result="fast", metadata={"tier": "fast"})
+                return value
+
+            value = self._slow.get(key)
+            if value is None:
+                self._tier_stats.misses += 1
+                self._record("tier_miss", result="miss", metadata={"tier": "slow"})
+                return None
+
+            self._tier_stats.slow_hits += 1
+            self._record("tier_hit", result="slow", metadata={"tier": "slow"})
+            self._fast.put(key, value, parent_key=self._slow.parent_of(key))
+            if key in self._fast:
+                self._tier_stats.promotions += 1
+                self._record(
+                    "promotion",
+                    result="slow_to_fast",
+                    metadata={"from": "slow", "to": "fast"},
+                )
             return value
-
-        value = self._slow.get(key)
-        if value is None:
-            self._tier_stats.misses += 1
-            self._record("tier_miss", result="miss", metadata={"tier": "slow"})
-            return None
-
-        self._tier_stats.slow_hits += 1
-        self._record("tier_hit", result="slow", metadata={"tier": "slow"})
-        self._fast.put(key, value, parent_key=self._slow.parent_of(key))
-        if key in self._fast:
-            self._tier_stats.promotions += 1
-            self._record(
-                "promotion",
-                result="slow_to_fast",
-                metadata={"from": "slow", "to": "fast"},
-            )
-        return value
 
     def _record(
         self,
