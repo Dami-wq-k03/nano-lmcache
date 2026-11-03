@@ -28,9 +28,11 @@ other's entries.
 import hashlib
 import json
 import os
+import threading
 import time
 import zlib
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -88,6 +90,7 @@ class DiskKVCache:
         self._directory.mkdir(parents=True, exist_ok=True)
         self._serializer = serializer if serializer is not None else JsonSerializer()
         self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
+        self._lock = threading.RLock()
         # Last-used times are written as file mtimes. Keeping them strictly
         # increasing makes the order exact even when two accesses land in
         # the same clock tick.
@@ -117,29 +120,35 @@ class DiskKVCache:
     @property
     def nbytes(self) -> int:
         """Sum of complete entry-file sizes, including headers."""
-        return self._index.nbytes
+        with self._lock:
+            return self._index.nbytes
 
     @property
     def stats(self) -> StorageStats:
-        """Eviction, rejection, and corruption totals for this object."""
-        return self._index.stats
+        """Snapshot of eviction, rejection, and corruption totals."""
+        with self._lock:
+            return replace(self._index.stats)
 
     def __len__(self) -> int:
-        return len(self._index)
+        with self._lock:
+            return len(self._index)
 
     def keys(self) -> Iterator[str]:
         """Stored keys from least to most recently used."""
-        return self._index.keys_by_recency()
+        with self._lock:
+            return iter(tuple(self._index.keys_by_recency()))
 
     def __contains__(self, key: object) -> bool:
         """Whether `key` is stored; unlike `get`, does not count as a use."""
-        return key in self._index
+        with self._lock:
+            return key in self._index
 
     def parent_of(self, key: str) -> str | None:
         """The parent recorded for a stored `key`; KeyError if absent."""
-        if key not in self._index:
-            raise KeyError(key)
-        return self._index.parent_of(key)
+        with self._lock:
+            if key not in self._index:
+                raise KeyError(key)
+            return self._index.parent_of(key)
 
     def put(
         self,
@@ -154,54 +163,60 @@ class DiskKVCache:
         self, key: str, value: object, *, parent_key: str | None = None
     ) -> bool:
         """Store if admitted; return False without replacing a rejected file."""
-        # Encode first: a payload that cannot be stored must not change the
-        # index or evict anything.
-        payload = self._serializer.dumps(value)
+        with self._lock:
+            # Encode before changing the index, so a payload that cannot be
+            # stored never evicts an entry. Keeping serializer calls in the
+            # backend lock also supports stateful custom serializers.
+            payload = self._serializer.dumps(value)
 
-        # Overwrites keep their original parent.
-        if key in self._index:
-            parent_key = self._index.parent_of(key)
-        header = _encode_header(key, parent_key, payload)
-        decision = self._index.admit(
-            key, parent_key, size_bytes=len(header) + len(payload)
-        )
-        if not decision.admitted:
-            return False
+            # Overwrites keep their original parent.
+            if key in self._index:
+                parent_key = self._index.parent_of(key)
+            header = _encode_header(key, parent_key, payload)
+            decision = self._index.admit(
+                key, parent_key, size_bytes=len(header) + len(payload)
+            )
+            if not decision.admitted:
+                return False
 
-        # Victims are leaves, so interrupted deletion cannot orphan files.
-        for victim in decision.evicted:
-            self._path(victim).unlink(missing_ok=True)
-        self._write_atomically(self._path(key), header, payload)
-        self._mark_used(self._path(key))
-        return True
+            # Victims are leaves, so interrupted deletion cannot orphan files.
+            for victim in decision.evicted:
+                self._path(victim).unlink(missing_ok=True)
+            self._write_atomically(self._path(key), header, payload)
+            self._mark_used(self._path(key))
+            return True
 
     def get(self, key: str) -> object | None:
-        if key not in self._index:
-            return None
+        with self._lock:
+            if key not in self._index:
+                return None
 
-        path = self._path(key)
-        try:
-            header, payload = self._read(path)
-        except FileNotFoundError:
-            self._discard_subtree(key)
-            return None
-        except (OSError, ValueError, UnicodeDecodeError):
-            self._discard_subtree(key)
-            self._index.stats.corrupted_entries += 1
-            return None
-
-        if not _has_matching_payload_crc32(header, payload):
-            self._discard_subtree(key)
-            if "payload_crc32" in header:
+            path = self._path(key)
+            try:
+                header, payload = self._read(path)
+            except FileNotFoundError:
+                self._discard_subtree(key)
+                return None
+            except (OSError, ValueError, UnicodeDecodeError):
+                self._discard_subtree(key)
                 self._index.stats.corrupted_entries += 1
-            return None
+                return None
 
-        self._index.touch(key)
-        self._mark_used(path)
-        return self._serializer.loads(payload)
+            if not _has_matching_payload_crc32(header, payload):
+                self._discard_subtree(key)
+                if "payload_crc32" in header:
+                    self._index.stats.corrupted_entries += 1
+                return None
+
+            self._index.touch(key)
+            self._mark_used(path)
+            return self._serializer.loads(payload)
 
     def _discard_subtree(self, key: str) -> None:
-        """Remove an unusable entry and every descendant from disk and index."""
+        """Remove an unusable entry and every descendant from disk and index.
+
+        The caller must hold ``_lock``.
+        """
         for victim in self._index.discard_subtree(key):
             self._path(victim).unlink(missing_ok=True)
 

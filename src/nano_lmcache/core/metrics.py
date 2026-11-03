@@ -1,6 +1,7 @@
 """Hit/miss accounting that makes prefix-cache reuse observable."""
 
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -22,19 +23,27 @@ class CacheMetrics:
     hit_chunks: int = 0
     miss_chunks: int = 0
     hit_tokens: int = 0
+    _lock: threading.RLock = field(
+        default_factory=threading.RLock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def total_chunks(self) -> int:
         """Number of reuse-eligible chunks seen across all lookups."""
-        return self.hit_chunks + self.miss_chunks
+        with self._lock:
+            return self.hit_chunks + self.miss_chunks
 
     @property
     def hit_rate(self) -> float:
         """Share of reuse-eligible chunks served from cache, 0.0 if none."""
-        if self.total_chunks == 0:
-            return 0.0
-
-        return self.hit_chunks / self.total_chunks
+        with self._lock:
+            total_chunks = self.hit_chunks + self.miss_chunks
+            if total_chunks == 0:
+                return 0.0
+            return self.hit_chunks / total_chunks
 
     def record_lookup(
         self,
@@ -44,6 +53,7 @@ class CacheMetrics:
         hit_tokens: int,
     ) -> None:
         """Fold one lookup's outcome into the running totals."""
-        self.hit_chunks += hit_chunks
-        self.miss_chunks += miss_chunks
-        self.hit_tokens += hit_tokens
+        with self._lock:
+            self.hit_chunks += hit_chunks
+            self.miss_chunks += miss_chunks
+            self.hit_tokens += hit_tokens
