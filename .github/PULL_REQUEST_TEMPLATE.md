@@ -12,10 +12,12 @@
 
 ## Checklist
 
-- [ ] Tests were written first, and new behavior has tests in `tests/unit/`
+- [ ] Tests were written first, and new behavior has tests in `tests/unit/` (not applicable to documentation-only changes)
 - [ ] `uv run pytest` passes
 - [ ] `uv run ruff check .` passes
 - [ ] `uv run mypy src/nano_lmcache` passes
 - [ ] Examples in `examples/` and docs in `docs/` are updated if behavior changed
-- [ ] Everything (code, comments, docs, commit messages) is in English
+- [ ] Related roadmap status and affected glossary entries are current
+- [ ] Matching Chinese companion docs are updated where applicable
+- [ ] Code, comments, primary docs, and commit messages are in English (Chinese companion docs excepted)
 - [ ] The core package still has no new runtime dependencies

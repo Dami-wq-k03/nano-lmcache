@@ -2,10 +2,23 @@ English | [简体中文](zh-CN/architecture.md)
 
 # Architecture
 
+This page describes implemented behavior. Start with the
+[guided tutorial](tutorial/README.md) for runnable experiments, or use the
+[documentation index](README.md) to find a topic. Task status lives in
+[ROADMAP.md](../ROADMAP.md).
+
+Read by topic: [capacity](#capacity-and-eviction), [disk](#disk-storage),
+[INT8 compression](#optional-int8-kv-compression), [tiers](#tiered-storage),
+[thread safety](#thread-safety), [offload](#gpu-to-cpu-offload), and
+[engine integration](#inference-integration).
+
 ## Diagrams
 
-GitHub renders the diagrams below directly. They describe the code in
-`src/nano_lmcache/`; if you change behavior, update them too.
+GitHub renders the diagrams below directly. They focus on the core
+prefix-cache loop and optional Hugging Face tensor path. Engine-specific
+hooks are explained in [the integration design](nanovllm-integration.md);
+replay and rendering are introduced in [the tutorial](tutorial/README.md).
+If you change behavior, update the relevant diagrams too.
 
 ### Module relationships
 
@@ -176,8 +189,11 @@ understood without a GPU or an inference engine.
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
-| `tensor/serializers.py` | `TensorSerializer`: safe tensor encoding for `DiskKVCache` (needs torch) |
+| `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
+| `observability/` | Request context, trace events, recorder, and storage tracing |
+| `datasets/`, `replay/` | Synthetic/token workloads, FreeInference adaptation, and replay reports |
+| `visualization/`, `visualize.py` | Import recorded traces and generate the offline HTML viewer |
 
 The `tensor` package is optional. Nothing in `core` or `storage` imports
 it, so the cache concepts work without PyTorch installed.
@@ -516,6 +532,12 @@ it does not make mutable payloads safe to modify in place, make a multi-chunk
 lookup a snapshot, or allow multiple cache objects or processes to write the
 same disk directory.
 
+`MemoryKVCache.stats`, `DiskKVCache.stats`, and `TieredStorage.tier_stats`
+return detached snapshots. `CacheMetrics` synchronizes lookup updates and
+computed totals/rates; its individual public counters are still mutable,
+so callers must not modify them concurrently. `CPUOffloadKVCache`, tracing
+wrappers, and shared trace recorders are outside this thread-safety guarantee.
+
 ### GPU to CPU offload
 
 `CPUOffloadKVCache(device="cuda")` keeps chunk tensors in CPU memory and
@@ -555,8 +577,9 @@ bfloat16):
   code reading the CPU buffer directly must wait (`peek` does).
 
 At ~25 GB/s, loading one 28 MiB chunk takes about 1.1 ms. Whether that
-beats recomputing those 256 tokens depends on the model and GPU, which is
-what roadmap task G3 measures.
+beats recomputing those 256 tokens depends on the model and GPU. The
+[TTFT experiment](nanovllm-benchmark.md) measures that trade-off in nano-vLLM
+(task N4, which incorporated G3).
 
 The full LMCache-style hierarchy is a composition of these pieces:
 
@@ -579,22 +602,36 @@ its own complete prefix chains.
 The storage interface is in place: cache logic depends on the
 `CacheStorage` protocol, so file, CPU, GPU, or remote backends can be
 added without touching the cache loop. Capacity limits and prefix-safe
-eviction, including byte-based capacity, are implemented in `MemoryKVCache`
-and `CPUOffloadKVCache`;
-other eviction policies are future work.
-
-Those backends are not implemented ahead of need.
+eviction, including byte-based capacity, are implemented in `MemoryKVCache`,
+`DiskKVCache`, and `CPUOffloadKVCache`. Memory, disk, and tiered storage
+support threads sharing one instance as described above. Pluggable eviction
+policies and a shared cache server remain roadmap tasks M11 and M12.
 
 ## Inference integration
 
-nano-lmcache becomes the external (L2) KV cache of nano-vLLM, behind
+nano-lmcache implements an external (L2) KV cache for nano-vLLM, behind
 nano-vLLM's own GPU prefix cache (L1). The design, including the block
 format in `integrations/nanovllm/kv_blocks.py`, is in
-[nanovllm-integration.md](nanovllm-integration.md).
+[nanovllm-integration.md](nanovllm-integration.md). Version 1 restores L2
+blocks before prefill and saves completed blocks synchronously. See the
+[TTFT report](nanovllm-benchmark.md) for measured costs and
+[engine trace guide](engine-traces.md) for L1/L2 and GPU transfer events.
 
 The core package should remain independently understandable and
 testable. Integration-specific dependencies should be introduced only
 when required.
+
+## Prefill/decode disaggregation
+
+`disaggregation/` is a pure Python teaching module, independent of
+`tensor/` and `integrations/`. `PrefillWorker` computes a prompt's KV with
+`ToyLanguageModel`, optionally reusing chunks from a `ChunkedPrefixCache`,
+and sends a `KVHandoff` through a `KVTransport`. `DecodeWorker` claims the
+handoff, validates its model fingerprint and completeness, and continues
+generation. Handoffs travel as bytes with a version, payload length, and
+CRC32. Unlike prefix-cache chunks, they include the partial last block.
+Each transport allows exactly one successful `receive` per handoff. See
+the [PD guide](pd-disaggregation.md).
 
 ## Design principle
 
