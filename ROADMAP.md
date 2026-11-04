@@ -61,8 +61,8 @@ Done (pure Python, no GPU dependency):
       (`docs/architecture.md`), a glossary and FAQ (`docs/glossary.md`),
       and a guided learning path (`docs/tutorial/README.md`, DOC-1)
 - [x] Teaching version of prefill/decode disaggregation: toy model,
-      checksummed KV handoff, memory and directory transports, and a
-      colocated vs. disaggregated timeline (`disaggregation/`, PD-1)
+      checksummed KV handoff, and a colocated vs. disaggregated timeline
+      (`disaggregation.py`, PD-1)
 
 Done (optional torch / GPU layer):
 
@@ -849,14 +849,11 @@ on separate workers and moves each request's KV between them. The
 [PD guide](docs/pd-disaggregation.md) explains the rules a handoff must
 keep.
 
-**PD-1: done.** `src/nano_lmcache/disaggregation/` provides a deterministic
-toy model, a versioned `KVHandoff` with length and CRC32 checks,
-single-claim `InMemoryTransport` and `DirectoryTransport`, `PrefillWorker`
-(optionally backed by `ChunkedPrefixCache`), `DecodeWorker`, and a
-colocated vs. disaggregated timeline simulation.
-`examples/demo_pd_disaggregation.py` and `tests/unit/test_pd_*.py` cover
-token equality, no prompt recomputation on decode, partial last blocks,
-model mismatch, corruption, cancellation, and concurrent claims.
+**PD-1: done.** `src/nano_lmcache/disaggregation.py` provides a deterministic
+toy model, a checksummed in-memory handoff, prefill/decode functions, and a
+colocated vs. disaggregated timeline. `examples/demo_pd_disaggregation.py`
+and `tests/unit/test_disaggregation.py` cover token equality, no prompt
+recomputation on decode, model mismatch, corruption, and single claims.
 
 ### PD-2: Trace events for prefill, transfer, and decode
 

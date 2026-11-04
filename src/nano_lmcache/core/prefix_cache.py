@@ -69,11 +69,14 @@ class ChunkedPrefixCache:
         """The optional recorder receiving lookup events."""
         return self._trace_recorder
 
-    def _complete_chunks(
+    def _split_chunks(
         self, token_ids: Sequence[int]
-    ) -> list[tuple[int, ...]]:
+    ) -> tuple[list[tuple[int, ...]], tuple[int, ...] | None]:
+        """Return reusable chunks and the optional incomplete tail."""
         chunks = chunk_tokens(token_ids, self._chunk_size)
-        return [chunk for chunk in chunks if len(chunk) == self._chunk_size]
+        if chunks and len(chunks[-1]) < self._chunk_size:
+            return chunks[:-1], chunks[-1]
+        return chunks, None
 
     def store(
         self, token_ids: Sequence[int],
@@ -82,7 +85,7 @@ class ChunkedPrefixCache:
         *,
         request_id: str | None = None,
     ) -> None:
-        complete_chunks = self._complete_chunks(token_ids)
+        complete_chunks, _ = self._split_chunks(token_ids)
         num_chunks = len(complete_chunks)
 
         if (
@@ -130,15 +133,8 @@ class ChunkedPrefixCache:
         *,
         request_id: str | None = None,
     ) -> PrefixLookupResult:
-        all_chunks = chunk_tokens(token_ids, self._chunk_size)
-        complete_chunks = [
-            chunk for chunk in all_chunks if len(chunk) == self._chunk_size
-        ]
-        incomplete_chunk = (
-            all_chunks[-1]
-            if all_chunks and len(all_chunks[-1]) != self._chunk_size
-            else None
-        )
+        complete_chunks, incomplete_chunk = self._split_chunks(token_ids)
+        all_chunk_count = len(complete_chunks) + (incomplete_chunk is not None)
 
         trace_enabled = (
             self._trace_recorder is not None and self._trace_recorder.enabled
@@ -251,7 +247,7 @@ class ChunkedPrefixCache:
             self._record_trace(
                 "chunk_incomplete",
                 request_id=trace_request_id,
-                chunk_index=len(all_chunks) - 1,
+                chunk_index=all_chunk_count - 1,
                 parent_key=prefix_key,
                 result="incomplete",
                 metadata={

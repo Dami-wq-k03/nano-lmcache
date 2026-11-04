@@ -375,11 +375,10 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 
 ## Prefill/Decode 分离
 
-`disaggregation/` 是纯 Python 教学模块，不依赖 `tensor/` 和 `integrations/`。
-`PrefillWorker` 用 `ToyLanguageModel` 计算 Prompt 的 KV（可选从 `ChunkedPrefixCache` 复用分块），
-再通过 `KVTransport` 发送 `KVHandoff`；`DecodeWorker` 认领交接，校验模型指纹和完整性后继续生成。
-交接以字节传输，带版本、负载长度和 CRC32；与前缀缓存分块不同，它包含不完整的最后一块。
-每个交接在传输层只能被成功 `receive` 一次。详见 [PD 分离指南](pd-disaggregation.md)。
+`disaggregation.py` 是纯 Python 教学模块，不依赖 `tensor/` 和 `integrations/`。
+`prefill` 用 `ToyModel` 计算 Prompt 的 KV，序列化后附带校验和并放入通道；
+`decode` 认领字节，校验模型身份和 KV 完整性后继续生成。小型 `timeline` 函数用于比较合并与分离调度。
+详见 [PD 分离指南](pd-disaggregation.md)。
 
 ## 设计原则
 

@@ -623,15 +623,12 @@ when required.
 
 ## Prefill/decode disaggregation
 
-`disaggregation/` is a pure Python teaching module, independent of
-`tensor/` and `integrations/`. `PrefillWorker` computes a prompt's KV with
-`ToyLanguageModel`, optionally reusing chunks from a `ChunkedPrefixCache`,
-and sends a `KVHandoff` through a `KVTransport`. `DecodeWorker` claims the
-handoff, validates its model fingerprint and completeness, and continues
-generation. Handoffs travel as bytes with a version, payload length, and
-CRC32. Unlike prefix-cache chunks, they include the partial last block.
-Each transport allows exactly one successful `receive` per handoff. See
-the [PD guide](pd-disaggregation.md).
+`disaggregation.py` is a pure Python teaching module, independent of
+`tensor/` and `integrations/`. `prefill` computes a prompt's KV with
+`ToyModel`, serializes it with a checksum, and puts it in a channel.
+`decode` claims the bytes, checks model identity and KV completeness, and
+continues generation. The small `timeline` function compares colocated and
+disaggregated scheduling. See the [PD guide](pd-disaggregation.md).
 
 ## Design principle
 
