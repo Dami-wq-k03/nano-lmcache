@@ -1,6 +1,10 @@
 # Glossary and FAQ
 
-Short explanations of the terms used in nano-lmcache, a teaching project about KV cache reuse. Each entry links to the code, or to the section of [Architecture](architecture.md), that explains it in depth. Tasks that are still open in the [roadmap](../ROADMAP.md) are marked as such.
+Short explanations of the terms used in nano-lmcache, a teaching project
+about KV cache reuse. Each entry links to source code or the relevant
+section of [Architecture](architecture.md). For a runnable sequence, follow
+the [guided tutorial](tutorial/README.md).
+Task status is maintained in the [roadmap](../ROADMAP.md).
 
 Later entries build on earlier ones, so reading top to bottom works well.
 
@@ -34,9 +38,11 @@ See: [`run_with_prefix_cache`](../src/nano_lmcache/tensor/hf.py)
 
 The time between submitting a request and receiving its first generated token. For long prompts, prefill is a large part of it, so skipping prefill work can lower TTFT, but only if loading the cached data costs less than the computation it replaces.
 
-A TTFT comparison with a real inference engine is an open task (V5 in the [roadmap](../ROADMAP.md)).
+The nano-vLLM integration includes a controlled TTFT comparison (N4). It
+measures recompute, GPU L1 reuse, pinned CPU L2, disk L2, and synchronous
+storage costs. A high hit rate alone does not establish a latency gain.
 
-See: [Roadmap task V5 — End-to-end demo and TTFT comparison](../ROADMAP.md)
+See: [When does nano-vLLM's L2 cache pay off?](nanovllm-benchmark.md)
 
 ### Token
 
@@ -80,7 +86,11 @@ See: [`metrics.py`](../src/nano_lmcache/core/metrics.py), [Why metrics count the
 
 ### Cache eviction
 
-Removing stored entries to make room when a bounded cache is full. In nano-lmcache, capacity is counted in entries (`max_entries`, where one entry is one chunk payload). Byte-based capacity is an open task (M3 in the [roadmap](../ROADMAP.md)).
+Removing stored entries to make room when a bounded cache is full.
+`max_entries` limits the number of chunk payloads; `max_bytes` limits their
+recorded size. Memory uses `size_fn`, CPU offload uses tensor bytes, and
+disk uses complete serialized entry-file bytes. When both limits are set,
+both must hold; these are backend budgets, not total process-memory limits.
 
 See: [Capacity and eviction](architecture.md#capacity-and-eviction)
 
@@ -102,19 +112,33 @@ See: [`PrefixLRUIndex`](../src/nano_lmcache/storage/eviction.py), [Why eviction 
 
 A way of managing KV cache memory in fixed-size blocks instead of one contiguous region per sequence. vLLM uses it. A block is a unit of memory in the engine; a chunk is a group of tokens in nano-lmcache's cache keys. They are related but not the same thing.
 
-nano-lmcache has no paged attention code. How chunks and blocks line up belongs to the vLLM track, which is still open (V0 in the [roadmap](../ROADMAP.md)).
+nano-lmcache delegates attention execution to the inference engine. Its
+nano-vLLM adapter exports and imports fixed-size engine KV blocks and keys
+them by model layout and logical prefix. Physical GPU block slots can be
+reused for different logical prefixes.
 
-See: [Roadmap task V0 — vLLM KV connector research](../ROADMAP.md)
+See: [nano-vLLM block format](nanovllm-integration.md#block-format-n0)
 
 ### Cache offloading
 
-Moving cached data from fast but small memory to larger but slower memory, and copying it back on a hit. `CPUOffloadKVCache` keeps chunk tensors in pinned (page-locked) CPU memory and returns them on the GPU. It adds capacity, but every hit pays a copy cost; measuring when that beats recomputing is an open task (G3 in the [roadmap](../ROADMAP.md)).
+Moving cached data from fast but small memory to larger but slower memory,
+and copying it back on a hit. `CPUOffloadKVCache` keeps chunk tensors in
+pinned (page-locked) CPU memory and returns them on the GPU. It adds
+capacity, but every hit pays a copy cost. The
+[TTFT experiment](nanovllm-benchmark.md) measures when loading beats recompute
+for one model and GPU. The former G3 task was incorporated into N4.
 
 See: [`offload.py`](../src/nano_lmcache/tensor/offload.py), [GPU to CPU offload](architecture.md#gpu-to-cpu-offload)
 
 ### Tiered storage
 
-A small fast backend placed in front of a large slow one, for example `MemoryKVCache` in front of `DiskKVCache`. `TieredStorage` is write-through: every write goes to both tiers, and a hit in the slow tier is promoted into the fast tier. The disk tier also lets cached chunks survive a restart.
+A small fast backend placed in front of a large slow one, for example
+`MemoryKVCache` in front of `DiskKVCache`. `TieredStorage` is write-through:
+writes try the slow tier first and then the fast tier, subject to each
+tier's admission limits. Slow hits are promoted when the fast tier admits
+them. A rejected slow overwrite preserves both existing copies; a rejected
+fast overwrite invalidates the stale fast subtree. Only writes admitted
+to the disk tier survive a restart.
 
 See: [`tiered.py`](../src/nano_lmcache/storage/tiered.py), [Tiered storage](architecture.md#tiered-storage)
 
@@ -144,9 +168,13 @@ See: [`test_hf_reuse.py`](../tests/tensor/test_hf_reuse.py), [Real KV tensors](a
 
 Loading is not free. Looking up chunks, copying them between memory tiers, and rebuilding the model's cache from chunk tensors all take time, and for a short prefix that can exceed the cost of recomputing it.
 
-The [roadmap](../ROADMAP.md) (task G3) reports one case: on an RTX 4090 with Qwen3-0.6B and a prompt of about 270 tokens, reusing 256 cached tokens took about 60 ms, while recomputing the whole prompt took about 45 ms. The logits matched; the cache bookkeeping cost more than the skipped compute. This is one data point, not a general rule: the result depends on the model, prompt length, storage tier, and hardware.
+The [nano-vLLM benchmark](nanovllm-benchmark.md) found that pinned CPU L2
+became at least 10% faster than recompute at 4,096 reused tokens for
+Qwen3-0.6B on one RTX 4090. Disk L2 did not beat recompute in that experiment,
+through 8,192 reused tokens. These thresholds depend on the model, storage,
+hardware, and measurement method; they are not general guarantees.
 
-See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py), [Roadmap task G3 — Measure recompute vs. load cost](../ROADMAP.md)
+See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py), [TTFT results and limits](nanovllm-benchmark.md)
 
 ### 5. What happens when the cache is full?
 
@@ -176,7 +204,11 @@ See: [ROADMAP.md](../ROADMAP.md)
 
 No, not for the cache concepts. `core/` and `storage/` are pure Python with no runtime dependencies, so chunking, prefix matching, metrics, eviction, and the memory, disk, and tiered backends run on any computer.
 
-Real KV tensors need PyTorch (`uv sync --extra hf`), but the real-model demo also runs on a CPU. Only GPU-to-CPU offload needs an NVIDIA GPU.
+Real tensor operations need PyTorch; the Hugging Face model demo additionally
+needs transformers (`uv sync --extra hf`) and can run on CPU. CUDA offload
+and real nano-vLLM generation/trace recording need an NVIDIA GPU; the latter
+also needs Linux and the `nanovllm` dependency group. Reading a saved engine
+trace and producing offline HTML need only the core package.
 
 See: [README](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md)
 

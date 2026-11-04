@@ -6,127 +6,66 @@ English | [简体中文](README.zh-CN.md)
 
 # nano-lmcache
 
-An educational, step-by-step implementation of KV cache reuse, from a
-pure-Python prototype to real GPU tensors and an external KV cache for the
-nano-vLLM inference engine.
+Learn KV cache reuse one concept at a time: token chunking, prefix matching,
+storage tiers, real model tensors, and an external cache for
+[nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm).
 
-nano-lmcache is a teaching project, not a reimplementation or replacement
-of [LMCache](https://github.com/LMCache/LMCache). It rebuilds the core
-ideas one concept at a time, each with tests and a runnable example, so
-that learners can later read production systems like LMCache and vLLM
-and understand why they are designed the way they are.
+This is a teaching project. Each concept has tests and a runnable example
+to help you understand systems such as [LMCache](https://github.com/LMCache/LMCache)
+and vLLM. The project prioritizes clarity and testability; it does not aim
+for production performance or API compatibility with LMCache.
 
-## Goals
+## Start here
 
-- Understand KV cache reuse and prefix matching.
-- Implement cache keying and storage abstractions.
-- Explore in-memory caching before introducing more complex backends.
-- Progress toward integration with real LLM inference engines.
-
-## Development
-
-Requirements: Python 3.11+ and uv.
+Requirements: Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Run these commands from the repository root:
 
 ```bash
-uv sync
-uv run pytest
-uv run ruff check .
-uv run mypy src/nano_lmcache
+git clone https://github.com/Dami-wq-k03/nano-lmcache.git
+cd nano-lmcache
+uv sync --locked
+uv run python examples/demo_prefix_cache.py
 ```
 
-## Try it
+The demo shows cold misses, shared-prefix hits, and eviction under entry
+and byte limits. It uses small string payloads, so no model download,
+PyTorch, or GPU is needed.
+
+To see each lookup in an offline browser viewer:
 
 ```bash
-uv run python examples/demo_chunking.py       # chunk keys in isolation
-uv run python examples/demo_prefix_cache.py   # full cache loop + metrics
-uv run python examples/demo_disk_cache.py     # run twice: reuse across restarts
-uv run python examples/demo_tiered_storage.py # memory in front of disk
-uv run python -m nano_lmcache.inspect /path/to/cache  # inspect disk cache
-uv run python -m nano_lmcache.inspect /path/to/cache --json  # JSON output
+uv run python -m nano_lmcache.visualize --scenario partial_prefix_hit \
+  --output /tmp/nano-lmcache-trace.html
 ```
 
-With a real model (needs `uv sync --extra hf`):
+Open `/tmp/nano-lmcache-trace.html` in a browser. The HTML includes a prefix
+tree and event timeline and needs no server or CDN.
 
-```bash
-uv run python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
-uv run python examples/demo_kv_reuse.py --device cuda --offload  # KV in CPU RAM
-uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv  # run twice
-```
+## Choose your next step
 
-As the external KV cache of nano-vLLM (Linux and an NVIDIA GPU; needs
-`uv sync --extra hf --group nanovllm`):
+| Goal | Guide | Requirements |
+| --- | --- | --- |
+| Learn from chunk keys through engine restoration | [Guided learning path](docs/tutorial/README.md) | First five steps: core package only |
+| Find a concept, command, or experiment | [Documentation index](docs/README.md) | Varies by topic |
+| Understand terminology and design | [Glossary and FAQ](docs/glossary.md), [architecture](docs/architecture.md) | Core package only |
+| Reuse real model KV on CPU or GPU | [Real-model tutorial](docs/tutorial/README.md#6-reuse-real-model-tensors) | Optional `hf` extra; GPU for CUDA offload |
+| Restore nano-vLLM KV after restart | [Engine tutorial](docs/tutorial/README.md#7-restore-a-real-engines-cache), [integration design](docs/nanovllm-integration.md) | Linux, NVIDIA GPU, local model, `nanovllm` group |
+| Record and inspect L1/L2 engine events | [Real engine traces](docs/engine-traces.md) | GPU to record; core package to view |
+| Compare cache loading with recompute | [TTFT experiment](docs/nanovllm-benchmark.md) | See the report's setup and limits |
 
-```bash
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B  # run twice
-```
+The core package has no runtime dependencies. PyTorch and inference-engine
+dependencies are optional; installation and test commands live in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Record the real engine and turn its metadata-only trace into offline HTML:
+## Project status and contributing
 
-```bash
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
-  --trace-output engine.json
-uv run python -m nano_lmcache.visualize \
-  --trace-json engine.json --output engine-trace.html
-```
+Prefix caching, bounded memory/disk storage, thread-safe access to the
+memory/disk/tiered backends, real tensors, CPU offload, and nano-vLLM V1
+integration are implemented. The offline viewer supports synthetic replay,
+FreeInference opaque block replay, and recorded engine traces.
 
-The viewer shows L1/L2 reuse, GPU imports/exports, per-tier storage events,
-and measured one-token TTFT. Run the demo twice with the same `--dir` to
-observe disk restoration after restart. See [Real engine traces](docs/engine-traces.md)
-for event semantics, timing limits, and the two-process experiment.
+Task status, prerequisites, and follow-ups are maintained in
+[ROADMAP.md](ROADMAP.md). To contribute, choose an open task and follow
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-The prefix-cache demo serves four requests against one cache and prints
-per-chunk hit/miss decisions plus cumulative reuse metrics.
-
-To replay a deterministic workload and open an offline trace visualizer:
-
-```bash
-uv run python -m nano_lmcache.visualize \
-  --scenario partial_prefix_hit \
-  --output trace.html
-```
-
-The generated HTML has no CDN or server dependency. It includes chunk
-statuses, prefix keys, a prefix tree, event details, and step-by-step
-timeline controls. FreeInference JSONL traces use an opaque block replay so
-their block IDs are never treated as model token IDs:
-
-```bash
-uv run python -m nano_lmcache.visualize \
-  --freeinference-jsonl sample.jsonl \
-  --limit 100 \
-  --output freeinference.html
-```
-
-New to KV cache concepts? Read the [Glossary and FAQ](docs/glossary.md) for short definitions and beginner-friendly answers.
-
-## Roadmap
-
-1. **Nano** (done): Token chunking, prefix-aware chunk keys, an
-   in-memory backend, continuous-prefix lookup, and hit/miss metrics.
-2. **Mini** (done): A storage interface, bounded prefix-safe eviction,
-   and disk and tiered memory + disk backends.
-3. **GPU** (done): Real KV tensors verified against a real model, GPU to
-   CPU offload, and a GPU -> CPU -> disk hierarchy.
-4. **nano-vLLM integration** (version 1 done, follow-ups open): nano-lmcache
-   as the external KV cache behind
-   [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm)'s GPU prefix
-   cache. Design: [docs/nanovllm-integration.md](docs/nanovllm-integration.md);
-   when it pays off: [docs/nanovllm-benchmark.md](docs/nanovllm-benchmark.md).
-5. **Visualization Lab (in progress)**: trace instrumentation, synthetic and
-   real workload replay, offline HTML playback, storage events, and optional
-   real nano-vLLM traces with L1/L2 reuse and GPU transfer events.
-
-See [ROADMAP.md](ROADMAP.md) for the full task list. Tasks are open for
-contributors to claim.
-
-## Scope
-
-The initial implementation prioritizes clarity and testability over
-production performance. Distributed caching, GPU-specific optimizations,
-and inference-engine integration are introduced only when the core
-concepts are established.
-
-## Contributing and license
-
-Contributions are welcome. Pick a task from [ROADMAP.md](ROADMAP.md) and
-see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow. nano-lmcache is released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).

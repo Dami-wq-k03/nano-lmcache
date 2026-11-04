@@ -1,7 +1,10 @@
 # nano-lmcache Roadmap and Task List
 
-This document lists the work ahead for nano-lmcache, for contributors who
-want to pick up a task.
+This document owns task status, prerequisites, and acceptance criteria.
+For implemented behavior, use the [documentation index](docs/README.md);
+for a runnable introduction, use the [guided tutorial](docs/tutorial/README.md).
+Completed task sections retain their original specifications as design
+history; their future-tense wording does not describe the current feature set.
 
 ## What this project is
 
@@ -52,8 +55,11 @@ Done (pure Python, no GPU dependency):
       disk (`storage/tiered.py`, M5)
 - [x] O(log n) leaf-heap eviction with the exact same LRU order (M2) and
       byte-based capacity for the memory backend (M3)
+- [x] Thread-safe access to shared memory, disk, and tiered storage instances
+      and synchronized lookup metrics (M10; no shared-directory multi-process writes)
 - [x] Runnable demos (`examples/`), architecture notes
-      (`docs/architecture.md`), and a glossary and FAQ (`docs/glossary.md`)
+      (`docs/architecture.md`), a glossary and FAQ (`docs/glossary.md`),
+      and a guided learning path (`docs/tutorial/README.md`, DOC-1)
 
 Done (optional torch / GPU layer):
 
@@ -101,7 +107,7 @@ open an issue to discuss it.
 | M7 | Detect corrupted disk entries | Easy | No | – | Done |
 | M8 | Cache inspector CLI | Easy | No | – | Done |
 | M9 | Byte-based capacity for the disk backend | Medium | No | – | Done |
-| M10 | Thread-safe storage | Medium | No | – | Open |
+| M10 | Thread-safe storage | Medium | No | – | Done |
 | M11 | Pluggable eviction policies | Hard | No | – | Open |
 | M12 | Shared cache server for several processes | Hard | No | M10 | Open |
 | **GPU: real KV tensors** | | | | | |
@@ -127,16 +133,18 @@ open an issue to discuss it.
 | DATA-2 | FreeInference opaque block replay | Hard | No | DATA-1 | Initial version |
 | VIS-10 | Real nano-vLLM Trace JSON → offline HTML | Hard | Yes for recording | N4, VIS-4–6 | Done |
 | VIS-11 | Streaming replay, bounded reports and event sampling | Hard | No | DATA-2 | Open |
-| DOC-1 | Guided learning path from prefix matching to engine traces | Medium | No | VIS-10 | Open |
+| DOC-1 | Guided learning path from prefix matching to engine traces | Medium | No | VIS-10 | Done |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priorities:** VIS-11 (bounded replay) and DOC-1 (guided learning).
-N5 and N6 remain performance follow-ups (see `docs/nanovllm-benchmark.md`).
-Check the corresponding GitHub issue before starting work; G6 and M10 may
-already be claimed.
+**Next priority:** VIS-11 (bounded replay). The initial guided learning path
+(DOC-1) is available in [English](docs/tutorial/README.md) and
+[Chinese](docs/zh-CN/tutorial.md).
+N5 and N6 remain performance follow-ups (see
+[the TTFT report](docs/nanovllm-benchmark.md)). Check the corresponding
+GitHub issue before starting an open task; G6 may already be claimed.
 
 **Dependencies:**
 
@@ -158,9 +166,10 @@ graph LR
 
 ### I1: Optional dependency groups and GPU test markers
 
-**Status: done.** An extra for the inference engine is deliberately missing:
-N2 adds one for nano-vLLM, the first time engine code runs in tests.
-Engine adapters live in `nano_lmcache/integrations/`.
+**Status: done.** The core package has no runtime dependencies. Optional
+`torch` / `hf` extras and the `tensor-test` / `nanovllm` dependency groups
+cover the heavier layers. Engine adapters live in
+`nano_lmcache/integrations/`; see [CONTRIBUTING.md](CONTRIBUTING.md) for setup.
 
 The core package has no runtime dependencies, and that must stay true:
 someone learning the cache concepts should never be forced to install
@@ -421,16 +430,16 @@ Acceptance criteria:
 
 ### M10: Thread-safe storage
 
-A serving engine handles requests on several threads, but no backend has
-a lock. Python's GIL does not make compound operations atomic: two
-threads can both see room in `PrefixLRUIndex.admit` and exceed the
-limit, or one can evict an entry while another is reading its file.
+**Status: done** in [PR #66](https://github.com/Dami-wq-k03/nano-lmcache/pull/66).
+Each `MemoryKVCache`, `DiskKVCache`, and `TieredStorage` owns an `RLock`.
+Backend locks cover the index and its payloads together; the tiered lock
+covers write-through and promotion sequences. `CacheMetrics` synchronizes
+lookup updates, and backend statistics return snapshots.
 
-To do: make `MemoryKVCache`, `DiskKVCache`, and `TieredStorage` safe
-under concurrent `put` and `get`. Choose the lock granularity (one lock
-per backend, or inside the index) and explain the trade-off. For the disk
-backend, decide which file I/O may happen outside the lock and why that
-is safe.
+See [thread safety](docs/architecture.md#thread-safety) for lock order and
+limits, and `tests/unit/test_thread_safe_storage.py` for stress and targeted
+race tests. The GIL alone does not make these compound transitions atomic.
+Multiple objects/processes still must not write the same disk directory.
 
 Acceptance criteria:
 
@@ -835,10 +844,13 @@ already-sorted streaming input, incremental statistics, optional event
 sampling, and a cap on events embedded in HTML. Preserve the distinction
 between dataset-observed cached tokens and simulated hits.
 
-**DOC-1: open.** Build `docs/tutorial/` with a runnable sequence: chunking,
-first-miss stopping, branching prefixes, leaf-only eviction, storage tiers,
-and real engine restoration. Link each explanation to tests and a small
-experiment. The engine trace guide is available; the full tutorial is not.
+**DOC-1: done.** The [guided tutorial](docs/tutorial/README.md) and its
+[Chinese edition](docs/zh-CN/tutorial.md) connect chunking, first-miss
+stopping, branching prefixes, leaf-only eviction, storage tiers, offline
+traces, real tensors, and engine restoration. Each step includes commands,
+expected observations, an experiment, and source/test references. The
+[documentation index](docs/README.md) separates learning, operation, and
+experiment reports; the README provides the minimal starting point.
 
 ---
 

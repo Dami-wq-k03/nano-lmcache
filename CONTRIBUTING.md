@@ -11,14 +11,11 @@ The project grows one concept at a time. Open tasks, their difficulty,
 and hardware requirements are listed in [ROADMAP.md](ROADMAP.md); the
 design is described in `docs/architecture.md`.
 
-- **Nano** (done): chunking, prefix-aware keys, in-memory storage,
-  prefix lookup, hit/miss metrics.
-- **Mini** (done, follow-ups open): storage interface, prefix-safe
-  eviction, disk and tiered backends.
-- **GPU** (done, follow-ups open): real KV tensors, GPU to CPU offload.
-- **nano-vLLM integration** (open for contributors): nano-lmcache as the
-  external KV cache of nano-vLLM; see
-  [docs/nanovllm-integration.md](docs/nanovllm-integration.md).
+For a tour of implemented features, follow the
+[guided learning path](docs/tutorial/README.md). The
+[documentation index](docs/README.md) links architecture, engine integration,
+visualization, and experiment reports. Task status is maintained only in the
+roadmap rather than duplicated in this guide.
 
 The core package must stay free of runtime dependencies. PyTorch,
 nano-vLLM, and similar libraries belong in optional dependency groups and separate
@@ -124,14 +121,31 @@ This project is developed test-first:
 
 1. Write the tests for the new behavior and confirm they fail.
 2. Implement the behavior until they pass.
-3. Run the three checks above.
+3. Run the applicable checks above, including the CPU tensor job when changing
+   tensor or optional-dependency behavior.
 
 Every new feature or bug fix needs tests in `tests/unit/`. If it changes
 user-visible behavior, update the relevant example in `examples/` and
 `docs/architecture.md`.
 
-Write all code, comments, docs, and commit messages in English, so the
-project stays readable for everyone.
+Write code, comments, primary documentation, and commit messages in English.
+Chinese companion documents live in `README.zh-CN.md` and `docs/zh-CN/`.
+
+### Documentation changes
+
+- Use the README for the minimal first run and navigation, the tutorial for
+  guided experiments, and architecture/topic guides for current behavior.
+  Keep task status in `ROADMAP.md` and setup/checks in this guide.
+- When completing a task, update its overview row and detailed status in the
+  roadmap, and remove obsolete claims from affected guides and the glossary.
+- Update the matching Chinese README, index, tutorial, or architecture section
+  when its English counterpart changes. If a specialist guide has no Chinese
+  edition, label its link as English in Chinese navigation.
+- Preserve existing document paths and heading anchors when possible. Check
+  relative links and run changed core-only examples. Model/GPU commands should
+  state their prerequisites; report any checks that could not run locally.
+- Documentation-only changes do not require new unit tests. Validate commands,
+  links, and consistency; use the normal CI checks before merging.
 
 Code should explain itself through clear names and docstrings. Add
 comments for the reasoning behind non-obvious decisions, for example why
