@@ -60,6 +60,9 @@ Done (pure Python, no GPU dependency):
 - [x] Runnable demos (`examples/`), architecture notes
       (`docs/architecture.md`), a glossary and FAQ (`docs/glossary.md`),
       and a guided learning path (`docs/tutorial/README.md`, DOC-1)
+- [x] Teaching version of prefill/decode disaggregation: toy model,
+      checksummed KV handoff, memory and directory transports, and a
+      colocated vs. disaggregated timeline (`disaggregation/`, PD-1)
 
 Done (optional torch / GPU layer):
 
@@ -125,6 +128,11 @@ open an issue to discuss it.
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
+| **PD disaggregation** | | | | | |
+| PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
+| PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
+| PD-3 | Hand KV between two nano-vLLM engines | Hard | Yes | PD-1, N4 | Open |
+| PD-4 | Overlap transfer with prefill (block-by-block streaming) | Hard | Yes | PD-3 | Open |
 | **Visualization Lab and datasets** | | | | | |
 | VIS-1–3 | Trace schema, recorder, cache instrumentation | Medium | No | – | Done |
 | VIS-4–6 | Offline HTML, timeline, prefix tree, trace correctness | Medium | No | VIS-1–3 | Done |
@@ -158,6 +166,9 @@ graph LR
   M4 --> M5
   I3 --> M2
   M10 --> M12
+  PD1[PD-1] --> PD2[PD-2]
+  PD1 --> PD3[PD-3] --> PD4[PD-4]
+  N4 --> PD3
 ```
 
 ---
@@ -828,6 +839,54 @@ property: reading an entry must never run code from the file.
 
 Acceptance criteria: a lower page-cache read time per block, with numbers
 before and after; all disk backend tests still pass.
+
+---
+
+## PD disaggregation
+
+Prefill/decode disaggregation runs prompt processing and token generation
+on separate workers and moves each request's KV between them. The
+[PD guide](docs/pd-disaggregation.md) explains the rules a handoff must
+keep.
+
+**PD-1: done.** `src/nano_lmcache/disaggregation/` provides a deterministic
+toy model, a versioned `KVHandoff` with length and CRC32 checks,
+single-claim `InMemoryTransport` and `DirectoryTransport`, `PrefillWorker`
+(optionally backed by `ChunkedPrefixCache`), `DecodeWorker`, and a
+colocated vs. disaggregated timeline simulation.
+`examples/demo_pd_disaggregation.py` and `tests/unit/test_pd_*.py` cover
+token equality, no prompt recomputation on decode, partial last blocks,
+model mismatch, corruption, cancellation, and concurrent claims.
+
+### PD-2: Trace events for prefill, transfer, and decode
+
+To do: let the workers and transports record events through
+`TraceRecorder` (prefill start/end, handoff sent/claimed/rejected, decode
+steps) and render them in the offline viewer, one lane per worker.
+
+Acceptance criteria: a trace from the demo renders to HTML; rejected
+handoffs appear with their error type; existing trace tests still pass.
+
+### PD-3: Hand KV between two nano-vLLM engines
+
+To do: run prefill in one nano-vLLM engine, export the request's KV
+blocks with the N0 block format (including the partial last block),
+transfer them with a PD-1 transport, import them into a second engine's
+block table, and decode there. The model fingerprint must cover the
+engine's KV layout.
+
+Acceptance criteria: generated tokens equal a single-engine run with the
+same sampling settings; the decode engine computes no prompt positions;
+a mismatched model or truncated transfer is rejected before decoding.
+
+### PD-4: Overlap transfer with prefill
+
+To do: send completed KV blocks while prefill is still running, and let
+decode start once the last block lands. Measure TTFT against PD-3's
+send-after-prefill.
+
+Acceptance criteria: identical tokens to PD-3; a TTFT comparison with
+the setup recorded; behavior defined when prefill fails mid-stream.
 
 ---
 

@@ -9,10 +9,11 @@
 
 | 文档 | 内容 |
 | --- | --- |
-| [循序渐进教程](tutorial.md) | 分块 → 前缀匹配 → 淘汰 → 分层存储 → Trace → 真实张量 → 引擎恢复 |
+| [循序渐进教程](tutorial.md) | 分块 → 前缀匹配 → 淘汰 → 分层存储 → Trace → 真实张量 → 引擎恢复 → PD 分离 |
 | [术语表与 FAQ（英文）](../glossary.md) | KV、Prefill、Decode、TTFT、Chunk、Block 和常见误解 |
 | [架构](architecture.md) | 当前模块、不变量、容量统计、序列化和并发边界 |
 | [nano-vLLM 集成（英文）](../nanovllm-integration.md) | 引擎块布局、L1/L2 查询、恢复/保存钩子及正确性规则 |
+| [PD 分离](pd-disaggregation.md) | Prefill/Decode Worker、KV 交接格式、所有权、失败处理，以及 TTFT 与卡顿的取舍 |
 
 ## 运行与观察
 
@@ -23,6 +24,7 @@
 | 只读检查持久化条目 | [磁盘教程](tutorial.md#4-持久化与提升分块) | 核心包和已有缓存目录 |
 | 复用 Hugging Face 模型 KV | [真实模型教程](tutorial.md#6-复用真实模型张量) | `hf` 扩展和模型权重，支持 CPU |
 | 采集引擎事件并生成离线 HTML | [引擎 Trace（英文）](../engine-traces.md) | 采集需要 Linux/NVIDIA GPU/本地模型；渲染只需核心包 |
+| 把 KV 从 Prefill Worker 交给 Decode Worker | [PD 教程](tutorial.md#8-拆分-prefill-与-decode) | 核心包 |
 
 ## 实验与取舍
 

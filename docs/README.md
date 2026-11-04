@@ -11,10 +11,11 @@ model or GPU.
 
 | Document | What it explains |
 | --- | --- |
-| [Guided learning path](tutorial/README.md) | Chunking → prefix matching → eviction → storage tiers → traces → real tensors → engine restoration |
+| [Guided learning path](tutorial/README.md) | Chunking → prefix matching → eviction → storage tiers → traces → real tensors → engine restoration → PD disaggregation |
 | [Glossary and FAQ](glossary.md) | KV, prefill, decode, TTFT, chunks, blocks, and common misconceptions |
 | [Architecture](architecture.md) | Current modules, invariants, capacity accounting, serialization, and concurrency boundaries |
 | [nano-vLLM integration](nanovllm-integration.md) | Engine block layout, L1/L2 lookup, restore/save hooks, and correctness rules |
+| [PD disaggregation](pd-disaggregation.md) | Prefill/decode workers, KV handoff format, ownership, failure handling, and the TTFT vs. stall trade-off |
 
 ## Run and inspect
 
@@ -25,6 +26,7 @@ model or GPU.
 | Inspect persisted entries without changing them | [Disk tutorial](tutorial/README.md#4-persist-and-promote-chunks) | Core package, existing cache directory |
 | Reuse Hugging Face model KV | [Real-model tutorial](tutorial/README.md#6-reuse-real-model-tensors) | `hf` extra, model weights; CPU supported |
 | Record engine events and render offline HTML | [Engine traces](engine-traces.md) | Linux/NVIDIA GPU/local model to record; core package to render |
+| Hand KV from a prefill worker to a decode worker | [PD tutorial](tutorial/README.md#8-split-prefill-and-decode) | Core package |
 
 ## Experiments and trade-offs
 

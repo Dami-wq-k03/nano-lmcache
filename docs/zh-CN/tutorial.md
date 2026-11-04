@@ -4,7 +4,7 @@
 
 按顺序完成以下步骤。每步都包含小实验、预期现象、源码与测试入口。
 在仓库根目录执行 `uv sync --locked` 后开始。第 1–5 步只需核心包；
-第 6 步需要模型权重和可选依赖；第 7 步需要 Linux 与 NVIDIA GPU。
+第 6 步需要模型权重和可选依赖；第 7 步需要 Linux 与 NVIDIA GPU；第 8 步只需核心包。
 
 | 步骤 | 要回答的问题 |
 | --- | --- |
@@ -15,6 +15,7 @@
 | [5. Trace 查看器](#5-在查看器中跟踪查询) | 哪些分块命中、未命中或没有检查？ |
 | [6. 真实张量](#6-复用真实模型张量) | 复用是否保持模型输出，是否节省时间？ |
 | [7. 引擎恢复](#7-恢复真实引擎的缓存) | 外部 L2 块如何回到引擎的 GPU L1？ |
+| [8. PD 分离](#8-拆分-prefill-与-decode) | Prefill Worker 要交出什么，Decode Worker 才能接着生成？ |
 
 ## 1. 生成分块键
 
@@ -220,5 +221,26 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
 [TTFT 基准（英文）](../nanovllm-benchmark.md)：示例 TTFT 包含 Trace 开销和同步写入，并非单独的缓存加速测量。
 
 [GPU 验证记录（英文）](../gpu-validation.md)记录了上述示例的实际运行结果，包含跨进程恢复和 Trace 渲染。
+
+## 8. 拆分 Prefill 与 Decode
+
+```bash
+uv run python examples/demo_pd_disaggregation.py
+uv run pytest tests/unit/test_pd_handoff.py tests/unit/test_pd_workers.py \
+  tests/unit/test_pd_simulation.py
+```
+
+本步只需核心包。Prefill Worker 计算 Prompt 的 KV 和第一个 Token，通过共享目录发送 `KVHandoff`；
+Decode Worker 认领后生成其余 Token。示例会显示合并与分离两种方式输出完全一致，
+且 Decode Worker 只计算新增位置；接着演示四种拒绝：字节损坏、来自不同权重的 KV、请求已取消、
+第二个 Worker 认领已被认领的请求。最后的时间线对比单 GPU 与“Prefill GPU + Decode GPU”：
+合并部署下长 Prompt 让正在运行的 chat 请求卡顿两秒；分离后卡顿消失，但每个 TTFT 都包含 KV 传输。
+
+实验：把 27 个 Token 的 Prompt 被拆成 7 块这一点，与第 2 步前缀缓存的规则对比。
+交接会发送不完整的最后一块，因为 Decode Worker 无法自行重算它。然后像示例第二部分那样给
+`PrefillWorker` 一个 `ChunkedPrefixCache`：前缀复用减少了 Prefill 计算量，交接内容却不变。
+
+阅读 [PD 分离指南](pd-disaggregation.md)，了解交接必须遵守的七条规则和本教学版没有覆盖的内容，
+再阅读 [`disaggregation/`](../../src/nano_lmcache/disaggregation/)。
 
 返回[文档目录](README.md)，或从[路线图（英文）](../../ROADMAP.md)选择贡献任务。

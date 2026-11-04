@@ -6,7 +6,7 @@ Work through these steps in order. Each step pairs a small experiment with
 an explanation and the tests that establish the behavior. Run commands from
 the repository root after `uv sync --locked`. Steps 1–5 use only the core
 package; step 6 adds model weights and optional dependencies; step 7 needs
-Linux and an NVIDIA GPU.
+Linux and an NVIDIA GPU. Step 8 returns to the core package.
 
 | Step | Question |
 | --- | --- |
@@ -17,6 +17,7 @@ Linux and an NVIDIA GPU.
 | [5. Trace viewer](#5-follow-a-lookup-in-the-viewer) | Which chunks were hit, missed, or never checked? |
 | [6. Real tensors](#6-reuse-real-model-tensors) | Does reuse preserve model output, and does it save time? |
 | [7. Engine restoration](#7-restore-a-real-engines-cache) | How do external L2 blocks return to the engine's GPU L1? |
+| [8. PD disaggregation](#8-split-prefill-and-decode) | What must a prefill worker hand over so a decode worker can continue? |
 
 ## 1. Build chunk keys
 
@@ -258,6 +259,36 @@ measurement of cache speedup.
 
 A [GPU validation record](../gpu-validation.md) records a completed run of
 these examples, including two-process restoration and trace rendering.
+
+## 8. Split prefill and decode
+
+```bash
+uv run python examples/demo_pd_disaggregation.py
+uv run pytest tests/unit/test_pd_handoff.py tests/unit/test_pd_workers.py \
+  tests/unit/test_pd_simulation.py
+```
+
+This step needs only the core package. A prefill worker computes a
+prompt's KV and first token, then sends a `KVHandoff` through a shared
+directory. A decode worker claims it and generates the rest. The demo
+prints identical colocated and disaggregated tokens, and shows the decode
+worker computing only the new positions. It then shows four refusals:
+corrupt bytes, KV from different weights, a cancelled request, and a
+second worker claiming an already-claimed request. Its timeline compares
+one GPU with a prefill GPU plus a decode GPU. Colocated, a long prompt
+stalls a running chat request for two seconds. Disaggregated, the stall
+disappears, but every TTFT includes the KV transfer.
+
+Experiment: compare the 27-token prompt's seven blocks with the prefix
+cache's rule from step 2. The handoff ships the partial last block,
+because a decode worker has no way to recompute it. Then give
+`PrefillWorker` a `ChunkedPrefixCache`, as the demo's second part does.
+Prefix reuse reduces prefill computation but leaves the handoff contents
+unchanged.
+
+Read the [PD disaggregation guide](../pd-disaggregation.md) for the seven
+rules a handoff must keep and for what this teaching version leaves out,
+then [`disaggregation/`](../../src/nano_lmcache/disaggregation/).
 
 Return to the [documentation index](../README.md), or choose a contribution
 from the [roadmap](../../ROADMAP.md).

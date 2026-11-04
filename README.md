@@ -50,6 +50,7 @@ tree and event timeline and needs no server or CDN.
 | Understand terminology and design | [Glossary and FAQ](docs/glossary.md), [architecture](docs/architecture.md) | Core package only |
 | Reuse real model KV on CPU or GPU | [Real-model tutorial](docs/tutorial/README.md#6-reuse-real-model-tensors) | Optional `hf` extra; GPU for CUDA offload |
 | Restore nano-vLLM KV after restart | [Engine tutorial](docs/tutorial/README.md#7-restore-a-real-engines-cache), [integration design](docs/nanovllm-integration.md) | Linux, NVIDIA GPU, local model, `nanovllm` group |
+| Split prefill and decode into two workers | [PD tutorial](docs/tutorial/README.md#8-split-prefill-and-decode), [PD guide](docs/pd-disaggregation.md) | Core package only |
 | Record and inspect L1/L2 engine events | [Real engine traces](docs/engine-traces.md) | GPU to record; core package to view |
 | Compare cache loading with recompute | [TTFT experiment](docs/nanovllm-benchmark.md) | See the report's setup and limits |
 

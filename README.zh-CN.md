@@ -45,6 +45,7 @@ uv run python -m nano_lmcache.visualize --scenario partial_prefix_hit \
 | 理解术语和设计 | [术语与 FAQ（英文）](docs/glossary.md)、[架构](docs/zh-CN/architecture.md) | 核心包即可 |
 | 在 CPU 或 GPU 上复用真实模型 KV | [真实模型教程](docs/zh-CN/tutorial.md#6-复用真实模型张量) | 可选 `hf` 扩展；CUDA 卸载需要 GPU |
 | 在重启后恢复 nano-vLLM KV | [引擎教程](docs/zh-CN/tutorial.md#7-恢复真实引擎的缓存)、[集成设计（英文）](docs/nanovllm-integration.md) | Linux、NVIDIA GPU、本地模型和 `nanovllm` 依赖组 |
+| 把 Prefill 和 Decode 拆成两个 Worker | [PD 教程](docs/zh-CN/tutorial.md#8-拆分-prefill-与-decode)、[PD 指南](docs/zh-CN/pd-disaggregation.md) | 只需核心包 |
 | 采集和查看 L1/L2 引擎事件 | [真实引擎 Trace（英文）](docs/engine-traces.md) | 采集需要 GPU；查看只需核心包 |
 | 比较缓存加载与重新计算 | [TTFT 实验（英文）](docs/nanovllm-benchmark.md) | 参阅报告中的环境与限制 |
 

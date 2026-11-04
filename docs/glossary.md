@@ -30,9 +30,15 @@ See: [`run_with_prefix_cache`](../src/nano_lmcache/tensor/hf.py), [Real KV tenso
 
 The stage that generates the answer one token at a time, reading the KV cache and adding each new token's K and V to it. Prefill processes the prompt; decode generates the continuation.
 
-nano-lmcache does not implement decoding. It reuses the KV produced by prefill, and `run_with_prefix_cache` returns logits, not generated text.
+nano-lmcache does not implement decoding for real models. It reuses the KV produced by prefill, and `run_with_prefix_cache` returns logits, not generated text. The PD teaching module decodes with a toy model only.
 
 See: [`run_with_prefix_cache`](../src/nano_lmcache/tensor/hf.py)
+
+### Prefill/decode (PD) disaggregation
+
+Running prefill and decode on separate workers, usually separate GPUs. The prefill worker sends the prompt's KV and first token to a decode worker, which continues generation without recomputing the prompt. This prevents long prefills from stalling running decodes, but every request's TTFT then includes the KV transfer. The receiving worker must check that the KV is intact, complete, and from the same model.
+
+See: [PD disaggregation guide](pd-disaggregation.md)
 
 ### Time to First Token (TTFT)
 
