@@ -1,4 +1,6 @@
-# Recommended vLLM version
+# vLLM KV connector research notes
+
+## Recommended vLLM version
 
 **Recommend pinning `vllm==0.32.0` for the first nano-lmcache connector**
 (decision date: 2026-11-04). For a source checkout, use tag `v0.32.0`,
@@ -32,14 +34,13 @@ Start validation with one GPU, a dense full-attention model and
 unquantized KV; check cache misses, external hits and generated-output
 agreement before treating this recommendation as a tested integration.
 
-**Documentation scope:** this is the recommended implementation target,
-not an installed or GPU-tested dependency. The existing analysis below
-was written against commit
-`5689c2790c911a55c75825aac5166305df0b591d`; its source-specific details must
-be rechecked when adopting the recommended pin.
+**Documentation scope:** the interfaces, KV view, and example below were
+checked against `v0.32.0` (commit above). This is a source review, not an
+installed or GPU-tested integration; no vLLM dependency is added here.
 
-# KVConnectorBase_V1 interfaces used during request processing
-## Scheduler-side
+## KVConnectorBase_V1 interfaces used during request processing
+
+### Scheduler-side
 
 | Interface | Purpose |
 | --- | --- |
@@ -50,7 +51,7 @@ be rechecked when adopting the recommended pin.
 | `request_finished(request, block_ids)` | Handle request completion, determine whether blocks must be retained for pending saves/sends, and provide optional transfer parameters. |
 
 
-## Worker-side
+### Worker-side
 
 | Interface | Purpose |
 | --- | --- |
@@ -60,10 +61,20 @@ be rechecked when adopting the recommended pin.
 | `save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)` | Start saving the selected KV after the layer's attention operation. |
 | `wait_for_save()` | Submit pending saves and enforce synchronization needed to keep source blocks safe. |
 | `get_transfer_results(finished_req_ids)` | Collect completed sends, completed receives and failed receives for scheduler feedback. |
+| `get_block_ids_with_load_errors()` | Report blocks whose loads failed, so the scheduler can invalidate them and handle recomputation or failure. |
 | `clear_connector_metadata()` | Clear the current step's bound transfer plan after its users have finished. |
 
+The match result is `(additional_tokens, load_async)`: `None` for the first
+element defers scheduling until the lookup is resolved; zero requires
+`load_async=False`. Only report the contiguous prefix that is actually
+available, beyond the local hit. Failed synchronous loads must be reported
+in that forward pass; asynchronous failures must be reported no later than
+the receive-completion report. Never let attention consume missing KV.
 
 ## Request-processing sequence
+
+This shows a synchronous load step. The scheduler and worker are separate
+roles, and planning, forwarding, and feedback repeat for many steps.
 
 ```mermaid
 sequenceDiagram
@@ -73,17 +84,33 @@ sequenceDiagram
     S->>S: get_num_new_matched_tokens(request, num_computed_tokens)
     S->>S: update_state_after_alloc(request, blocks, num_external_tokens)
     S->>S: build_connector_meta(scheduler_output)
+    S-->>W: scheduler_output with connector metadata
     W->>W: bind_connector_metadata(connector_metadata)
     W->>W: start_load_kv(forward_context, **kwargs)
-    W->>W: wait_for_layer_load(layer_name)
-    W->>W: save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
+    loop each attention layer
+        W->>W: wait_for_layer_load(layer_name)
+        W->>W: attention forward
+        W->>W: save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
+    end
     W->>W: wait_for_save()
     W->>W: get_transfer_results(finished_req_ids)
+    W->>W: get_block_ids_with_load_errors()
     W->>W: clear_connector_metadata()
-    S->>S: request_finished(request, block_ids)
+    W-->>S: aggregated connector output
     S->>S: update_connector_output(connector_output)
 ```
 
+The [worker lifecycle](https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/v1/worker/kv_connector_model_runner_mixin.py)
+may start independent asynchronous loads after the current forward is
+submitted. Speculative decoding may defer `wait_for_save()` and metadata
+cleanup until the draft forward has also finished.
+
+`request_finished()` is a separate scheduler event, called once before
+freeing a finished request's blocks. Returning `True` retains them until
+the worker reports send/save completion via `get_finished()` (wrapped by
+`get_transfer_results()`); returning `False` allows release. An asynchronous
+save must keep its source blocks alive; otherwise `wait_for_save()` must
+finish the save before returning.
 
 ## Paged KV cache: blocks, block tables and slot mapping
 
@@ -106,9 +133,13 @@ slot = physical_block_id * block_size + token_position % block_size
 
 For example, `block_size = 16` and `block_table = [7, 2, 9]` place tokens 0–15 in
 block 7 and tokens 16–31 in block 2. Token 18 therefore uses slot
-`2 * 16 + 2 = 34`. 
+`2 * 16 + 2 = 34`.
 
-At the analysis commit above, each layer's logical KV view is:
+For this scope, the standardized per-layer KV view used by
+[ExampleConnector](https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/distributed/kv_transfer/kv_connector/v1/example_connector.py)
+and [FlashAttention](https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/v1/attention/backends/flash_attn.py)
+is below. Do not apply this indexing to quantized or hybrid layouts without
+checking their backend-specific representation and strides.
 
 ```text
 layer.kv_cache: [num_blocks, num_kv_heads, block_size, 2 * head_dim]
@@ -170,12 +201,12 @@ requires compatible model/KV settings and shared storage or a transfer
 service. Restart reuse requires a surviving cache service or recoverable
 persistent storage; an in-process CPU cache is not persistent.
 
-See [vLLM's APC design](https://github.com/vllm-project/vllm/blob/5689c2790c911a55c75825aac5166305df0b591d/docs/design/prefix_caching.md)
+See [vLLM's APC design](https://github.com/vllm-project/vllm/blob/v0.32.0/docs/design/prefix_caching.md)
 and [LMCache storage options](https://docs.lmcache.ai/dev/kv_cache/storage_backends/local_storage.html).
 
 ## Reference implementation: ExampleConnector
 
-[`ExampleConnector`](https://github.com/vllm-project/vllm/blob/5689c2790c911a55c75825aac5166305df0b591d/vllm/distributed/kv_transfer/kv_connector/v1/example_connector.py)
+[`ExampleConnector`](https://github.com/vllm-project/vllm/blob/v0.32.0/vllm/distributed/kv_transfer/kv_connector/v1/example_connector.py)
 is a small `KVConnectorBase_V1` implementation that stores KV in local
 `safetensors` files under `shared_storage_path`, one file per layer for a
 selected prompt prefix.
@@ -196,4 +227,9 @@ nano-lmcache, replacing file lookup with our chunk keys and storage.
 The example needs stronger model/dtype isolation and complete-file checks.
 Its prefix-length alignment also needs correction: with 65 prompt tokens
 and `block_size = 16`, lookup selects 48 tokens while load metadata selects
-64. It is a teaching reference, not a complete cache backend.
+64. The helper computes `(n - 1) // block_size * block_size`; lookup passes
+`len(prompt) - 1`, while `ReqMeta.make_meta()` passes `len(prompt)`. This can
+select different storage directories. It is a teaching reference, not a
+complete cache backend.
+
+Return to the [documentation index](README.md).

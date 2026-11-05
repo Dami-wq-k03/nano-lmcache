@@ -128,6 +128,8 @@ open an issue to discuss it.
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
+| **vLLM connector research** | | | | | |
+| V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
 | **PD disaggregation** | | | | | |
 | PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
 | PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
@@ -841,6 +843,15 @@ Acceptance criteria: a lower page-cache read time per block, with numbers
 before and after; all disk backend tests still pass.
 
 ---
+
+## vLLM connector research
+
+**V0: done.** [Research notes](docs/vllm-kv-connector.md) pin the proposed
+implementation target to vLLM 0.32.0 and review its scheduler/worker hooks,
+block tables and slot mapping, block-to-chunk conversion, APC versus external
+storage, and ExampleConnector's limitations against that release's source.
+This is documentation only; a working connector and GPU validation remain
+future work.
 
 ## PD disaggregation
 
