@@ -43,13 +43,12 @@ def serve_request(
         else:
             print(f"  chunk {index} {chunk} MISS  recomputed")
 
-    # Reuse cached payloads for hit chunks; pay compute only for the rest.
-    reused = list(result.values)
+    # Hit chunks are already cached; compute and store only the missing suffix.
     recomputed = [
         compute_kv_payload(chunk)
         for chunk in complete[result.matched_chunks :]
     ]
-    cache.store(token_ids, reused + recomputed)
+    cache.store(token_ids, recomputed, start_chunk=result.matched_chunks)
 
     print(
         f"  reused {result.matched_chunks}/{len(complete)} chunks, "
