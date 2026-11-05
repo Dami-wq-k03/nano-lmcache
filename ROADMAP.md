@@ -55,6 +55,10 @@ Done (pure Python, no GPU dependency):
       disk (`storage/tiered.py`, M5)
 - [x] O(log n) leaf-heap eviction with the exact same LRU order (M2) and
       byte-based capacity for the memory backend (M3)
+- [x] Store only missing suffix chunks in the HuggingFace runner and prefix
+      cache demo (`start_chunk` in `core/prefix_cache.py`, M6)
+- [x] Disk checksums and subtree recovery (M7), a read-only cache inspector
+      (`inspect.py`, M8), and byte-based disk capacity (M9)
 - [x] Thread-safe access to shared memory, disk, and tiered storage instances
       and synchronized lookup metrics (M10; no shared-directory multi-process writes)
 - [x] Runnable demos (`examples/`), architecture notes
@@ -63,6 +67,13 @@ Done (pure Python, no GPU dependency):
 - [x] Teaching version of prefill/decode disaggregation: toy model,
       checksummed KV handoff, and a colocated vs. disaggregated timeline
       (`disaggregation.py`, PD-1)
+- [x] Trace recording, cache and per-tier instrumentation, and an offline
+      HTML viewer (`observability/`, `visualization/`, VIS-1–8)
+- [x] Synthetic workload replay (`datasets/`, `replay/`, DATA-1); the
+      FreeInference opaque-block adapter has an initial version (DATA-2),
+      with bounded replay still open (VIS-11)
+- [x] Source research for the proposed vLLM 0.32.0 connector
+      (`docs/vllm-kv-connector.md`, V0); implementation is tracked by V1–V5
 
 Done (optional torch / GPU layer):
 
@@ -76,6 +87,15 @@ Done (optional torch / GPU layer):
       bandwidth benchmark (`tensor/offload.py`, G2)
 - [x] Safe tensor serialization for the disk tier, giving a full
       GPU -> CPU -> disk hierarchy (`tensor/serializers.py`)
+- [x] Exact tensor-byte capacity for CPU offload (G4) and opt-in INT8
+      tensor serialization with accuracy/compression measurements (G5)
+- [x] nano-vLLM block export/import, model-aware external lookup, GPU
+      restoration, and persistence of newly completed blocks
+      (`integrations/nanovllm/`, N0–N3)
+- [x] Real-engine correctness and restart reuse tests, plus TTFT benchmarks
+      (`docs/nanovllm-benchmark.md`, N4)
+- [x] Real nano-vLLM traces rendered by the offline viewer
+      (`docs/engine-traces.md`, VIS-10)
 
 
 ## How to claim a task
@@ -119,7 +139,7 @@ open an issue to discuss it.
 | G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Merged into N4 |
 | G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Done |
 | G5 | Compress cached KV with int8 quantization | Medium | No | – | Done |
-| G6 | Model-aware cache namespaces | Easy | No | – | Open |
+| G6 | Model-aware cache namespaces | Easy | No | – | [Claimed (#55)](https://github.com/Dami-wq-k03/nano-lmcache/issues/55) |
 | **nano-vLLM integration** | | | | | |
 | N0 | KV block format: export and import nano-vLLM blocks | Medium | No | I1 | Done |
 | N1 | External prefix lookup, cache keys, model namespace | Medium | No | N0 | Done |
@@ -128,8 +148,13 @@ open an issue to discuss it.
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
-| **vLLM connector research** | | | | | |
+| **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
+| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | [Claimed (#25)](https://github.com/Dami-wq-k03/nano-lmcache/issues/25) |
+| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | [Open (#26)](https://github.com/Dami-wq-k03/nano-lmcache/issues/26) |
+| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | [Open (#27)](https://github.com/Dami-wq-k03/nano-lmcache/issues/27) |
+| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | [Open (#28)](https://github.com/Dami-wq-k03/nano-lmcache/issues/28) |
+| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | [Open (#29)](https://github.com/Dami-wq-k03/nano-lmcache/issues/29) |
 | **PD disaggregation** | | | | | |
 | PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
 | PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
@@ -154,7 +179,11 @@ open an issue to discuss it.
 [Chinese](docs/zh-CN/tutorial.md).
 N5 and N6 remain performance follow-ups (see
 [the TTFT report](docs/nanovllm-benchmark.md)). Check the corresponding
-GitHub issue before starting an open task; G6 may already be claimed.
+GitHub issue before starting a task. G6 is assigned to `DiQu1997` in
+[#55](https://github.com/Dami-wq-k03/nano-lmcache/issues/55), and V1 to
+`WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
+`Claimed` records an assignment, not a completed implementation; check the
+linked issue for current ownership and progress.
 
 **Dependencies:**
 
@@ -168,6 +197,10 @@ graph LR
   M4 --> M5
   I3 --> M2
   M10 --> M12
+  I1 --> V0 --> V1
+  V1 --> V2 --> V4 --> V5
+  V1 --> V3 --> V4
+  G1 --> V3
   PD1[PD-1] --> PD2[PD-2]
   PD1 --> PD3[PD-3] --> PD4[PD-4]
   N4 --> PD3
@@ -294,8 +327,9 @@ its whole ancestor chain stored) still holds, with tests proving it.
 ### M4: Local disk backend
 
 **Status: done** (`storage/disk.py`, `examples/demo_disk_cache.py`).
-Follow-up ideas: safe concurrent writers (today one process per
-directory), byte-based disk capacity (M3).
+Byte-based disk capacity is also done (M9). M10 supports threads sharing
+one storage instance; separate objects/processes still must not write the
+same directory. A shared cache service remains open (M12).
 
 Implement a `DiskKVCache` that satisfies the `CacheStorage` protocol,
 with one file per key.
@@ -338,7 +372,10 @@ Acceptance criteria:
 ### M6: Skip rewriting chunks that are already cached
 
 **Status: done** (`start_chunk` in `ChunkedPrefixCache.store`, used by
-`run_with_prefix_cache`).
+`run_with_prefix_cache`). The pure-Python prefix cache demo also computes
+and stores only the missing suffix (`examples/demo_prefix_cache.py`,
+[PR #69](https://github.com/Dami-wq-k03/nano-lmcache/pull/69)). Fully cached
+requests write no chunks, and incomplete tails remain excluded.
 
 `run_with_prefix_cache` (`tensor/hf.py`) ends by calling
 `cache.store(token_ids, ...)` for **every** complete chunk, including the
@@ -653,6 +690,9 @@ accuracy, and only the model's output can judge it.
 
 ### G6: Model-aware cache namespaces
 
+**Status: claimed** by `DiQu1997` in
+[#55](https://github.com/Dami-wq-k03/nano-lmcache/issues/55); not yet merged.
+
 The namespace is the only thing that keeps KV from different models
 apart, and today the caller can pass any string. Reusing KV computed by
 another model, revision, or dtype silently produces wrong outputs.
@@ -852,6 +892,100 @@ block tables and slot mapping, block-to-chunk conversion, APC versus external
 storage, and ExampleConnector's limitations against that release's source.
 This is documentation only; a working connector and GPU validation remain
 future work.
+
+V1–V5 track that implementation separately from the completed nano-vLLM
+integration. Use the V0 version baseline and a separate vLLM environment;
+the repository's CUDA 12.4 PyTorch setup is not automatically compatible.
+Start with one GPU, dense full attention, unquantized KV, and
+`chunk_size == block_size`, as described in the research notes.
+
+### V1: Minimal connector skeleton
+
+**Status: claimed** by `WHoutstanding` in
+[#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25); not yet merged.
+
+Prerequisites: I1, V0.
+
+Implement an out-of-tree connector in `integrations/vllm/`, loaded through
+vLLM's `--kv-transfer-config` and `kv_connector_module_path` without
+modifying vLLM. Initially report zero external matches and perform no
+saves or loads; log the scheduler and worker hook order and arguments.
+Keep vLLM optional and its imports outside the core package.
+
+Acceptance criteria:
+
+- A real request generates the same output with and without the connector
+  under the same model and sampling settings.
+- Docs explain the request's call log against V0's sequence diagram and
+  record the version, environment, and command used.
+
+### V2: Scheduler side: report matched tokens
+
+**Status: open** ([#26](https://github.com/Dami-wq-k03/nano-lmcache/issues/26)).
+Prerequisite: V1.
+
+Use `ChunkedPrefixCache.lookup` to answer
+`get_num_new_matched_tokens(request, num_computed_tokens)`. Report only
+additional contiguous complete-chunk hits beyond the locally computed
+prefix, respecting chunk/block alignment and the pinned connector API.
+
+Acceptance criteria: a cold lookup reports zero, and a lookup against
+populated external storage reports the correct additional matched token
+count, including when vLLM already has local prefix hits. Validate the
+scheduler accounting with controlled cache contents; enabling reuse in
+generation also requires V4's worker load path.
+
+### V3: Worker side: save chunks from the paged KV cache
+
+**Status: open** ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)).
+Prerequisites: V1, G1.
+
+Gather the request's K/V from the per-layer paged cache using its block
+table and slot mapping. Assemble all layers into complete nano-lmcache
+chunks and store them with prefix-aware keys and a model/layout namespace.
+Finish copying before vLLM can reuse the source GPU blocks; never publish
+a chunk with missing layers or an incomplete token span.
+
+Acceptance criteria: saved chunks match the HuggingFace reference KV for
+the same model, dtype, prompt, and positions within a documented tolerance.
+Tests cover noncontiguous physical blocks and exclusion of incomplete
+chunks, so an incorrect slot mapping cannot pass unnoticed.
+
+### V4: Worker side: load cached chunks back to the GPU
+
+**Status: open** ([#28](https://github.com/Dami-wq-k03/nano-lmcache/issues/28)).
+Prerequisites: V2, V3.
+
+Restore V2's external hits into the blocks allocated for the new request,
+using V0's paged layout mapping. Make each layer's KV available before
+attention reads it. Report missing or failed loads through the pinned
+connector API so the engine never consumes uninitialized KV.
+
+Acceptance criteria:
+
+- With greedy decoding, a repeated prompt with external hits produces the
+  same generated tokens as the cold run.
+- Prefill computation drops by the reused token count; report timing too.
+- Tests cover new physical block IDs and an entry disappearing between
+  lookup and load, with safe recomputation or an explicit engine error.
+
+### V5: End-to-end demo and TTFT comparison
+
+**Status: open** ([#29](https://github.com/Dami-wq-k03/nano-lmcache/issues/29)).
+Prerequisite: V4.
+
+Add a vLLM example with several requests sharing a long prefix, such as a
+document followed by different questions. Compare no prefix caching,
+vLLM's built-in prefix caching alone, and the nano-lmcache connector with
+persistent external KV queried again after restarting vLLM.
+
+Acceptance criteria: document commands, model/version, GPU, cache tier,
+prefix lengths, and cold/warm/restart conditions. Report TTFT and reused
+token counts for all three setups, verify generated-output agreement, and
+show that external KV survives the restart. Report slowdowns as well as
+speedups; a cache hit does not guarantee lower latency.
+
+---
 
 ## PD disaggregation
 
