@@ -148,8 +148,11 @@ uv run python -m nano_lmcache.visualize --freeinference-jsonl /path/to/sample.js
 ```
 
 其中 Block ID 是不透明标识，不是模型 Token ID。数据集中观测到的缓存 Token 与模拟命中分别统计。
-当前回放和 HTML 在内存中累积；`--limit` 限制选中的请求数，不是进程总内存上限。
-后续工作见[路线图（英文）](../../ROADMAP.md)的 VIS-11。
+对于已经排序的大型 JSONL，添加 `--stream --max-entries 4096 --max-events 10000
+--max-requests 200 --sample-every 10`，可选用 `--summary-json /tmp/replay-summary.json`
+导出统计。回放会统计全部已处理请求，但只保留有界的事件和请求明细。
+`--limit` 限制选中的请求数；各预算按条目计数，不是进程总内存上限。
+输入顺序、采样语义、容量对比实验与仍采用批量导入的引擎 JSON，见[流式回放](streaming-replay.md)。
 
 阅读 [`replay/runner.py`](../../src/nano_lmcache/replay/runner.py)与
 [`FreeInferenceAdapter`](../../src/nano_lmcache/datasets/adapters/freeinference.py)。

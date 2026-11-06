@@ -24,6 +24,7 @@ model or GPU.
 | --- | --- | --- |
 | Run the smallest cache example | [Project quick start](../README.md#start-here) | Python 3.11+, uv |
 | Replay synthetic workloads or FreeInference blocks | [Replay tutorial](tutorial/README.md#5-follow-a-lookup-in-the-viewer) | Core package; JSONL input for FreeInference |
+| Stream large workloads and compare bounded cache runs | [Streaming replay](streaming-replay.md) | Core package; JSONL sorted by arrival time and request ID |
 | Inspect persisted entries without changing them | [Disk tutorial](tutorial/README.md#4-persist-and-promote-chunks) | Core package, existing cache directory |
 | Reuse Hugging Face model KV | [Real-model tutorial](tutorial/README.md#6-reuse-real-model-tensors) | `hf` extra, model weights; CPU supported |
 | Record engine events and render offline HTML | [Engine traces](engine-traces.md) | Linux/NVIDIA GPU/local model to record; core package to render |

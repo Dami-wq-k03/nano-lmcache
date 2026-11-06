@@ -148,6 +148,18 @@ to the disk tier survive a restart.
 
 See: [`tiered.py`](../src/nano_lmcache/storage/tiered.py), [Tiered storage](architecture.md#tiered-storage)
 
+### Streaming replay and event sampling
+
+Streaming replay consumes already-ordered workload records one at a time,
+keeping exact aggregate statistics separately from retained request/event
+detail. Event sampling selects some observations for inspection; it does
+not change which cache operations are simulated. In nano-lmcache, the
+recorder retains every kth event from the start until a cap is reached.
+Sampled trees and timelines can omit ancestors and later changes, so they
+are not complete cache-state reconstructions.
+
+See: [Streaming replay](streaming-replay.md)
+
 ## Frequently Asked Questions
 
 ### 1. Why cache KV data instead of recomputing it?

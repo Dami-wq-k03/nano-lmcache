@@ -27,6 +27,13 @@ and Reset navigate the timeline; selecting an event highlights its request's
 block and prefix key and shows the full metadata. The chunk view and summary
 show final per-request results, while the timeline selects individual steps.
 
+The viewer defaults to retaining up to 10,000 events and 200 request
+details; its summary still describes all imported engine events. Use
+`--max-events`, `--max-requests`, `--sample-every`, and `--summary-json` to
+control output detail and export aggregate counts. Original event sequence
+IDs remain visible. `--trace-json` itself is still a batch JSON import;
+large workload replay has a separate [streaming JSONL path](streaming-replay.md).
+
 The first process computes the document's KV and writes complete blocks to
 disk. The second process starts with empty L1 and memory L2, restores the
 shared prefix from disk, and promotes it to the fast L2 tier. Later requests
@@ -95,8 +102,9 @@ The demo records metadata, keys, generic request labels, and the model
 directory's basename. It does not record prompt text, token IDs, KV tensors,
 model paths, or server credentials. Custom labels and custom event metadata
 are preserved in JSON and HTML: review them before sharing. Traces and HTML
-are held in memory in this version; bounded large-dataset streaming remains
-a separate VIS-11 task.
+are held in memory during engine recording and this batch JSON import.
+VIS-11 provides [bounded workload JSONL replay](streaming-replay.md);
+HTML detail budgets also apply to imported engine traces.
 
 ## Validation
 

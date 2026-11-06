@@ -203,6 +203,26 @@ instance and depends only on the `CacheStorage` protocol, never on a
 concrete backend. `None` is reserved to mean "miss", so `store()`
 rejects `None` payloads.
 
+### Bounded workload replay
+
+`WorkloadReplayRunner` and `BlockTraceReplayRunner` consume already-sorted
+iterables incrementally with `sort_by_arrival=False`, checking arrival/ID
+order as they go. `ReplaySummary` accumulates full-workload counters;
+`max_requests` limits retained request details independently of those totals.
+Each call starts a new recorder/report while preserving the simulated cache.
+Opaque blocks use the same prefix-safe storage contract and capacity budgets
+as token workloads, with model labels included in their keys. Token replay
+requires one model per runner.
+
+`TraceRecorder(max_events=..., sample_every=...)` counts every enabled event
+and successful per-backend read, while retaining only a capped prefix of
+every kth event. Original sequence IDs are preserved. CLI replay defaults to
+10,000 cache entries per tier, 10,000 events, and 200 request details; its
+HTML pages/windows the retained data. Memory also depends on the largest
+record/request and payload sizes. The API's full-detail defaults and the
+batch engine JSON importer remain available. See
+[streaming replay](streaming-replay.md) for precise limits and experiments.
+
 ### Why metrics count the way they do
 
 A lookup stops probing at its first miss, so every complete chunk after

@@ -2,14 +2,16 @@
 
 import hashlib
 import json
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Iterator
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.datasets.schemas.workload import WorkloadRequest
+from nano_lmcache.observability.context import request_context
 from nano_lmcache.observability.events import TraceEvent
 from nano_lmcache.observability.recorder import TraceRecorder
+from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.protocol import CacheStorage
 
 
@@ -42,6 +44,21 @@ class ReplayRequestResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplaySummary:
+    """Exact online totals; independent of retained request/event detail."""
+
+    requests: int = 0
+    total_chunks: int = 0
+    matched_chunks: int = 0
+    matched_tokens: int = 0
+    prompt_tokens: int = 0
+    observed_cached_tokens: int = 0
+    observed_requests: int = 0
+    event_counts: dict[str, int] = field(default_factory=dict)
+    storage_hits: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayReport:
     """Requests, trace events, and aggregate counters from one replay."""
 
@@ -49,13 +66,20 @@ class ReplayReport:
     events: tuple[TraceEvent, ...]
     source: str
     chunk_size: int
+    aggregate: ReplaySummary | None = None
+    retention: dict[str, Any] = field(default_factory=dict)
+    configuration: dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_chunks(self) -> int:
+        if self.aggregate is not None:
+            return self.aggregate.total_chunks
         return sum(item.total_chunks for item in self.requests)
 
     @property
     def matched_chunks(self) -> int:
+        if self.aggregate is not None:
+            return self.aggregate.matched_chunks
         return sum(item.matched_chunks for item in self.requests)
 
     @property
@@ -64,27 +88,109 @@ class ReplayReport:
 
     @property
     def observed_cached_tokens(self) -> int:
+        if self.aggregate is not None:
+            return self.aggregate.observed_cached_tokens
         return sum(
             item.observed_cached_tokens or 0 for item in self.requests
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "source": self.source,
-            "chunk_size": self.chunk_size,
-            "summary": {
+        summary: dict[str, Any] = (
+            asdict(self.aggregate) if self.aggregate is not None else {
                 "requests": len(self.requests),
                 "total_chunks": self.total_chunks,
                 "matched_chunks": self.matched_chunks,
-                "hit_rate": self.hit_rate,
                 "observed_cached_tokens": self.observed_cached_tokens,
-            },
+            }
+        )
+        summary["hit_rate"] = self.hit_rate
+        summary["miss_chunks"] = self.total_chunks - self.matched_chunks
+        return {
+            "source": self.source,
+            "chunk_size": self.chunk_size,
+            "summary": summary,
+            "retention": dict(self.retention),
+            "configuration": dict(self.configuration),
             "requests": [item.to_dict() for item in self.requests],
             "events": [event.to_dict() for event in self.events],
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
+
+
+def _ordered_requests(
+    requests: Iterable[WorkloadRequest], sort_by_arrival: bool,
+) -> Iterator[WorkloadRequest]:
+    if sort_by_arrival:
+        yield from sorted(requests, key=lambda r: (r.arrival_time_ms, r.request_id))
+        return
+    previous: tuple[int, str] | None = None
+    for request in requests:
+        current = (request.arrival_time_ms, request.request_id)
+        if previous is not None and current < previous:
+            raise ValueError(
+                "streaming requests must be in nondecreasing order of "
+                "(arrival_time_ms, request_id); pre-sort the input or use batch replay"
+            )
+        previous = current
+        yield request
+
+
+class _ReportBuilder:
+    """Keep constant-size counters and an optional prefix of request detail."""
+
+    def __init__(self, max_requests: int | None) -> None:
+        if max_requests is not None and (
+            type(max_requests) is not int or max_requests < 0
+        ):
+            raise ValueError("max_requests must be a non-negative integer or None")
+        self.max_requests = max_requests
+        self.results: list[ReplayRequestResult] = []
+        self.count = self.chunks = self.hits = self.tokens = 0
+        self.prompt_tokens = self.observed_tokens = self.observed_requests = 0
+
+    @property
+    def wants_detail(self) -> bool:
+        return self.max_requests is None or len(self.results) < self.max_requests
+
+    def add(self, request: WorkloadRequest, result: ReplayRequestResult) -> None:
+        self.count += 1
+        self.chunks += result.total_chunks
+        self.hits += result.matched_chunks
+        self.tokens += result.matched_tokens
+        self.prompt_tokens += request.prompt_tokens
+        self.observed_tokens += request.observed_cached_tokens or 0
+        self.observed_requests += request.observed_cached_tokens is not None
+        if self.wants_detail:
+            self.results.append(result)
+
+    def finish(
+        self, recorder: TraceRecorder, source: str, chunk_size: int,
+        *, sort_by_arrival: bool,
+    ) -> ReplayReport:
+        return ReplayReport(
+            requests=tuple(self.results), events=recorder.events,
+            source=source, chunk_size=chunk_size,
+            aggregate=ReplaySummary(
+                requests=self.count, total_chunks=self.chunks,
+                matched_chunks=self.hits, matched_tokens=self.tokens,
+                prompt_tokens=self.prompt_tokens,
+                observed_cached_tokens=self.observed_tokens,
+                observed_requests=self.observed_requests,
+                event_counts=recorder.event_counts, storage_hits=recorder.storage_hits,
+            ),
+            retention={
+                "max_requests": self.max_requests, "max_events": recorder.max_events,
+                "sample_every": recorder.sample_every,
+                "requests_retained": len(self.results),
+                "requests_omitted": self.count - len(self.results),
+                "events_total": recorder.total_events,
+                "events_retained": len(recorder),
+                "events_omitted": recorder.total_events - len(recorder),
+            },
+            configuration={"ordering": "sorted" if sort_by_arrival else "stream"},
+        )
 
 
 class WorkloadReplayRunner:
@@ -105,6 +211,8 @@ class WorkloadReplayRunner:
         storage: CacheStorage | None = None,
         recorder: TraceRecorder | None = None,
     ) -> None:
+        self._owns_cache = cache is None
+        self._namespace = namespace
         if cache is None:
             self.recorder = recorder if recorder is not None else TraceRecorder()
             self.cache = ChunkedPrefixCache(
@@ -125,10 +233,12 @@ class WorkloadReplayRunner:
                 )
             self.cache = cache
             self.recorder = (
-                recorder
-                or cache.trace_recorder
-                or TraceRecorder(enabled=False)
+                recorder if recorder is not None else (
+                    cache.trace_recorder if cache.trace_recorder is not None
+                    else TraceRecorder(enabled=False)
+                )
             )
+        self._model_id: str | None = None
 
     def run(
         self,
@@ -136,22 +246,32 @@ class WorkloadReplayRunner:
         *,
         sort_by_arrival: bool = True,
         store_missing: bool = True,
+        max_requests: int | None = None,
     ) -> ReplayReport:
-        ordered: Iterable[WorkloadRequest] = requests
-        if sort_by_arrival:
-            sorted_requests = list(requests)
-            sorted_requests.sort(
-                key=lambda item: (item.arrival_time_ms, item.request_id)
-            )
-            ordered = sorted_requests
+        """Start a report, clearing the recorder while preserving cache state.
 
-        results: list[ReplayRequestResult] = []
-        for request in ordered:
+        Disable sorting only for input ordered by (arrival time, request ID).
+        ``max_requests`` limits detail, never the number of processed requests.
+        """
+        builder = _ReportBuilder(max_requests)
+        self.recorder.clear()
+        for request in _ordered_requests(requests, sort_by_arrival):
             if request.token_ids is None:
                 raise ValueError(
                     f"request {request.request_id!r} has no token_ids; use "
                     "BlockTraceReplayRunner for opaque block traces"
                 )
+            if self._model_id is not None and request.model_id != self._model_id:
+                raise ValueError("token replay requires one model per runner")
+            if self._model_id is None and self._owns_cache:
+                # A persistent backend must not reuse another model's placeholders.
+                self.cache = ChunkedPrefixCache(
+                    chunk_size=self.cache.chunk_size,
+                    namespace=json.dumps([self._namespace, request.model_id]),
+                    storage=self.cache.storage, metrics=self.cache.metrics,
+                    trace_recorder=self.recorder,
+                )
+            self._model_id = request.model_id
             lookup = self.cache.lookup(
                 request.token_ids,
                 request_id=request.request_id,
@@ -159,11 +279,11 @@ class WorkloadReplayRunner:
             total_chunks, remainder = divmod(
                 len(request.token_ids), self.cache.chunk_size
             )
-            statuses = ["HIT"] * lookup.matched_chunks
-            if lookup.matched_chunks < total_chunks:
+            statuses = ["HIT"] * lookup.matched_chunks if builder.wants_detail else []
+            if builder.wants_detail and lookup.matched_chunks < total_chunks:
                 statuses.append("MISS")
                 statuses.extend(["NOT_CHECKED"] * (total_chunks - len(statuses)))
-            if remainder:
+            if builder.wants_detail and remainder:
                 statuses.append("INCOMPLETE")
 
             if store_missing and lookup.matched_chunks < total_chunks:
@@ -181,7 +301,7 @@ class WorkloadReplayRunner:
                     request_id=request.request_id,
                 )
 
-            results.append(
+            builder.add(request,
                 ReplayRequestResult(
                     request_id=request.request_id,
                     session_id=request.session_id,
@@ -196,11 +316,9 @@ class WorkloadReplayRunner:
                 )
             )
 
-        return ReplayReport(
-            requests=tuple(results),
-            events=self.recorder.events,
-            source="token_workload",
-            chunk_size=self.cache.chunk_size,
+        return builder.finish(
+            self.recorder, "token_workload", self.cache.chunk_size,
+            sort_by_arrival=sort_by_arrival,
         )
 
 
@@ -213,18 +331,21 @@ class BlockTraceReplayRunner:
         block_tokens: int = 16,
         namespace: str = "freeinference",
         recorder: TraceRecorder | None = None,
+        storage: CacheStorage | None = None,
     ) -> None:
         if block_tokens <= 0:
             raise ValueError("block_tokens must be positive")
         self.block_tokens = block_tokens
         self.namespace = namespace
         self.recorder = recorder if recorder is not None else TraceRecorder()
-        self._values: dict[str, object] = {}
+        self.storage = storage if storage is not None else MemoryKVCache()
 
-    def _key(self, block_id: int, parent_key: str | None) -> str:
+    def _key(self, block_id: int, parent_key: str | None, model_id: str) -> str:
         payload = json.dumps(
             {
                 "namespace": self.namespace,
+                "model_id": model_id,
+                "block_tokens": self.block_tokens,
                 "parent_key": parent_key,
                 "block_id": block_id,
             },
@@ -239,17 +360,16 @@ class BlockTraceReplayRunner:
         *,
         sort_by_arrival: bool = True,
         store_missing: bool = True,
+        max_requests: int | None = None,
     ) -> ReplayReport:
-        ordered: Iterable[WorkloadRequest] = requests
-        if sort_by_arrival:
-            sorted_requests = list(requests)
-            sorted_requests.sort(
-                key=lambda item: (item.arrival_time_ms, item.request_id)
-            )
-            ordered = sorted_requests
-        results: list[ReplayRequestResult] = []
+        """Replay once with independent report counters and a persistent cache.
 
-        for request in ordered:
+        ``sort_by_arrival=False`` validates order without collecting input.
+        The attached recorder is cleared before processing the new run.
+        """
+        builder = _ReportBuilder(max_requests)
+        self.recorder.clear()
+        for request in _ordered_requests(requests, sort_by_arrival):
             if request.prefix_blocks is None:
                 raise ValueError(
                     f"request {request.request_id!r} has no prefix_blocks; use "
@@ -269,9 +389,11 @@ class BlockTraceReplayRunner:
             parent: str | None = None
             matched = 0
             for index, block_id in enumerate(block_ids):
-                key = self._key(block_id, parent)
+                key = self._key(block_id, parent, request.model_id)
                 keys.append(key)
-                if key not in self._values:
+                with request_context(request.request_id):
+                    value = self.storage.get(key)
+                if value is None:
                     self.recorder.record(
                         "chunk_miss",
                         request_id=request.request_id,
@@ -291,7 +413,7 @@ class BlockTraceReplayRunner:
                     )
                     for unchecked_index in range(index + 1, len(block_ids)):
                         unchecked_key = self._key(
-                            block_ids[unchecked_index], key
+                            block_ids[unchecked_index], key, request.model_id,
                         )
                         self.recorder.record(
                             "chunk_not_checked",
@@ -319,11 +441,12 @@ class BlockTraceReplayRunner:
             if store_missing and matched < len(block_ids):
                 parent = keys[matched - 1] if matched else None
                 for index in range(matched, len(block_ids)):
-                    key = self._key(block_ids[index], parent)
-                    self._values[key] = {
-                        "request_id": request.request_id,
-                        "block_index": index,
-                    }
+                    key = self._key(block_ids[index], parent, request.model_id)
+                    with request_context(request.request_id):
+                        self.storage.put(key, {
+                            "request_id": request.request_id,
+                            "block_index": index,
+                        }, parent_key=parent)
                     parent = key
 
             self.recorder.record(
@@ -337,7 +460,7 @@ class BlockTraceReplayRunner:
                     "opaque_block": True,
                 },
             )
-            results.append(
+            builder.add(request,
                 ReplayRequestResult(
                     request_id=request.request_id,
                     session_id=request.session_id,
@@ -353,14 +476,12 @@ class BlockTraceReplayRunner:
                         + (["NOT_CHECKED"] * (len(block_ids) - matched - 1)
                            if matched < len(block_ids)
                            else [])
-                    ),
+                    ) if builder.wants_detail else (),
                     observed_cached_tokens=request.observed_cached_tokens,
                 )
             )
 
-        return ReplayReport(
-            requests=tuple(results),
-            events=self.recorder.events,
-            source="opaque_block_workload",
-            chunk_size=self.block_tokens,
+        return builder.finish(
+            self.recorder, "opaque_block_workload", self.block_tokens,
+            sort_by_arrival=sort_by_arrival,
         )

@@ -25,7 +25,7 @@ nano-lmcache 用简短、易读的 Python 模块实现
 | **让 KV 超出显存和进程生命周期** | 内存、磁盘及分层存储；慢层命中后提升到快层。支持条目数/字节容量限制，叶节点 LRU 保持前缀可达；内存、磁盘和分层后端支持多线程共享实例。 | [磁盘示例](examples/demo_disk_cache.py)、[分层示例](examples/demo_tiered_storage.py) |
 | **复用真实模型张量** | 在 CPU 或 CUDA 上运行 Hugging Face 模型，将 KV 卸载到固定页 CPU 内存，并选择无损序列化或可选的有损 INT8 压缩。 | [真实模型示例](examples/demo_kv_reuse.py)、[INT8 实验（英文）](docs/quantized-kv.md) |
 | **恢复真实推理引擎的缓存** | 将 nano-vLLM 完整 KV 块存入外部 L2；重启后恢复到 GPU 块，后续请求继续复用 GPU L1。 | [引擎教程](docs/zh-CN/tutorial.md#7-恢复真实引擎的缓存) |
-| **观察完整缓存链路** | 在独立 HTML 中查看前缀树、命中/未命中、淘汰、提升和 GPU 导入/导出事件；支持合成工作负载、FreeInference 块 Trace 和真实引擎 Trace。 | [查看器教程](docs/zh-CN/tutorial.md#5-在查看器中跟踪查询)、[引擎 Trace（英文）](docs/engine-traces.md) |
+| **观察完整缓存链路** | 在独立 HTML 中查看前缀树、命中/未命中、淘汰、提升和 GPU 导入/导出事件；支持流式回放已排序的工作负载 JSONL、限制缓存与明细预算并导出完整统计，也可导入真实引擎 Trace。 | [查看器教程](docs/zh-CN/tutorial.md#5-在查看器中跟踪查询)、[流式回放](docs/zh-CN/streaming-replay.md)、[引擎 Trace（英文）](docs/engine-traces.md) |
 | **探索 Prefill/Decode 分离** | 在两个 toy model 角色之间传递带校验和的 KV，验证 Decode 不重算 Prompt 且生成 Token 一致，并模拟调度取舍。 | [PD 示例](examples/demo_pd_disaggregation.py)，只需核心包 |
 
 引擎集成先复用本地 GPU KV，再查询外部 KV，最后计算剩余 Prompt。
