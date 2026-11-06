@@ -22,6 +22,7 @@
 | --- | --- | --- |
 | 运行最小缓存示例 | [项目快速开始](../../README.zh-CN.md#从这里开始) | Python 3.11+、uv |
 | 回放合成工作负载或 FreeInference 块 | [回放教程](tutorial.md#5-在查看器中跟踪查询) | 核心包；FreeInference 需要 JSONL 文件 |
+| 流式回放大型工作负载、对比有界缓存实验 | [流式回放](streaming-replay.md) | 核心包；按到达时间和请求 ID 排序的 JSONL |
 | 只读检查持久化条目 | [磁盘教程](tutorial.md#4-持久化与提升分块) | 核心包和已有缓存目录 |
 | 复用 Hugging Face 模型 KV | [真实模型教程](tutorial.md#6-复用真实模型张量) | `hf` 扩展和模型权重，支持 CPU |
 | 采集引擎事件并生成离线 HTML | [引擎 Trace（英文）](../engine-traces.md) | 采集需要 Linux/NVIDIA GPU/本地模型；渲染只需核心包 |

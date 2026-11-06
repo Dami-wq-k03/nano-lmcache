@@ -2,6 +2,7 @@
 
 import json
 import math
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,13 @@ def report_from_events(
 
     total_chunks = sum(r["total_chunks"] for r in requests)
     matched_chunks = sum(r["matched_chunks"] for r in requests)
+    counts = Counter(event.event_type for event in ordered)
+    storage_hits = Counter(
+        str((event.metadata or {})["backend"])
+        for event in ordered if event.event_type == "storage_get"
+        and event.result == "hit"
+        and isinstance((event.metadata or {}).get("backend"), str)
+    )
     return {
         "source": source,
         "summary": {
@@ -97,6 +105,8 @@ def report_from_events(
             "hit_rate": matched_chunks / total_chunks if total_chunks else 0.0,
             "l1_hit_blocks": sum(r["l1_hit_blocks"] for r in requests),
             "l2_hit_blocks": sum(r["l2_hit_blocks"] for r in requests),
+            "event_counts": dict(counts),
+            "storage_hits": dict(storage_hits),
         },
         "requests": requests,
         "events": [event.to_dict() for event in ordered],

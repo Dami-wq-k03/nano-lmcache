@@ -1,6 +1,7 @@
-"""In-memory recording and JSON export for cache trace events."""
+"""Optional bounded recording, online counters, and JSON trace export."""
 
 import json
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ class TraceRecorder:
     cache can keep one optional recorder hook without branching at every call
     site.  A ``request_id`` may be bound at construction time, or supplied to
     each call to :meth:`record` when a recorder is shared by requests.
+
+    ``sample_every=k`` retains sequence 0, k, 2k, ... until ``max_events``
+    is reached. This is a prefix sample, not a random sample of the full run.
+    Counts include every enabled event, even after the detail cap is reached.
+    Defaults preserve full recording. ``max_events=0`` keeps only counters.
     """
 
     def __init__(
@@ -24,6 +30,8 @@ class TraceRecorder:
         *,
         enabled: bool = True,
         request_id: str | None = None,
+        max_events: int | None = None,
+        sample_every: int = 1,
     ) -> None:
         if type(enabled) is not bool:
             raise TypeError("enabled must be a boolean")
@@ -34,11 +42,37 @@ class TraceRecorder:
 
         self._enabled = enabled
         self._request_id = request_id
+        if max_events is not None and (
+            type(max_events) is not int or max_events < 0
+        ):
+            raise ValueError("max_events must be a non-negative integer or None")
+        if type(sample_every) is not int or sample_every < 1:
+            raise ValueError("sample_every must be a positive integer")
+        self.max_events = max_events
+        self.sample_every = sample_every
         self._events: list[TraceEvent] = []
+        self._total_events = 0
+        self._event_counts: Counter[str] = Counter()
+        self._storage_hits: Counter[str] = Counter()
+
+    @property
+    def total_events(self) -> int:
+        """Number of enabled observations, including omitted detail."""
+        return self._total_events
+
+    @property
+    def event_counts(self) -> dict[str, int]:
+        """Exact counts by event type, before sampling and truncation."""
+        return dict(self._event_counts)
+
+    @property
+    def storage_hits(self) -> dict[str, int]:
+        """Exact successful reads per backend, before detail retention."""
+        return dict(self._storage_hits)
 
     @property
     def enabled(self) -> bool:
-        """Whether calls to :meth:`record` append events."""
+        """Whether observations contribute to counters and retained detail."""
         return self._enabled
 
     @enabled.setter
@@ -82,6 +116,7 @@ class TraceRecorder:
         ``request_id`` overrides the recorder's bound default for this event.
         A request ID is required while recording, which prevents traces from
         silently mixing anonymous requests.
+        Enabled calls return the event even if sampling omits its retention.
         """
         if not self._enabled:
             return None
@@ -98,7 +133,7 @@ class TraceRecorder:
             )
 
         event = TraceEvent(
-            sequence=len(self._events),
+            sequence=self._total_events,
             request_id=event_request_id,
             event_type=event_type,
             chunk_index=chunk_index,
@@ -108,12 +143,24 @@ class TraceRecorder:
             duration_ns=duration_ns,
             metadata=metadata,
         )
-        self._events.append(event)
+        self._total_events += 1
+        self._event_counts[event.event_type] += 1
+        if event.event_type == "storage_get" and event.result == "hit":
+            backend = (event.metadata or {}).get("backend")
+            if isinstance(backend, str):
+                self._storage_hits[backend] += 1
+        if event.sequence % self.sample_every == 0 and (
+            self.max_events is None or len(self._events) < self.max_events
+        ):
+            self._events.append(event)
         return event
 
     def clear(self) -> None:
         """Discard all events and restart sequence numbering at zero."""
         self._events.clear()
+        self._total_events = 0
+        self._event_counts.clear()
+        self._storage_hits.clear()
 
     def to_list(self) -> list[dict[str, Any]]:
         """Return a detached list of event dictionaries."""
@@ -130,7 +177,7 @@ class TraceRecorder:
         indent: int | None = 2,
         encoding: str = "utf-8",
     ) -> None:
-        """Write the trace JSON to ``path``."""
+        """Write retained events to ``path``; omitted detail is not reconstructed."""
         Path(path).write_text(self.to_json(indent=indent), encoding=encoding)
 
     def __len__(self) -> int:

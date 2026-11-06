@@ -170,9 +170,14 @@ uv run python -m nano_lmcache.visualize --freeinference-jsonl /path/to/sample.js
 ```
 
 Those block IDs are opaque identities, not model token IDs. Dataset-observed
-cached tokens and simulated hits are separate measurements. Replay and HTML
-currently accumulate in memory; `--limit` bounds the selected requests,
-not total process memory. See VIS-11 in the [roadmap](../../ROADMAP.md).
+cached tokens and simulated hits are separate measurements. For large,
+already-sorted JSONL inputs, add `--stream --max-entries 4096 --max-events
+10000 --max-requests 200 --sample-every 10` and optionally `--summary-json
+/tmp/replay-summary.json`. Replay keeps exact totals while limiting retained
+detail. `--limit` selects requests; budgets are counts rather than a total
+process memory limit. See [streaming replay](../streaming-replay.md) for
+ordering requirements, sampling semantics, capacity experiments, and the
+batch-only recorded engine JSON import.
 
 Read [`replay/runner.py`](../../src/nano_lmcache/replay/runner.py) and
 [`FreeInferenceAdapter`](../../src/nano_lmcache/datasets/adapters/freeinference.py).

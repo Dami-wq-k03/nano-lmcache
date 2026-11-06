@@ -71,7 +71,7 @@ Done (pure Python, no GPU dependency):
       HTML viewer (`observability/`, `visualization/`, VIS-1–8)
 - [x] Synthetic workload replay (`datasets/`, `replay/`, DATA-1); the
       FreeInference opaque-block adapter has an initial version (DATA-2),
-      with bounded replay still open (VIS-11)
+      with streaming replay, bounded detail, and exact online totals (VIS-11)
 - [x] Source research for the proposed vLLM 0.32.0 connector
       (`docs/vllm-kv-connector.md`, V0); implementation is tracked by V1–V5
 
@@ -167,14 +167,15 @@ open an issue to discuss it.
 | DATA-1 | Synthetic workload replay | Medium | No | VIS-1–3 | Done |
 | DATA-2 | FreeInference opaque block replay | Hard | No | DATA-1 | Initial version |
 | VIS-10 | Real nano-vLLM Trace JSON → offline HTML | Hard | Yes for recording | N4, VIS-4–6 | Done |
-| VIS-11 | Streaming replay, bounded reports and event sampling | Hard | No | DATA-2 | Open |
+| VIS-11 | Streaming replay, bounded reports and event sampling | Hard | No | DATA-2 | Done |
 | DOC-1 | Guided learning path from prefix matching to engine traces | Medium | No | VIS-10 | Done |
 | **Teaching docs** | | | | | |
 | D1 | Architecture diagrams | Easy | No | – | Done |
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priority:** VIS-11 (bounded replay). The initial guided learning path
+**Next priority:** M11 (eviction-policy experiments), building on VIS-11's
+bounded workload replay and capacity comparisons. The initial guided learning path
 (DOC-1) is available in [English](docs/tutorial/README.md) and
 [Chinese](docs/zh-CN/tutorial.md).
 N5 and N6 remain performance follow-ups (see
@@ -1040,10 +1041,21 @@ engine and per-tier storage events. `python -m nano_lmcache.visualize
 KV computation, disk restoration with empty L1, warm L1 reuse, and ownership
 of batched GPU imports. See [the experiment guide](docs/engine-traces.md).
 
-**VIS-11: open.** Large FreeInference inputs still require bounded replay:
-already-sorted streaming input, incremental statistics, optional event
-sampling, and a cap on events embedded in HTML. Preserve the distinction
-between dataset-observed cached tokens and simulated hits.
+**VIS-11: done.** Already-sorted FreeInference/workload JSONL streams through
+replay without collecting the full input. `ReplaySummary` maintains exact
+online statistics independently of retained request details;
+`TraceRecorder(max_events=..., sample_every=...)` limits event retention
+without changing full-workload event/tier counts. Opaque replay uses bounded
+prefix-safe storage rather than an ever-growing dictionary. CLI budgets,
+summary JSON export, and paged/windowed HTML keep large experiments practical.
+Dataset-observed cached tokens remain distinct from simulated reuse.
+
+See [streaming replay](docs/streaming-replay.md),
+`tests/unit/test_streaming_replay.py`, and
+`benchmarks/bench_streaming_replay.py` for limits and memory-growth checks.
+Budgets count entries/events/requests rather than bytes, and the largest
+input record still matters. The existing recorded engine JSON importer is
+batch-based; its HTML detail is capped after exact statistics are calculated.
 
 **DOC-1: done.** The [guided tutorial](docs/tutorial/README.md) and its
 [Chinese edition](docs/zh-CN/tutorial.md) connect chunking, first-miss
