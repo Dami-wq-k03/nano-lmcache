@@ -7,78 +7,118 @@
 <style>
 :root {
   color-scheme: dark;
-  --bg: #0b1020; --panel: #121a2e; --line: #2d3b5f; --text: #e6edf7; --muted: #9baacc;
+  --bg: #0b1020; --panel: #121a2e; --panel-2: #0e1628; --line: #263453; --text: #e6edf7; --muted: #9baacc;
   --hit: #36d399; --l2: #93c5fd; --miss: #fb7185; --pending: #fbbf24; --incomplete: #a78bfa;
-  --accent: #60a5fa;
+  --accent: #60a5fa; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
-header { padding: 20px 24px 12px; border-bottom: 1px solid var(--line); }
-h1 { margin: 0 0 6px; font-size: 22px; }
-h2 { font-size: 18px; }
+h1 { margin: 0; font-size: 20px; }
+h2 { margin: 0 0 4px; font-size: 15px; letter-spacing: .02em; }
 .muted { color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+b, .num { font-variant-numeric: tabular-nums; }
 
-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px; max-width: 1440px; margin: auto; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 18px 24px 10px; }
+.toolbar { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); padding: 10px 24px; }
+.toolbar .controls { max-width: 1440px; margin: auto; }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: 14px; padding: 14px; max-width: 1440px; margin: auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
 .wide { grid-column: 1 / -1; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
 
 .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-button { border: 1px solid var(--line); background: #1c2948; color: var(--text); border-radius: 7px; padding: 7px 12px; cursor: pointer; }
-button:hover { background: #2b3b64; }
-button:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
-button:disabled { opacity: .55; cursor: default; }
+button { border: 1px solid var(--line); background: #1c2948; color: var(--text); border-radius: 7px; padding: 6px 12px; cursor: pointer; font: inherit; }
+button:hover:not(:disabled) { background: #2b3b64; }
+button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; min-width: 72px; }
+button.primary:hover:not(:disabled) { background: #93c5fd; }
+#seek { flex: 1; min-width: 160px; accent-color: var(--accent); }
+#step-label { font-family: var(--mono); font-size: 12px; min-width: 11ch; text-align: right; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
-.summary { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 10px; }
-.metric b { display: block; font-size: 20px; }
-.coverage { margin-top: 12px; max-width: 90ch; }
+/* Overview */
+.summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.metric { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.metric span { font-size: 12px; }
+.metric b { display: block; font-size: 22px; margin-top: 2px; }
+.metric.hero b { color: var(--hit); }
+.bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; margin-top: 6px; }
+.bar i { display: block; height: 100%; background: var(--hit); }
+.coverage { margin: 12px 0 0; font-size: 12px; max-width: 110ch; }
 
-/* Chunk states: color is paired with the status text inside each chip. */
-.request { border-top: 1px solid var(--line); padding: 12px 0 4px; }
-.request:first-child { border-top: 0; }
-.request-title { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; }
-.chunks { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-.chunk { padding: 7px 9px; border-radius: 7px; border: 1px solid currentColor; min-width: 80px; }
+/* Chunk states: color is always paired with the status text. */
+.legend { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 12px; }
+.request { padding: 10px 10px 12px; border-radius: 8px; border-top: 1px solid var(--line); }
+.request:first-child { border-top-color: transparent; }
+.request.active { background: color-mix(in srgb, var(--accent) 9%, transparent); border-top-color: transparent; }
+.request-title { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.request-title > span { display: flex; align-items: center; gap: 8px; }
+.request-title .bar { width: 72px; margin: 0; }
+.request-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.chunks { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
+.chunk { padding: 3px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, currentColor 55%, transparent);
+  background: color-mix(in srgb, currentColor 10%, transparent); font: 12px var(--mono); }
+.chunk b { opacity: .7; margin-right: 4px; }
 .chunk.hit, .chunk.l1_hit { color: var(--hit); }
 .chunk.l2_hit { color: var(--l2); }
 .chunk.miss { color: var(--miss); }
 .chunk.not_checked, .chunk.compute { color: var(--pending); }
 .chunk.incomplete { color: var(--incomplete); }
-.chunk.active { box-shadow: 0 0 0 2px var(--text); }
+.chunk.active { background: color-mix(in srgb, currentColor 30%, transparent); border-color: currentColor; box-shadow: 0 0 0 2px var(--text); }
 
-#tree { width: 100%; min-height: 230px; overflow: auto; }
-#tree svg { display: block; width: 100%; min-width: 280px; height: auto; max-height: 380px; }
+/* Prefix tree: drawn at real pixel size and scrolled, never shrunk. */
+#tree { overflow: auto; max-height: 420px; background: var(--panel-2); border-radius: 8px; padding: 8px 0; }
+#tree svg { display: block; margin: auto; }
 .tree-node { fill: #172443; stroke: #7083af; stroke-width: 1.5; }
-.tree-node.current { stroke: var(--text); stroke-width: 3; }
-.tree-edge { stroke: #53658c; stroke-width: 1.5; }
-.tree-label { fill: var(--text); font-size: 10px; text-anchor: middle; }
-#detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tree-node.current { fill: var(--accent); stroke: var(--text); stroke-width: 2.5; }
+.tree-edge { stroke: #3f5079; stroke-width: 1.5; fill: none; }
+.tree-label { fill: var(--text); font: 9px var(--mono); text-anchor: middle; pointer-events: none; }
+.tree-node.current + .tree-label { fill: #0b1020; font-weight: 700; }
 
-#timeline { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow: auto; }
-.event { padding: 8px 10px; background: #0e1628; border-radius: 5px; text-align: left; }
-.event.current { border-color: var(--accent); background: #182643; }
-.event-name { font-weight: 650; }
-.event-detail { color: var(--muted); font-size: 12px; word-break: break-word; }
+/* Timeline: left border encodes the event kind; the type name is always shown. */
+#timeline { position: relative; display: flex; flex-direction: column; gap: 4px; max-height: 460px; overflow: auto; padding-right: 4px; }
+.event { display: grid; grid-template-columns: 5ch 1fr; gap: 0 10px; padding: 6px 10px; background: var(--panel-2);
+  border-left: 3px solid var(--kind, var(--line)); border-radius: 5px; text-align: left; }
+.event.current { background: #1a2a4d; border-color: var(--accent); border-left-color: var(--kind, var(--accent)); }
+.event .seq { grid-row: span 2; color: var(--muted); font: 12px var(--mono); padding-top: 1px; }
+.event-name { font-weight: 600; font-size: 13px; }
+.event-name small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.event-detail { color: var(--muted); font: 11px var(--mono); word-break: break-word; }
+.kind-hit { --kind: var(--hit); } .kind-miss { --kind: var(--miss); } .kind-store { --kind: var(--l2); } .kind-pending { --kind: var(--pending); }
+
+#detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
+#detail dt { color: var(--muted); }
+#detail dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>
 </head>
 <body>
-<header><h1>__TITLE__</h1><div class="muted">Offline replay viewer · no external assets · ←/→ to step</div></header>
-<main>
-<section class="panel wide">
+<header><h1>__TITLE__</h1><div class="muted">Offline replay viewer · no external assets · ←/→ step · Space play</div></header>
+<div class="toolbar">
   <div class="controls">
     <button id="reset">Reset</button>
-    <button id="prev">Previous</button>
-    <button id="next">Next</button>
-    <button id="play" aria-pressed="false">Play</button>
-    <label for="seek">Seek event</label><input id="seek" type="range" min="0" value="0">
+    <button id="prev" aria-label="Previous event">◀ Prev</button>
+    <button id="play" class="primary" aria-pressed="false">Play</button>
+    <button id="next" aria-label="Next event">Next ▶</button>
+    <label for="seek" class="sr-only">Seek event</label><input id="seek" type="range" min="0" value="0">
     <span id="step-label" class="muted" aria-live="polite"></span>
   </div>
+</div>
+<main>
+<section class="panel wide">
   <div id="summary" class="summary"></div>
-  <div id="coverage" class="coverage muted"></div>
-  <div id="tiers" class="muted"></div>
+  <p id="coverage" class="coverage muted"></p>
+  <div id="tiers" class="note"></div>
 </section>
 <section class="panel">
   <h2>Chunks / KV Blocks</h2>
+  <div class="legend" aria-label="Chunk state legend">
+    <span class="chunk hit">HIT</span><span class="chunk l2_hit">L2_HIT</span><span class="chunk miss">MISS</span>
+    <span class="chunk compute">NOT_CHECKED / COMPUTE</span><span class="chunk incomplete">INCOMPLETE</span>
+  </div>
   <div class="controls">
     <button id="requests-prev">Earlier requests</button>
     <button id="requests-next">Later requests</button>
@@ -88,15 +128,18 @@ button:disabled { opacity: .55; cursor: default; }
 </section>
 <section class="panel">
   <h2>Prefix Tree</h2>
-  <p class="muted">Relationships in retained events; this is not a live cache snapshot.</p>
+  <p class="note">Relationships in retained events; this is not a live cache snapshot.</p>
   <div id="tree"></div>
-  <h2>Event Detail</h2>
-  <pre id="detail" class="muted"></pre>
+  <p id="tree-note" class="note"></p>
 </section>
-<section class="panel wide">
+<section class="panel">
   <h2>Request Timeline</h2>
-  <p id="timeline-range" class="muted"></p>
+  <p id="timeline-range" class="note"></p>
   <div id="timeline"></div>
+</section>
+<section class="panel">
+  <h2>Event Detail</h2>
+  <div id="detail" class="muted"></div>
 </section>
 </main>
 <script>
@@ -131,6 +174,18 @@ function escapeText(value) {
   return String(value ?? "").replace(/[&<>"']/g, char => map[char]);
 }
 
+// Coarse kind used only for the timeline's color stripe.
+function kindOf(e) {
+  const text = `${e.event_type} ${e.result ?? ""}`;
+  if (/evict|miss/.test(text)) return "miss";
+  if (/hit|restore|import/.test(text)) return "hit";
+  if (/put|export|offload|promotion/.test(text)) return "store";
+  if (/not_checked|prefill|compute/.test(text)) return "pending";
+  return "";
+}
+
+const bar = ratio => `<div class="bar"><i style="width:${(Math.min(1, ratio || 0) * 100).toFixed(1)}%"></i></div>`;
+
 // ---- Static sections: rendered once ----
 
 function renderSummary() {
@@ -143,7 +198,6 @@ function renderSummary() {
     ["Requests", summary.requests || 0],
     ["Chunks", summary.total_chunks || 0],
     ["Reused", summary.matched_chunks || 0],
-    ["Hit rate", ((summary.hit_rate || 0) * 100).toFixed(1) + "%"],
     ["Storage events", sum(storageTypes)],
     ["Evictions", sum(["eviction"])],
     ["Tier promotions", sum(["promotion"])],
@@ -157,8 +211,11 @@ function renderSummary() {
     metrics.push(["Dataset-observed cached tokens", summary.observed_cached_tokens || 0],
                  ["Simulated reused tokens", summary.matched_tokens || 0]);
   }
-  $("summary").innerHTML = metrics.map(([label, value]) =>
-    `<div class="metric"><span class="muted">${escapeText(label)}</span><b>${escapeText(value)}</b></div>`).join("");
+  const hitRate = summary.hit_rate || 0;
+  $("summary").innerHTML =
+    `<div class="metric hero"><span class="muted">Chunk hit rate</span><b>${(hitRate * 100).toFixed(1)}%</b>${bar(hitRate)}</div>` +
+    metrics.map(([label, value]) =>
+      `<div class="metric"><span class="muted">${escapeText(label)}</span><b>${escapeText(value)}</b></div>`).join("");
 
   const partial = retention.events_omitted > 0 || retention.requests_omitted > 0;
   const sampleEvery = retention.sample_every || 1;
@@ -186,7 +243,7 @@ function renderTree() {
     nodes.set(e.key, { key: e.key, parent: e.parent_key ?? (previous && previous.parent) });
   }
   const list = [...nodes.values()];
-  if (!list.length) { $("tree").innerHTML = '<span class="muted">No key events</span>'; return; }
+  if (!list.length) { $("tree").innerHTML = '<p class="note" style="text-align:center">No key events retained</p>'; return; }
 
   const depthOf = node => {
     const seen = new Set([node.key]);
@@ -198,19 +255,22 @@ function renderTree() {
   };
   const rows = [];
   list.forEach(n => { n.depth = depthOf(n); (rows[n.depth] ||= []).push(n); });
-  const width = Math.max(500, rows.length * 180);
-  rows.forEach(row => row.forEach((n, i) => { n.x = (i + 1) * width / (row.length + 1); n.y = 70 + n.depth * 70; }));
+  const SPACING_X = 64, SPACING_Y = 62;
+  const width = Math.max(260, Math.max(...rows.map(row => row.length)) * SPACING_X);
+  const height = rows.length * SPACING_Y + 10;
+  rows.forEach(row => row.forEach((n, i) => { n.x = (i + 0.5) * width / row.length; n.y = 34 + n.depth * SPACING_Y; }));
 
   const edges = list.filter(n => nodes.has(n.parent)).map(n => {
-    const p = nodes.get(n.parent);
-    return `<line class="tree-edge" x1="${p.x}" y1="${p.y}" x2="${n.x}" y2="${n.y}"/>`;
+    const p = nodes.get(n.parent), midY = (p.y + n.y) / 2;
+    return `<path class="tree-edge" d="M${p.x} ${p.y}C${p.x} ${midY} ${n.x} ${midY} ${n.x} ${n.y}"/>`;
   }).join("");
   const labels = list.map((n, i) =>
-    `<g><circle class="tree-node" data-index="${i}" cx="${n.x}" cy="${n.y}" r="20"/>` +
-    `<text class="tree-label" x="${n.x}" y="${n.y + 4}">${escapeText(n.key.slice(0, 6))}</text></g>`).join("");
+    `<g><title>${escapeText(n.key)}</title><circle class="tree-node" data-index="${i}" cx="${n.x}" cy="${n.y}" r="20"/>` +
+    `<text class="tree-label" x="${n.x}" y="${n.y + 3}">${escapeText(n.key.slice(0, 6))}</text></g>`).join("");
   $("tree").innerHTML =
-    `<svg role="img" aria-label="Prefix relationships from up to ${MAX_TREE_KEYS} keys in retained events" viewBox="0 0 ${width} ${20 + rows.length * 70}">${edges}${labels}</svg>` +
-    `<p class="muted">Showing up to ${MAX_TREE_KEYS} keys from retained events. Missing ancestors may have been omitted.</p>`;
+    `<svg role="img" aria-label="Prefix relationships from up to ${MAX_TREE_KEYS} keys in retained events" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${edges}${labels}</svg>`;
+  $("tree-note").textContent =
+    `${list.length} keys, depth ${rows.length}. Showing up to ${MAX_TREE_KEYS} keys from retained events; missing ancestors may have been omitted. Hover a node for its full key.`;
   document.querySelectorAll("#tree circle").forEach(c => treeCircles.set(list[c.dataset.index].key, c));
 }
 
@@ -224,18 +284,21 @@ function renderRequests() {
   $("requests-next").disabled = end >= requests.length;
 
   $("requests").innerHTML = requests.slice(start, end).map(r => {
-    const activeChunk = e && e.request_id === r.request_id ? e.chunk_index : null;
+    const isActive = e && e.request_id === r.request_id;
+    const activeChunk = isActive ? e.chunk_index : null;
     const statuses = r.statuses || [];
     const chunks = statuses.slice(0, MAX_CHUNKS).map((s, i) =>
-      `<span class="chunk ${escapeText(String(s).toLowerCase())}${i === activeChunk ? " active" : ""}"><b>${i}</b> · ${escapeText(s)}</span>`).join("")
+      `<span class="chunk ${escapeText(String(s).toLowerCase())}${i === activeChunk ? " active" : ""}"><b>${i}</b>${escapeText(s)}</span>`).join("")
       + (statuses.length > MAX_CHUNKS ? `<span class="muted">Showing the first ${MAX_CHUNKS} of ${statuses.length} chunk states.</span>` : "");
-    const tiers = r.l1_hit_blocks == null ? "" :
-      `<div class="muted">L1: ${escapeText(r.l1_hit_blocks)} blocks · L2: ${escapeText(r.l2_hit_blocks)} blocks · Prefill computed: ${escapeText(r.computed_tokens)} tokens</div>`;
-    const timing = r.ttft_ms == null ? "" :
-      `<div class="muted">Measured TTFT: ${escapeText(r.ttft_ms.toFixed(1))} ms · includes synchronous L2 writes and tracing</div>`;
-    return `<div class="request"><div class="request-title"><b>${escapeText(r.request_id)}</b>` +
-      `<span class="muted">${escapeText(r.matched_chunks)}/${escapeText(r.total_chunks)} chunks</span></div>` +
-      `${tiers}${timing}<div class="chunks">${chunks || '<span class="muted">no chunks</span>'}</div></div>`;
+    const meta = [];
+    if (r.l1_hit_blocks != null) {
+      meta.push(`L1: ${escapeText(r.l1_hit_blocks)} blocks · L2: ${escapeText(r.l2_hit_blocks)} blocks · Prefill computed: ${escapeText(r.computed_tokens)} tokens`);
+    }
+    if (r.ttft_ms != null) meta.push(`Measured TTFT: ${escapeText(r.ttft_ms.toFixed(1))} ms · includes synchronous L2 writes and tracing`);
+    return `<div class="request${isActive ? " active" : ""}"><div class="request-title"><b>${escapeText(r.request_id)}</b>` +
+      `<span class="muted num">${escapeText(r.matched_chunks)}/${escapeText(r.total_chunks)} chunks reused ${bar(r.matched_chunks / r.total_chunks)}</span></div>` +
+      meta.map(m => `<div class="request-meta">${m}</div>`).join("") +
+      `<div class="chunks">${chunks || '<span class="muted">no chunks</span>'}</div></div>`;
   }).join("") || '<p class="muted">Request detail was omitted or the workload is empty. Use the summary totals above.</p>';
 }
 
@@ -244,7 +307,7 @@ function renderTimeline() {
   const start = Math.max(0, Math.min(state.step - 40, events.length - TIMELINE_WINDOW));
   const end = Math.min(start + TIMELINE_WINDOW, events.length);
   $("timeline-range").textContent = events.length
-    ? `Showing retained events ${start + 1}–${end} of ${events.length}. Event labels preserve original sequence numbers.`
+    ? `Showing retained events ${start + 1}–${end} of ${events.length}. Numbers are original sequence numbers.`
     : "No event detail retained. Summary statistics remain available.";
   $("timeline").innerHTML = events.slice(start, end).map((e, offset) => {
     const i = start + offset, current = i === state.step;
@@ -252,17 +315,31 @@ function renderTimeline() {
     if (e.chunk_index != null) detail.push(`chunk=${escapeText(e.chunk_index)}`);
     if (e.result != null) detail.push(escapeText(e.result));
     if (e.metadata && e.metadata.backend) detail.push(`tier=${escapeText(e.metadata.backend)}`);
-    return `<button type="button" class="event${current ? " current" : ""}" data-index="${i}" aria-pressed="${current}">` +
-      `<span class="event-name">${[e.sequence, e.event_type, EVENT_LABELS.get(e.event_type)].filter(x => x != null).map(escapeText).join(" · ")}</span><br>` +
+    const label = EVENT_LABELS.get(e.event_type);
+    return `<button type="button" class="event kind-${kindOf(e)}${current ? " current" : ""}" data-index="${i}" aria-pressed="${current}">` +
+      `<span class="seq">${escapeText(e.sequence ?? i)}</span>` +
+      `<span class="event-name">${escapeText(e.event_type)}${label ? `<small>${escapeText(label)}</small>` : ""}</span>` +
       `<span class="event-detail">${detail.join(" · ")}</span></button>`;
   }).join("");
+
+  // Scroll only the timeline box, never the page.
+  const box = $("timeline"), cur = box.querySelector(".current");
+  if (cur && (cur.offsetTop < box.scrollTop || cur.offsetTop + cur.offsetHeight > box.scrollTop + box.clientHeight)) {
+    box.scrollTop = cur.offsetTop - box.clientHeight / 2;
+  }
+}
+
+function renderDetail(e) {
+  if (!e) { $("detail").textContent = "Press Next, Play, or click an event in the timeline."; return; }
+  $("detail").innerHTML = "<dl>" + Object.entries(e).filter(([, v]) => v != null).map(([k, v]) =>
+    `<dt>${escapeText(k)}</dt><dd>${escapeText(typeof v === "object" ? JSON.stringify(v, null, 2) : v)}</dd>`).join("") + "</dl>";
 }
 
 let highlighted = null;
 function render() {
   const e = currentEvent();
-  $("step-label").textContent = events.length ? `Step ${state.step + 1} / ${events.length}` : "No events";
-  $("detail").textContent = e ? JSON.stringify(e, null, 2) : "Select Next or click an event.";
+  $("step-label").textContent = events.length ? `${state.step + 1} / ${events.length}` : "No events";
+  renderDetail(e);
   Object.assign($("seek"), { max: Math.max(0, events.length - 1), value: Math.max(0, state.step), disabled: !events.length });
   $("prev").disabled = state.step < 0;
   $("next").disabled = state.step >= events.length - 1;
@@ -288,6 +365,7 @@ function goTo(step) {
 }
 function setPlaying(playing) {
   clearInterval(state.timer);
+  if (playing && state.step >= events.length - 1) goTo(-1);  // replay from the start
   state.timer = playing ? setInterval(() => {
     if (state.step >= events.length - 1) setPlaying(false); else goTo(state.step + 1);
   }, PLAY_INTERVAL_MS) : null;
@@ -310,6 +388,8 @@ document.addEventListener("keydown", event => {
   if (event.target.matches("input, textarea")) return;
   if (event.key === "ArrowLeft") goTo(state.step - 1);
   if (event.key === "ArrowRight") goTo(state.step + 1);
+  // Space on a focused button already activates that button.
+  if (event.key === " " && events.length && !event.target.matches("button")) { event.preventDefault(); setPlaying(!state.timer); }
 });
 
 renderSummary();
