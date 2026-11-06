@@ -13,6 +13,7 @@
 | [术语表与 FAQ（英文）](../glossary.md) | KV、Prefill、Decode、TTFT、Chunk、Block 和常见误解 |
 | [架构](architecture.md) | 当前模块、不变量、容量统计、序列化和并发边界 |
 | [nano-vLLM 集成（英文）](../nanovllm-integration.md) | 引擎块布局、L1/L2 查询、恢复/保存钩子及正确性规则 |
+| [vLLM Connector 调研（英文）](../vllm-kv-connector.md) | 推荐上游版本、Connector 生命周期、Block/Chunk 映射及 ExampleConnector 局限；仅源码调研 |
 | [PD 分离](pd-disaggregation.md) | Prefill/Decode Worker、KV 交接格式、所有权、失败处理，以及 TTFT 与卡顿的取舍 |
 
 ## 运行与观察
@@ -21,6 +22,7 @@
 | --- | --- | --- |
 | 运行最小缓存示例 | [项目快速开始](../../README.zh-CN.md#从这里开始) | Python 3.11+、uv |
 | 回放合成工作负载或 FreeInference 块 | [回放教程](tutorial.md#5-在查看器中跟踪查询) | 核心包；FreeInference 需要 JSONL 文件 |
+| 流式回放大型工作负载、对比有界缓存实验 | [流式回放](streaming-replay.md) | 核心包；按到达时间和请求 ID 排序的 JSONL |
 | 只读检查持久化条目 | [磁盘教程](tutorial.md#4-持久化与提升分块) | 核心包和已有缓存目录 |
 | 复用 Hugging Face 模型 KV | [真实模型教程](tutorial.md#6-复用真实模型张量) | `hf` 扩展和模型权重，支持 CPU |
 | 采集引擎事件并生成离线 HTML | [引擎 Trace（英文）](../engine-traces.md) | 采集需要 Linux/NVIDIA GPU/本地模型；渲染只需核心包 |

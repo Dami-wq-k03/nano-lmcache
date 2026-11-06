@@ -40,6 +40,8 @@ class FreeInferenceAdapter:
         """Adapt session mappings while preserving input record order."""
         if limit is not None and (type(limit) is not int or limit < 0):
             raise ValueError("limit must be a non-negative integer or None")
+        if limit == 0:
+            return
 
         emitted = 0
         for session in records:
@@ -48,6 +50,8 @@ class FreeInferenceAdapter:
                     return
                 yield request
                 emitted += 1
+                if emitted == limit:
+                    return
 
     def _collect_session(
         self,

@@ -170,9 +170,14 @@ uv run python -m nano_lmcache.visualize --freeinference-jsonl /path/to/sample.js
 ```
 
 Those block IDs are opaque identities, not model token IDs. Dataset-observed
-cached tokens and simulated hits are separate measurements. Replay and HTML
-currently accumulate in memory; `--limit` bounds the selected requests,
-not total process memory. See VIS-11 in the [roadmap](../../ROADMAP.md).
+cached tokens and simulated hits are separate measurements. For large,
+already-sorted JSONL inputs, add `--stream --max-entries 4096 --max-events
+10000 --max-requests 200 --sample-every 10` and optionally `--summary-json
+/tmp/replay-summary.json`. Replay keeps exact totals while limiting retained
+detail. `--limit` selects requests; budgets are counts rather than a total
+process memory limit. See [streaming replay](../streaming-replay.md) for
+ordering requirements, sampling semantics, capacity experiments, and the
+batch-only recorded engine JSON import.
 
 Read [`replay/runner.py`](../../src/nano_lmcache/replay/runner.py) and
 [`FreeInferenceAdapter`](../../src/nano_lmcache/datasets/adapters/freeinference.py).
@@ -264,31 +269,25 @@ these examples, including two-process restoration and trace rendering.
 
 ```bash
 uv run python examples/demo_pd_disaggregation.py
-uv run pytest tests/unit/test_pd_handoff.py tests/unit/test_pd_workers.py \
-  tests/unit/test_pd_simulation.py
+uv run pytest tests/unit/test_disaggregation.py
 ```
 
-This step needs only the core package. A prefill worker computes a
-prompt's KV and first token, then sends a `KVHandoff` through a shared
-directory. A decode worker claims it and generates the rest. The demo
-prints identical colocated and disaggregated tokens, and shows the decode
-worker computing only the new positions. It then shows four refusals:
-corrupt bytes, KV from different weights, a cancelled request, and a
-second worker claiming an already-claimed request. Its timeline compares
-one GPU with a prefill GPU plus a decode GPU. Colocated, a long prompt
-stalls a running chat request for two seconds. Disaggregated, the stall
+This step needs only the core package. `prefill` computes a prompt's KV and
+first token, then places a checksummed handoff in a channel. `decode` claims
+it and generates the rest. The demo prints identical colocated and
+disaggregated tokens, shows that decode computes only new positions, and
+demonstrates checksum, model-identity, and single-claim failures. Its
+timeline compares one GPU with a prefill GPU plus a decode GPU. Colocated,
+a long prompt stalls a running chat request; disaggregated, the stall
 disappears, but every TTFT includes the KV transfer.
 
-Experiment: compare the 27-token prompt's seven blocks with the prefix
-cache's rule from step 2. The handoff ships the partial last block,
-because a decode worker has no way to recompute it. Then give
-`PrefillWorker` a `ChunkedPrefixCache`, as the demo's second part does.
-Prefix reuse reduces prefill computation but leaves the handoff contents
-unchanged.
+Experiment: compare the prompt's complete chunks with the prefix cache's
+rule from step 2. The handoff includes every prompt position because a
+decode worker has no way to recompute a missing tail.
 
-Read the [PD disaggregation guide](../pd-disaggregation.md) for the seven
-rules a handoff must keep and for what this teaching version leaves out,
-then [`disaggregation/`](../../src/nano_lmcache/disaggregation/).
+Read the [PD disaggregation guide](../pd-disaggregation.md), then the
+single teaching module
+[`disaggregation.py`](../../src/nano_lmcache/disaggregation.py).
 
 Return to the [documentation index](../README.md), or choose a contribution
 from the [roadmap](../../ROADMAP.md).

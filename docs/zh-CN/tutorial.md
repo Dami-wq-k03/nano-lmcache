@@ -148,8 +148,11 @@ uv run python -m nano_lmcache.visualize --freeinference-jsonl /path/to/sample.js
 ```
 
 其中 Block ID 是不透明标识，不是模型 Token ID。数据集中观测到的缓存 Token 与模拟命中分别统计。
-当前回放和 HTML 在内存中累积；`--limit` 限制选中的请求数，不是进程总内存上限。
-后续工作见[路线图（英文）](../../ROADMAP.md)的 VIS-11。
+对于已经排序的大型 JSONL，添加 `--stream --max-entries 4096 --max-events 10000
+--max-requests 200 --sample-every 10`，可选用 `--summary-json /tmp/replay-summary.json`
+导出统计。回放会统计全部已处理请求，但只保留有界的事件和请求明细。
+`--limit` 限制选中的请求数；各预算按条目计数，不是进程总内存上限。
+输入顺序、采样语义、容量对比实验与仍采用批量导入的引擎 JSON，见[流式回放](streaming-replay.md)。
 
 阅读 [`replay/runner.py`](../../src/nano_lmcache/replay/runner.py)与
 [`FreeInferenceAdapter`](../../src/nano_lmcache/datasets/adapters/freeinference.py)。
@@ -226,21 +229,19 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
 
 ```bash
 uv run python examples/demo_pd_disaggregation.py
-uv run pytest tests/unit/test_pd_handoff.py tests/unit/test_pd_workers.py \
-  tests/unit/test_pd_simulation.py
+uv run pytest tests/unit/test_disaggregation.py
 ```
 
-本步只需核心包。Prefill Worker 计算 Prompt 的 KV 和第一个 Token，通过共享目录发送 `KVHandoff`；
-Decode Worker 认领后生成其余 Token。示例会显示合并与分离两种方式输出完全一致，
-且 Decode Worker 只计算新增位置；接着演示四种拒绝：字节损坏、来自不同权重的 KV、请求已取消、
-第二个 Worker 认领已被认领的请求。最后的时间线对比单 GPU 与“Prefill GPU + Decode GPU”：
-合并部署下长 Prompt 让正在运行的 chat 请求卡顿两秒；分离后卡顿消失，但每个 TTFT 都包含 KV 传输。
+本步只需核心包。`prefill` 计算 Prompt 的 KV 和第一个 Token，并把带校验和的交接放入通道；
+`decode` 认领交接后生成其余 Token。示例会显示合并与分离两种方式输出完全一致，
+且 Decode 只计算新增位置；接着演示校验和、模型身份和重复认领失败。最后的时间线对比单 GPU
+与“Prefill GPU + Decode GPU”：合并部署下长 Prompt 会让正在运行的 chat 请求卡顿；分离后卡顿消失，
+但每个 TTFT 都包含 KV 传输。
 
-实验：把 27 个 Token 的 Prompt 被拆成 7 块这一点，与第 2 步前缀缓存的规则对比。
-交接会发送不完整的最后一块，因为 Decode Worker 无法自行重算它。然后像示例第二部分那样给
-`PrefillWorker` 一个 `ChunkedPrefixCache`：前缀复用减少了 Prefill 计算量，交接内容却不变。
+实验：把交接包含每个 Prompt 位置这一点，与第 2 步前缀缓存只复用完整块的规则对比。
+Decode 无法自行重算缺失的 KV，因此交接不能丢掉末尾位置。
 
-阅读 [PD 分离指南](pd-disaggregation.md)，了解交接必须遵守的七条规则和本教学版没有覆盖的内容，
-再阅读 [`disaggregation/`](../../src/nano_lmcache/disaggregation/)。
+阅读 [PD 分离指南](pd-disaggregation.md)，再阅读唯一的教学模块
+[`disaggregation.py`](../../src/nano_lmcache/disaggregation.py)。
 
 返回[文档目录](README.md)，或从[路线图（英文）](../../ROADMAP.md)选择贡献任务。

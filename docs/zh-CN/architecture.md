@@ -176,6 +176,19 @@ graph LR
 
 调用方通过 `ChunkedPrefixCache` 进行操作。它拥有一个 `CacheMetrics` 实例，并且只依赖 `CacheStorage` 协议，而不依赖任何具体的存储后端。`None` 专门用于表示未命中，因此 `store()` 会拒绝 `None` 数据载荷。
 
+### 有界工作负载回放
+
+`WorkloadReplayRunner` 与 `BlockTraceReplayRunner` 在 `sort_by_arrival=False` 时逐条消费
+已排序的迭代器，并检查到达时间/请求 ID 顺序。`ReplaySummary` 累计完整统计，`max_requests`
+独立限制请求明细。每次调用会开始新的 recorder/报告，但保留模拟缓存。不透明块使用与 Token
+工作负载相同的前缀安全存储和容量预算，键包含模型标识；Token 回放每个 runner 只接受一个模型。
+
+`TraceRecorder(max_events=..., sample_every=...)` 统计每个启用的事件及各后端成功读取次数，
+同时仅保留每隔 k 个事件取一个的有界前段样本，使用原始事件序号。CLI 默认每层缓存 10,000 条、
+保留 10,000 个事件和 200 条请求明细；HTML 对保留内容分页或窗口化显示。内存还受最大输入记录/
+请求及载荷大小影响。API 保留完整明细的默认行为，引擎 JSON 仍采用批量导入。
+准确边界与实验见[流式回放](streaming-replay.md)。
+
 ### 为什么指标采用这种统计方式
 
 查找会在第一次未命中时停止探测，因此此后所有完整分块都必须由调用方重新计算。这些分块都会被计为未命中。这样，`hit_rate` 表示“可复用的计算工作中，实际被复用的比例”，而不是单纯的探测次数比例。
@@ -375,11 +388,10 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 
 ## Prefill/Decode 分离
 
-`disaggregation/` 是纯 Python 教学模块，不依赖 `tensor/` 和 `integrations/`。
-`PrefillWorker` 用 `ToyLanguageModel` 计算 Prompt 的 KV（可选从 `ChunkedPrefixCache` 复用分块），
-再通过 `KVTransport` 发送 `KVHandoff`；`DecodeWorker` 认领交接，校验模型指纹和完整性后继续生成。
-交接以字节传输，带版本、负载长度和 CRC32；与前缀缓存分块不同，它包含不完整的最后一块。
-每个交接在传输层只能被成功 `receive` 一次。详见 [PD 分离指南](pd-disaggregation.md)。
+`disaggregation.py` 是纯 Python 教学模块，不依赖 `tensor/` 和 `integrations/`。
+`prefill` 用 `ToyModel` 计算 Prompt 的 KV，序列化后附带校验和并放入通道；
+`decode` 认领字节，校验模型身份和 KV 完整性后继续生成。小型 `timeline` 函数用于比较合并与分离调度。
+详见 [PD 分离指南](pd-disaggregation.md)。
 
 ## 设计原则
 
