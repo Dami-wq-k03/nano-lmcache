@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b1020; --panel: #121a2e; --line: #2d3b5f; --text: #e6edf7; --muted: #9baacc;
+  --hit: #36d399; --l2: #93c5fd; --miss: #fb7185; --pending: #fbbf24; --incomplete: #a78bfa;
+  --accent: #60a5fa;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+header { padding: 20px 24px 12px; border-bottom: 1px solid var(--line); }
+h1 { margin: 0 0 6px; font-size: 22px; }
+h2 { font-size: 18px; }
+.muted { color: var(--muted); }
+
+main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px; max-width: 1440px; margin: auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+.wide { grid-column: 1 / -1; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button { border: 1px solid var(--line); background: #1c2948; color: var(--text); border-radius: 7px; padding: 7px 12px; cursor: pointer; }
+button:hover { background: #2b3b64; }
+button:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+button:disabled { opacity: .55; cursor: default; }
+
+.summary { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 10px; }
+.metric b { display: block; font-size: 20px; }
+.coverage { margin-top: 12px; max-width: 90ch; }
+
+/* Chunk states: color is paired with the status text inside each chip. */
+.request { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+.request:first-child { border-top: 0; }
+.request-title { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.chunks { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.chunk { padding: 7px 9px; border-radius: 7px; border: 1px solid currentColor; min-width: 80px; }
+.chunk.hit, .chunk.l1_hit { color: var(--hit); }
+.chunk.l2_hit { color: var(--l2); }
+.chunk.miss { color: var(--miss); }
+.chunk.not_checked, .chunk.compute { color: var(--pending); }
+.chunk.incomplete { color: var(--incomplete); }
+.chunk.active { box-shadow: 0 0 0 2px var(--text); }
+
+#tree { width: 100%; min-height: 230px; overflow: auto; }
+#tree svg { display: block; width: 100%; min-width: 280px; height: auto; max-height: 380px; }
+.tree-node { fill: #172443; stroke: #7083af; stroke-width: 1.5; }
+.tree-node.current { stroke: var(--text); stroke-width: 3; }
+.tree-edge { stroke: #53658c; stroke-width: 1.5; }
+.tree-label { fill: var(--text); font-size: 10px; text-anchor: middle; }
+#detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+#timeline { display: flex; flex-direction: column; gap: 6px; max-height: 380px; overflow: auto; }
+.event { padding: 8px 10px; background: #0e1628; border-radius: 5px; text-align: left; }
+.event.current { border-color: var(--accent); background: #182643; }
+.event-name { font-weight: 650; }
+.event-detail { color: var(--muted); font-size: 12px; word-break: break-word; }
+</style>
+</head>
+<body>
+<header><h1>__TITLE__</h1><div class="muted">Offline replay viewer · no external assets · ←/→ to step</div></header>
+<main>
+<section class="panel wide">
+  <div class="controls">
+    <button id="reset">Reset</button>
+    <button id="prev">Previous</button>
+    <button id="next">Next</button>
+    <button id="play" aria-pressed="false">Play</button>
+    <label for="seek">Seek event</label><input id="seek" type="range" min="0" value="0">
+    <span id="step-label" class="muted" aria-live="polite"></span>
+  </div>
+  <div id="summary" class="summary"></div>
+  <div id="coverage" class="coverage muted"></div>
+  <div id="tiers" class="muted"></div>
+</section>
+<section class="panel">
+  <h2>Chunks / KV Blocks</h2>
+  <div class="controls">
+    <button id="requests-prev">Earlier requests</button>
+    <button id="requests-next">Later requests</button>
+    <span id="request-page" class="muted"></span>
+  </div>
+  <div id="requests"></div>
+</section>
+<section class="panel">
+  <h2>Prefix Tree</h2>
+  <p class="muted">Relationships in retained events; this is not a live cache snapshot.</p>
+  <div id="tree"></div>
+  <h2>Event Detail</h2>
+  <pre id="detail" class="muted"></pre>
+</section>
+<section class="panel wide">
+  <h2>Request Timeline</h2>
+  <p id="timeline-range" class="muted"></p>
+  <div id="timeline"></div>
+</section>
+</main>
+<script>
+const DATA = __DATA__;
+
+// Display limits: the summary always covers the full workload; these only
+// bound how much retained detail is drawn at once.
+const PAGE_SIZE = 25, TIMELINE_WINDOW = 100, MAX_CHUNKS = 200, MAX_TREE_KEYS = 500;
+const PLAY_INTERVAL_MS = 700;
+
+const events = DATA.events || [], requests = DATA.requests || [];
+const summary = DATA.summary || {}, retention = DATA.retention || {};
+const state = { step: -1, page: 0, timer: null };
+const $ = id => document.getElementById(id);
+const currentEvent = () => (state.step >= 0 ? events[state.step] : null);
+
+const EVENT_LABELS = new Map([
+  ["l1_hit", "GPU prefix cache reused"],
+  ["l2_lookup", "External cache availability probe"],
+  ["l2_hit", "External cache payload found"],
+  ["l2_restore", "KV read from external storage"],
+  ["gpu_import", "KV copy into engine cache enqueued"],
+  ["gpu_export", "KV copy out of engine cache enqueued"],
+  ["storage_put", "Write to storage tier"],
+  ["eviction", "Remove cached KV"],
+  ["promotion", "Copy KV from slow tier to fast tier"],
+  ["prefill_step", "Compute uncached prompt tokens"],
+]);
+
+function escapeText(value) {
+  const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return String(value ?? "").replace(/[&<>"']/g, char => map[char]);
+}
+
+// ---- Static sections: rendered once ----
+
+function renderSummary() {
+  const counts = summary.event_counts || {};
+  if (!summary.event_counts) events.forEach(e => { counts[e.event_type] = (counts[e.event_type] || 0) + 1; });
+  const sum = types => types.reduce((n, type) => n + (counts[type] || 0), 0);
+  const storageTypes = Object.keys(counts).filter(type => type.startsWith("storage_"));
+
+  const metrics = [
+    ["Requests", summary.requests || 0],
+    ["Chunks", summary.total_chunks || 0],
+    ["Reused", summary.matched_chunks || 0],
+    ["Hit rate", ((summary.hit_rate || 0) * 100).toFixed(1) + "%"],
+    ["Storage events", sum(storageTypes)],
+    ["Evictions", sum(["eviction"])],
+    ["Tier promotions", sum(["promotion"])],
+    ["GPU events", sum(["gpu_export", "cpu_offload", "gpu_import", "l2_restore", "l1_hit", "l2_hit"])],
+  ];
+  if (summary.l1_hit_blocks !== undefined) {
+    metrics.push(["L1 reused blocks", summary.l1_hit_blocks], ["L2 reused blocks", summary.l2_hit_blocks]);
+  }
+  if (summary.observed_requests) {
+    // Keep what the dataset reported apart from what this replay simulated.
+    metrics.push(["Dataset-observed cached tokens", summary.observed_cached_tokens || 0],
+                 ["Simulated reused tokens", summary.matched_tokens || 0]);
+  }
+  $("summary").innerHTML = metrics.map(([label, value]) =>
+    `<div class="metric"><span class="muted">${escapeText(label)}</span><b>${escapeText(value)}</b></div>`).join("");
+
+  const partial = retention.events_omitted > 0 || retention.requests_omitted > 0;
+  const sampleEvery = retention.sample_every || 1;
+  $("coverage").textContent = [
+    `Displayed detail: ${requests.length} of ${summary.requests ?? requests.length} requests;`,
+    `${events.length} of ${retention.events_total ?? events.length} events.`,
+    sampleEvery > 1 ? `One event per ${sampleEvery} observations is selected, starting at sequence 0, until the event limit is reached.` : "",
+    partial ? "Some detail is omitted. Summary totals include the full processed workload; the tree and timeline show retained events only."
+            : "All processed detail is retained.",
+  ].filter(Boolean).join(" ");
+
+  const tiers = Object.entries(summary.storage_hits || {});
+  $("tiers").textContent = tiers.length
+    ? "Storage reads served: " + tiers.map(([tier, count]) => `${tier}: ${count}`).join(" · ") : "";
+}
+
+// The tree layout depends only on retained events, so it is laid out once;
+// each step just moves the "current" highlight.
+const treeCircles = new Map();
+function renderTree() {
+  const nodes = new Map();
+  for (const e of events) {
+    if (!e.key || (!nodes.has(e.key) && nodes.size >= MAX_TREE_KEYS)) continue;
+    const previous = nodes.get(e.key);
+    nodes.set(e.key, { key: e.key, parent: e.parent_key ?? (previous && previous.parent) });
+  }
+  const list = [...nodes.values()];
+  if (!list.length) { $("tree").innerHTML = '<span class="muted">No key events</span>'; return; }
+
+  const depthOf = node => {
+    const seen = new Set([node.key]);
+    let level = 0;
+    while (node.parent && nodes.has(node.parent) && !seen.has(node.parent)) {
+      seen.add(node.parent); node = nodes.get(node.parent); level++;
+    }
+    return level;
+  };
+  const rows = [];
+  list.forEach(n => { n.depth = depthOf(n); (rows[n.depth] ||= []).push(n); });
+  const width = Math.max(500, rows.length * 180);
+  rows.forEach(row => row.forEach((n, i) => { n.x = (i + 1) * width / (row.length + 1); n.y = 70 + n.depth * 70; }));
+
+  const edges = list.filter(n => nodes.has(n.parent)).map(n => {
+    const p = nodes.get(n.parent);
+    return `<line class="tree-edge" x1="${p.x}" y1="${p.y}" x2="${n.x}" y2="${n.y}"/>`;
+  }).join("");
+  const labels = list.map((n, i) =>
+    `<g><circle class="tree-node" data-index="${i}" cx="${n.x}" cy="${n.y}" r="20"/>` +
+    `<text class="tree-label" x="${n.x}" y="${n.y + 4}">${escapeText(n.key.slice(0, 6))}</text></g>`).join("");
+  $("tree").innerHTML =
+    `<svg role="img" aria-label="Prefix relationships from up to ${MAX_TREE_KEYS} keys in retained events" viewBox="0 0 ${width} ${20 + rows.length * 70}">${edges}${labels}</svg>` +
+    `<p class="muted">Showing up to ${MAX_TREE_KEYS} keys from retained events. Missing ancestors may have been omitted.</p>`;
+  document.querySelectorAll("#tree circle").forEach(c => treeCircles.set(list[c.dataset.index].key, c));
+}
+
+// ---- Step-dependent sections ----
+
+function renderRequests() {
+  const e = currentEvent();
+  const start = state.page * PAGE_SIZE, end = Math.min(start + PAGE_SIZE, requests.length);
+  $("request-page").textContent = requests.length ? `${start + 1}–${end} of ${requests.length} retained` : "No request detail retained";
+  $("requests-prev").disabled = state.page === 0;
+  $("requests-next").disabled = end >= requests.length;
+
+  $("requests").innerHTML = requests.slice(start, end).map(r => {
+    const activeChunk = e && e.request_id === r.request_id ? e.chunk_index : null;
+    const statuses = r.statuses || [];
+    const chunks = statuses.slice(0, MAX_CHUNKS).map((s, i) =>
+      `<span class="chunk ${escapeText(String(s).toLowerCase())}${i === activeChunk ? " active" : ""}"><b>${i}</b> · ${escapeText(s)}</span>`).join("")
+      + (statuses.length > MAX_CHUNKS ? `<span class="muted">Showing the first ${MAX_CHUNKS} of ${statuses.length} chunk states.</span>` : "");
+    const tiers = r.l1_hit_blocks == null ? "" :
+      `<div class="muted">L1: ${escapeText(r.l1_hit_blocks)} blocks · L2: ${escapeText(r.l2_hit_blocks)} blocks · Prefill computed: ${escapeText(r.computed_tokens)} tokens</div>`;
+    const timing = r.ttft_ms == null ? "" :
+      `<div class="muted">Measured TTFT: ${escapeText(r.ttft_ms.toFixed(1))} ms · includes synchronous L2 writes and tracing</div>`;
+    return `<div class="request"><div class="request-title"><b>${escapeText(r.request_id)}</b>` +
+      `<span class="muted">${escapeText(r.matched_chunks)}/${escapeText(r.total_chunks)} chunks</span></div>` +
+      `${tiers}${timing}<div class="chunks">${chunks || '<span class="muted">no chunks</span>'}</div></div>`;
+  }).join("") || '<p class="muted">Request detail was omitted or the workload is empty. Use the summary totals above.</p>';
+}
+
+function renderTimeline() {
+  // A sliding window keeps the DOM small and the current event in view.
+  const start = Math.max(0, Math.min(state.step - 40, events.length - TIMELINE_WINDOW));
+  const end = Math.min(start + TIMELINE_WINDOW, events.length);
+  $("timeline-range").textContent = events.length
+    ? `Showing retained events ${start + 1}–${end} of ${events.length}. Event labels preserve original sequence numbers.`
+    : "No event detail retained. Summary statistics remain available.";
+  $("timeline").innerHTML = events.slice(start, end).map((e, offset) => {
+    const i = start + offset, current = i === state.step;
+    const detail = [`request=${escapeText(e.request_id)}`];
+    if (e.chunk_index != null) detail.push(`chunk=${escapeText(e.chunk_index)}`);
+    if (e.result != null) detail.push(escapeText(e.result));
+    if (e.metadata && e.metadata.backend) detail.push(`tier=${escapeText(e.metadata.backend)}`);
+    return `<button type="button" class="event${current ? " current" : ""}" data-index="${i}" aria-pressed="${current}">` +
+      `<span class="event-name">${[e.sequence, e.event_type, EVENT_LABELS.get(e.event_type)].filter(x => x != null).map(escapeText).join(" · ")}</span><br>` +
+      `<span class="event-detail">${detail.join(" · ")}</span></button>`;
+  }).join("");
+}
+
+let highlighted = null;
+function render() {
+  const e = currentEvent();
+  $("step-label").textContent = events.length ? `Step ${state.step + 1} / ${events.length}` : "No events";
+  $("detail").textContent = e ? JSON.stringify(e, null, 2) : "Select Next or click an event.";
+  Object.assign($("seek"), { max: Math.max(0, events.length - 1), value: Math.max(0, state.step), disabled: !events.length });
+  $("prev").disabled = state.step < 0;
+  $("next").disabled = state.step >= events.length - 1;
+  $("play").disabled = !events.length;
+
+  // Follow the current event to the page that shows its request.
+  const index = e ? requests.findIndex(r => r.request_id === e.request_id) : -1;
+  if (index >= 0) state.page = Math.floor(index / PAGE_SIZE);
+
+  if (highlighted) highlighted.classList.remove("current");
+  highlighted = (e && treeCircles.get(e.key)) || null;
+  if (highlighted) highlighted.classList.add("current");
+
+  renderRequests();
+  renderTimeline();
+}
+
+// ---- Controls ----
+
+function goTo(step) {
+  state.step = Math.max(-1, Math.min(events.length - 1, step));
+  render();
+}
+function setPlaying(playing) {
+  clearInterval(state.timer);
+  state.timer = playing ? setInterval(() => {
+    if (state.step >= events.length - 1) setPlaying(false); else goTo(state.step + 1);
+  }, PLAY_INTERVAL_MS) : null;
+  $("play").textContent = playing ? "Pause" : "Play";
+  $("play").setAttribute("aria-pressed", String(playing));
+}
+
+$("reset").onclick = () => { setPlaying(false); goTo(-1); };
+$("prev").onclick = () => goTo(state.step - 1);
+$("next").onclick = () => goTo(state.step + 1);
+$("play").onclick = () => setPlaying(!state.timer);
+$("seek").oninput = () => goTo(Number($("seek").value));
+$("timeline").onclick = event => {
+  const button = event.target.closest(".event");
+  if (button) goTo(Number(button.dataset.index));
+};
+$("requests-prev").onclick = () => { state.page--; renderRequests(); };
+$("requests-next").onclick = () => { state.page++; renderRequests(); };
+document.addEventListener("keydown", event => {
+  if (event.target.matches("input, textarea")) return;
+  if (event.key === "ArrowLeft") goTo(state.step - 1);
+  if (event.key === "ArrowRight") goTo(state.step + 1);
+});
+
+renderSummary();
+renderTree();
+render();
+</script>
+</body>
+</html>
