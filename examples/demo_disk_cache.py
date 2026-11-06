@@ -63,7 +63,7 @@ def main() -> None:
         print(f"  chunk {index} {chunk} {status}")
 
     recomputed = [compute_kv_payload(c) for c in chunks[result.matched_chunks :]]
-    cache.store(tokens, list(result.values) + recomputed)
+    cache.store(tokens, recomputed, start_chunk=result.matched_chunks)
 
     print(f"\nReused {result.matched_chunks}/{len(chunks)} chunks.")
     print(f"Stored {len(storage)} entries using {storage.nbytes} bytes.")
