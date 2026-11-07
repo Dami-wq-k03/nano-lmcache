@@ -9,6 +9,9 @@ Needs the `hf` extra:
     # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
     uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
+Local checkpoints must carry a stable `revision` in config.json identifying
+their exact weights. Hub checkpoints use their resolved commit automatically.
+
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
 we compare its logits with a from-scratch computation to show that reuse
@@ -34,7 +37,7 @@ from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.protocol import CacheStorage
 from nano_lmcache.storage.tiered import TieredStorage
-from nano_lmcache.tensor.hf import run_with_prefix_cache
+from nano_lmcache.tensor.hf import namespace_for, run_with_prefix_cache
 from nano_lmcache.tensor.offload import CPUOffloadKVCache
 from nano_lmcache.tensor.serializers import TensorSerializer
 
@@ -98,7 +101,7 @@ def main() -> None:
         )
     cache = ChunkedPrefixCache(
         chunk_size=args.chunk_size,
-        namespace=args.model.replace("/", "-"),
+        namespace=namespace_for(model),
         storage=storage,
     )
 

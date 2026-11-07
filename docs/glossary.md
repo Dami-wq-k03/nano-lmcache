@@ -74,6 +74,11 @@ See: [Why can only prefixes be reused?](#3-why-can-only-prefixes-be-reused)
 
 The key of a chunk is a SHA-256 hash of the cache's `namespace`, the previous chunk's key (`prefix_key`), and the chunk's own tokens. Each key includes its parent's key, so it depends on the whole prefix: identical tokens after a different prefix get a different key and are never reused by mistake. The first chunk has no `prefix_key`.
 
+For Hugging Face models, `tensor.hf.namespace_for(model)` derives the namespace
+from model identity, revision, actual dtype, and KV-relevant configuration.
+See the [identity contract](architecture.md#how-a-chunk-key-is-built), including
+how to identify local weights and why generation settings are excluded.
+
 See: [`make_chunk_key`](../src/nano_lmcache/core/chunking.py), [How a chunk key is built](architecture.md#how-a-chunk-key-is-built)
 
 ### Continuous prefix matching

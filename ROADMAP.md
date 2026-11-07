@@ -139,7 +139,7 @@ open an issue to discuss it.
 | G3 | Measure recompute vs. load cost | Medium | Yes | G2 | Merged into N4 |
 | G4 | Byte-based capacity for CPU offload | Medium | Optional | – | Done |
 | G5 | Compress cached KV with int8 quantization | Medium | No | – | Done |
-| G6 | Model-aware cache namespaces | Easy | No | – | [Claimed (#55)](https://github.com/Dami-wq-k03/nano-lmcache/issues/55) |
+| G6 | Model-aware cache namespaces | Easy | No | – | Done |
 | **nano-vLLM integration** | | | | | |
 | N0 | KV block format: export and import nano-vLLM blocks | Medium | No | I1 | Done |
 | N1 | External prefix lookup, cache keys, model namespace | Medium | No | N0 | Done |
@@ -180,8 +180,7 @@ bounded workload replay and capacity comparisons. The initial guided learning pa
 [Chinese](docs/zh-CN/tutorial.md).
 N5 and N6 remain performance follow-ups (see
 [the TTFT report](docs/nanovllm-benchmark.md)). Check the corresponding
-GitHub issue before starting a task. G6 is assigned to `DiQu1997` in
-[#55](https://github.com/Dami-wq-k03/nano-lmcache/issues/55), and V1 to
+GitHub issue before starting a task. V1 is assigned to
 `WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
 `Claimed` records an assignment, not a completed implementation; check the
 linked issue for current ownership and progress.
@@ -691,19 +690,23 @@ accuracy, and only the model's output can judge it.
 
 ### G6: Model-aware cache namespaces
 
-**Status: claimed** by `DiQu1997` in
-[#55](https://github.com/Dami-wq-k03/nano-lmcache/issues/55); not yet merged.
+**Status: done.** `tensor.hf.namespace_for(model)` and the real-model demo
+derive stable namespaces from model identity, actual dtype, and KV-relevant
+config. CPU tests in `tests/unit/test_hf_namespace.py` cover process stability,
+configuration changes, and shared-storage isolation. See
+[architecture](docs/architecture.md#how-a-chunk-key-is-built) for the identity
+contract and exclusions. Task: [#55](https://github.com/Dami-wq-k03/nano-lmcache/issues/55).
 
 The namespace is the only thing that keeps KV from different models
-apart, and today the caller can pass any string. Reusing KV computed by
+apart; the core still lets callers pass any string. Reusing KV computed by
 another model, revision, or dtype silently produces wrong outputs.
 
-To do: add `namespace_for(model)` in `tensor/hf.py`, which derives a
+`namespace_for(model)` in `tensor/hf.py` derives a
 stable namespace (for example a hash of sorted JSON) from what determines
 KV: model name and revision, dtype, layer, head, and head-size counts,
-and RoPE settings. Explain which config fields matter and which do not:
-generation settings, for example, do not change KV. Use the helper in
-`examples/demo_kv_reuse.py`.
+and RoPE settings. The docs explain which config fields matter and which do
+not: generation settings, for example, do not change KV for fixed input IDs.
+The helper is used in `examples/demo_kv_reuse.py`.
 
 Acceptance criteria:
 
