@@ -9,6 +9,7 @@ from nano_lmcache.core.prefix_cache import ChunkedPrefixCache  # noqa: E402
 from nano_lmcache.tensor.hf import (  # noqa: E402
     cache_to_layers,
     layers_to_cache,
+    namespace_for,
     run_with_prefix_cache,
 )
 from nano_lmcache.tensor.kv_chunks import split_kv  # noqa: E402
@@ -35,13 +36,15 @@ def model():
         head_dim=8,
         max_position_embeddings=256,
     )
+    config.name_or_path = "test/tiny-qwen3"
+    config.revision = "seed-0-v1"
     torch.manual_seed(0)
     return transformers.AutoModelForCausalLM.from_config(config).eval()
 
 
 @pytest.fixture
-def cache():
-    return ChunkedPrefixCache(chunk_size=CHUNK_SIZE, namespace="tiny-qwen3")
+def cache(model):
+    return ChunkedPrefixCache(chunk_size=CHUNK_SIZE, namespace=namespace_for(model))
 
 
 def full_forward(model, token_ids):
