@@ -75,6 +75,26 @@ graph LR
 
 第一个分块没有 `prefix_key`。因此，即使两个分块包含相同的 token，只要它们之前的前缀不同，就会生成不同的键，从而避免错误复用缓存。
 
+对于 Hugging Face 模型，在加载权重并转换到推理精度后调用
+`tensor.hf.namespace_for(model)`，用法见 `examples/demo_kv_reuse.py`。
+它将模型名称、确定的 revision、实际 `model.dtype`、模型类和影响 KV 的配置
+序列化为键排序的 JSON，再生成带版本的 `hf-kv/v1/...` 哈希命名空间。
+核心仍只接收字符串，不导入 torch。
+
+配置采用保守保留策略，仅排除已知的加载元数据、输出格式开关和解码设置。
+层数、注意力头及 KV 头数、head dimension、hidden size、RoPE 配置
+（包括嵌套的 `rope_parameters` 或 `rope_scaling`）、归一化 epsilon、MLP 和激活函数
+都会改变张量布局或后续层计算 KV 所用的隐藏状态。未知字段也予以保留；多一次 miss
+比错误命中更安全。对于给定的输入 token ID，temperature、top-k、beam 数等生成设置
+不会改变其 KV；它们可能改变未来采样出的 token，而这些 token 已参与分块键计算。
+
+Hub 检查点使用 `config._commit_hash` 作为确定的 revision。本地或合成模型必须提供
+非空 `config.name_or_path`，并用稳定的 `config.revision` 标识确切权重；缺少身份时
+抛出 `ValueError`。这只是元数据指纹，不是权重校验和。微调、更换 adapter 或原地替换
+权重后，需要更新身份并创建新的缓存。使用 eval 模式和固定 dtype，不要切换 autocast
+策略。配置相同但随机权重不同的模型不能互换。旧的仅模型名磁盘缓存会被隔离，使用新
+命名空间时不会命中。
+
 ### `store(token_ids, chunk_values)`
 
 ```mermaid

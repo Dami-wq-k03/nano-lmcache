@@ -89,6 +89,33 @@ graph LR
 The first chunk has no `prefix_key`. Identical tokens after a different
 prefix therefore get a different key and are never reused by mistake.
 
+For Hugging Face models, use `tensor.hf.namespace_for(model)` after loading
+the weights and converting to the inference dtype, as in
+`examples/demo_kv_reuse.py`. It hashes sorted JSON containing the model name,
+resolved revision, actual `model.dtype`, model class, and KV-relevant config
+into a versioned `hf-kv/v1/...` namespace. The core still receives only a
+string and never imports torch.
+
+The config is retained conservatively, excluding known loading metadata,
+output flags, and decoding settings. Layer count, attention and KV head
+counts, head dimension, hidden size, RoPE settings (including nested
+`rope_parameters` or `rope_scaling`), normalization epsilon, and MLP/activation
+settings matter: they change tensor layout or the hidden states used to
+compute later layers' KV. Unknown fields are kept; an extra miss is safer
+than a wrong hit. Generation settings such as temperature, top-k, and beam
+count do not change KV for *given input token IDs*. They can change future
+sampled tokens, which are already part of the chunk keys.
+
+Hub checkpoints use `config._commit_hash` as the resolved revision. Local or
+synthetic models must supply a nonempty `config.name_or_path` and a stable
+`config.revision` identifying the exact weights; missing identity raises
+`ValueError`. This is a metadata fingerprint, not a weight checksum. After
+fine-tuning, adapter changes, or replacing weights at the same path, assign
+a new identity and create a new cache. Use evaluation mode and a fixed dtype
+without changing autocast policy. Identical configs with different random
+weights are not interchangeable. Old model-name-only disk entries remain
+isolated and will miss under the new namespace.
+
 ### `store(token_ids, chunk_values)`
 
 ```mermaid
