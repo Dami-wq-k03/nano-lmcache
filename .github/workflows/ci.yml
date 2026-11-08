@@ -17,16 +17,19 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked
+        # The nano-vLLM group pulls a large CUDA-only flash-attn wheel. It is
+        # not needed by the ordinary lint/type/unit-test job and should not
+        # make that job depend on a separate GitHub release asset.
+        run: uv sync --locked --no-group nanovllm
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --locked --no-group nanovllm ruff check .
 
       - name: Type check
-        run: uv run mypy src/nano_lmcache
+        run: uv run --locked --no-group nanovllm mypy src/nano_lmcache
 
       - name: Test
-        run: uv run pytest
+        run: uv run --locked --no-group nanovllm pytest
 
   tensor-test:
     runs-on: ubuntu-latest
@@ -40,7 +43,9 @@ jobs:
           enable-cache: true
 
       - name: Install CPU tensor test dependencies
-        run: uv sync --locked --group tensor-test
+        # Keep the CPU tensor group, but do not resolve the unrelated
+        # nano-vLLM/flash-attn integration dependencies on this runner.
+        run: uv sync --locked --group tensor-test --no-group nanovllm
 
       - name: Test CPU tensor and Hugging Face support
-        run: uv run --locked --group tensor-test pytest -m "torch and not gpu"
+        run: uv run --locked --group tensor-test --no-group nanovllm pytest -m "torch and not gpu"
