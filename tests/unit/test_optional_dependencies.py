@@ -26,6 +26,7 @@ def test_importing_the_package_does_not_import_torch():
         "import nano_lmcache.core.prefix_cache\n"
         "import nano_lmcache.storage.memory\n"
         "import nano_lmcache.storage.protocol\n"
+        "import nano_lmcache.integrations.vllm\n"
         "heavy = [m for m in ('torch', 'transformers', 'vllm') if m in sys.modules]\n"
         "assert not heavy, heavy\n"
     )

@@ -189,6 +189,7 @@ understood without a GPU or an inference engine.
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
+| `integrations/vllm/nano_lmcache_connector.py` | No-op vLLM 0.33.0 connector with scheduler/worker lifecycle logs; [GPU validation](vllm-kv-connector.md#real-request-validation-2026-11-08) |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 | `observability/` | Request context, trace events, recorder, and storage tracing |
