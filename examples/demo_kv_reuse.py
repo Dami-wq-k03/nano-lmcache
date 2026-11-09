@@ -9,8 +9,8 @@ Needs the `hf` extra:
     # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
     uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
-Local checkpoints must carry a stable `revision` in config.json identifying
-their exact weights. Hub checkpoints use their resolved commit automatically.
+All checkpoints require `--revision` with a stable identifier of the exact
+weights (update it when weights change).
 
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
@@ -61,6 +61,11 @@ def timed(function):  # type: ignore[no-untyped-def]
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument(
+        "--revision",
+        help="require exact-weights ID for a model",
+        default="c1899de289a04d12100db370d81485cdf75e47ca"
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument(
@@ -75,10 +80,20 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    if not args.revision:
+        parser.error(
+            "models require --revision identifying the exact weights"
+        )
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=args.revision)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32
+        args.model,
+        revision=args.revision,
+        torch_dtype=torch.float32,
     ).to(args.device).eval()
+
+    model.config.revision = args.revision
+    namespace = namespace_for(model)
 
     prompts = {
         "A": DOCUMENT + "Question: what does the plan add?",
@@ -101,7 +116,7 @@ def main() -> None:
         )
     cache = ChunkedPrefixCache(
         chunk_size=args.chunk_size,
-        namespace=namespace_for(model),
+        namespace=namespace,
         storage=storage,
     )
 

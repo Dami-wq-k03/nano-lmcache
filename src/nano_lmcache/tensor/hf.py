@@ -52,8 +52,7 @@ def namespace_for(model: Any) -> str:
     head dimensions, RoPE, norm epsilon, and MLP settings that affect later
     layers' KV. Generation settings do not affect KV for fixed input tokens.
 
-    Hub models use config._commit_hash. For local or synthetic models, set
-    config.revision to a stable identifier of the exact weights, and give
+    Set model.config.revision to a stable identifier of the exact weights, and give
     config.name_or_path a nonempty name. Missing identity raises ValueError.
     This hashes metadata, not weights: after fine-tuning, adapter changes, or
     weight replacement, update the identity and create a new cache. Use an
