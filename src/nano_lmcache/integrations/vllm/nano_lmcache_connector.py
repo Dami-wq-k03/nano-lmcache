@@ -19,7 +19,6 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.logger import init_logger
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
-from nano_lmcache.tensor.hf import namespace_for
 
 if TYPE_CHECKING:
     import torch
