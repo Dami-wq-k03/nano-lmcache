@@ -9,10 +9,8 @@ Needs the `hf` extra:
     # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
     uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
-Hub checkpoints use the loaded config's `_commit_hash` as `config.revision`.
-Local checkpoints require `--revision` with a stable identifier of the exact
-weights (update it when weights change), even if config.json has a revision.
-The model path supplies a nonempty `config.name_or_path` if needed.
+All checkpoints require `--revision` with a stable identifier of the exact
+weights (update it when weights change).
 
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
