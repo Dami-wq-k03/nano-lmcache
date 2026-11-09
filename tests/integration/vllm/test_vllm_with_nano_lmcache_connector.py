@@ -1,12 +1,14 @@
-"""Compare real vLLM generation and local prefix reuse with a no-op connector.
+"""Validate real vLLM generation with scheduler lookup and empty external storage.
 
 Requires vLLM 0.33.0, a CUDA GPU and cached Qwen/Qwen3-0.6B weights:
 
     CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m pytest -q -s \
         tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py
 
-KV reuse here means vLLM's automatic prefix cache (APC). The connector still
-reports zero external hits and performs no external KV loads or saves.
+KV reuse here means vLLM's automatic prefix cache (APC). The connector queries
+external storage, which stays empty because worker saves are not implemented.
+Populated-storage accounting is covered by the direct connector unit tests;
+generation with positive external hits requires the worker load path.
 """
 
 import json
@@ -110,6 +112,7 @@ def _generate_cold_warm_reset(
 
 @pytest.mark.parametrize("enable_prefix_caching", [False, True], ids=["no-apc", "apc"])
 def test_vllm_generates_with_nano_lmcache_connector(monkeypatch, enable_prefix_caching):
+    """Empty external storage preserves generation and does not double-count APC."""
     monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
@@ -125,9 +128,9 @@ def test_vllm_generates_with_nano_lmcache_connector(monkeypatch, enable_prefix_c
     assert connector_prompt == baseline_prompt
     # Compare exact token IDs, cache hit counts and finish reasons in each phase.
     assert connected == baseline
-    expected_hits = [0, 6 * BLOCK_SIZE if enable_prefix_caching else 0, 0]
+    expected_local_hits = [0, 6 * BLOCK_SIZE if enable_prefix_caching else 0, 0]
     for results in (baseline, connected):
-        assert [result.cached_tokens for result in results] == expected_hits
+        assert [result.cached_tokens for result in results] == expected_local_hits
         assert results[0].token_ids == results[1].token_ids == results[2].token_ids
         assert all(result.finish_reason == "length" for result in results)
     # Keep the actual IDs and hit counts alongside lifecycle logs for the
@@ -138,6 +141,7 @@ def test_vllm_generates_with_nano_lmcache_connector(monkeypatch, enable_prefix_c
             {
                 "model": MODEL,
                 "enable_prefix_caching": enable_prefix_caching,
+                "external_cache_state": "empty",
                 "prompt_token_ids": baseline_prompt,
                 "phases": ["cold", "warm", "reset"],
                 "baseline": [asdict(result) for result in baseline],
