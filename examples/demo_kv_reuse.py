@@ -9,8 +9,10 @@ Needs the `hf` extra:
     # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
     uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
-Local checkpoints must carry a stable `revision` in config.json identifying
-their exact weights. Hub checkpoints use their resolved commit automatically.
+Hub checkpoints use their resolved commit as `model.config.revision`.
+Local checkpoints require `--revision` with a stable identifier of the exact
+weights (update it when weights change), even if config.json has a revision.
+The model path supplies a nonempty `config.name_or_path` if needed.
 
 Two prompts share a long prefix (think: the same document, different
 questions). The second one reuses the first one's KV for that prefix, and
@@ -31,6 +33,7 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils.hub import resolve_revision
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.storage.disk import DiskKVCache
@@ -61,6 +64,10 @@ def timed(function):  # type: ignore[no-untyped-def]
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument(
+        "--revision",
+        help="Hub revision to load; required exact-weights ID for a local model",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--chunk-size", type=int, default=16)
     parser.add_argument(
@@ -75,10 +82,30 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    is_local = Path(args.model).is_dir()
+    commit = None
+    if is_local:
+        if not args.revision or not args.revision.strip():
+            parser.error(
+                "local models require --revision identifying the exact weights"
+            )
+    else:
+        resolved = resolve_revision(args.model, revision=args.revision)
+        commit = getattr(resolved, "resolved", None)
+        if not commit:
+            raise ValueError(f"Could not resolve a commit for model {args.model}.")
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=commit)
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32
+        args.model,
+        revision=commit,
+        dtype=torch.float32,
     ).to(args.device).eval()
+    model.config.revision = args.revision if is_local else commit
+    if not model.config.name_or_path:
+        model.config.name_or_path = args.model
+
+    namespace = namespace_for(model)
 
     prompts = {
         "A": DOCUMENT + "Question: what does the plan add?",
@@ -101,7 +128,7 @@ def main() -> None:
         )
     cache = ChunkedPrefixCache(
         chunk_size=args.chunk_size,
-        namespace=namespace_for(model),
+        namespace=namespace,
         storage=storage,
     )
 
