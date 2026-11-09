@@ -9,7 +9,7 @@ Needs the `hf` extra:
     # GPU -> CPU -> disk. Run twice: the second process reuses KV from disk.
     uv run python examples/demo_kv_reuse.py --device cuda --offload --disk /tmp/kv
 
-Hub checkpoints use their resolved commit as `model.config.revision`.
+Hub checkpoints use the loaded config's `_commit_hash` as `config.revision`.
 Local checkpoints require `--revision` with a stable identifier of the exact
 weights (update it when weights change), even if config.json has a revision.
 The model path supplies a nonempty `config.name_or_path` if needed.
@@ -33,7 +33,6 @@ from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformers.utils.hub import resolve_revision
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.storage.disk import DiskKVCache
@@ -66,7 +65,8 @@ def main() -> None:
     parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
     parser.add_argument(
         "--revision",
-        help="Hub revision to load; required exact-weights ID for a local model",
+        help="require exact-weights ID for a model",
+        default="c1899de289a04d12100db370d81485cdf75e47ca"
     )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--chunk-size", type=int, default=16)
@@ -82,29 +82,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    is_local = Path(args.model).is_dir()
-    commit = None
-    if is_local:
-        if not args.revision or not args.revision.strip():
-            parser.error(
-                "local models require --revision identifying the exact weights"
-            )
-    else:
-        resolved = resolve_revision(args.model, revision=args.revision)
-        commit = getattr(resolved, "resolved", None)
-        if not commit:
-            raise ValueError(f"Could not resolve a commit for model {args.model}.")
+    if not args.revision:
+        parser.error(
+            "models require --revision identifying the exact weights"
+        )
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=commit)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=args.revision)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        revision=commit,
-        dtype=torch.float32,
+        revision=args.revision,
+        torch_dtype=torch.float32,
     ).to(args.device).eval()
-    model.config.revision = args.revision if is_local else commit
-    if not model.config.name_or_path:
-        model.config.name_or_path = args.model
 
+    model.config.revision = args.revision
     namespace = namespace_for(model)
 
     prompts = {
