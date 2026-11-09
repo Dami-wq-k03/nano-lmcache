@@ -131,7 +131,7 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 | 查找概念、命令和实验 | [文档目录](docs/zh-CN/README.md) | 按主题说明 |
 | 理解术语和设计 | [术语与 FAQ（英文）](docs/glossary.md)、[架构](docs/zh-CN/architecture.md) | 核心包即可 |
 | 理解引擎适配层 | [nano-vLLM 集成设计（英文）](docs/nanovllm-integration.md) | 运行需要 GPU；源码可独立阅读 |
-| 探索完整 vLLM 的 Connector API | [vLLM 调研笔记（英文）](docs/vllm-kv-connector.md) | 当前是源码调研，Connector 尚待实现 |
+| 探索完整 vLLM 的 Connector API | [vLLM Connector 指南（英文）](docs/vllm-kv-connector.md) | 空操作 Connector、真实请求日志与 GPU 输出对照 |
 | 学习 Prefill/Decode 交接 | [PD 指南](docs/zh-CN/pd-disaggregation.md) | Toy model，只需核心包 |
 
 核心包没有运行时依赖。PyTorch 和推理引擎依赖均为可选项，安装与测试命令统一见
@@ -140,7 +140,8 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 ## 项目范围与贡献
 
 这是一个用于理解 LMCache 类系统的教学实现。
-已经可运行的引擎集成面向 nano-vLLM；完整 vLLM 集成当前处于调研阶段。
+nano-vLLM 已支持外部 KV 复用；完整 vLLM 集成已提供经过验证的空操作 Connector，
+外部 KV 查询和传输仍待实现。
 PD 分离使用确定性的 toy model 和模拟时间线。
 生产性能和 LMCache API 兼容性不属于当前项目目标。
 

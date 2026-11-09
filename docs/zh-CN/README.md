@@ -13,7 +13,7 @@
 | [术语表与 FAQ（英文）](../glossary.md) | KV、Prefill、Decode、TTFT、Chunk、Block 和常见误解 |
 | [架构](architecture.md) | 当前模块、不变量、容量统计、序列化和并发边界 |
 | [nano-vLLM 集成（英文）](../nanovllm-integration.md) | 引擎块布局、L1/L2 查询、恢复/保存钩子及正确性规则 |
-| [vLLM Connector 调研（英文）](../vllm-kv-connector.md) | 推荐上游版本、Connector 生命周期、Block/Chunk 映射及 ExampleConnector 局限；仅源码调研 |
+| [vLLM Connector 指南（英文）](../vllm-kv-connector.md) | 固定版本、空操作 Connector、真实请求日志、输出/APC 对照和 Block/Chunk 映射 |
 | [PD 分离](pd-disaggregation.md) | Prefill/Decode Worker、KV 交接格式、所有权、失败处理，以及 TTFT 与卡顿的取舍 |
 
 ## 运行与观察

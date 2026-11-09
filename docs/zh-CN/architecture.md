@@ -188,6 +188,7 @@ graph LR
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`：L2 块计数、读取和保存 |
 | `integrations/nanovllm/engine.py` | `attach()`：在运行中的引擎内恢复 L2、保存新块（需要 nano-vLLM） |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`：引擎块与张量载荷之间转换（需要 torch） |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 空操作 Connector，记录 scheduler/worker 生命周期；[GPU 验证（英文）](../vllm-kv-connector.md#real-request-validation-2026-11-08) |
 | `observability/` | 请求上下文、事件模式、Recorder 与存储 Trace |
 | `datasets/`、`replay/` | 合成/Token 工作负载、FreeInference 适配与回放报告 |
 | `visualization/`、`visualize.py` | 导入已有 Trace，生成离线 HTML 查看器 |

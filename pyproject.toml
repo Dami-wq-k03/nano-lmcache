@@ -66,10 +66,10 @@ python_version = "3.11"
 mypy_path = "src"
 strict = true
 
-# torch, transformers, and nano-vLLM are optional; CI type-checks without them,
+# torch, transformers, nano-vLLM, and vLLM are optional; CI checks without them,
 # and nano-vLLM ships no type information.
 [[tool.mypy.overrides]]
-module = ["torch", "torch.*", "transformers", "transformers.*", "nanovllm", "nanovllm.*"]
+module = ["torch", "torch.*", "transformers", "transformers.*", "nanovllm", "nanovllm.*", "vllm", "vllm.*"]
 ignore_missing_imports = true
 
 # On Linux, take torch from PyTorch's CUDA 12.4 index. PyPI's default Linux

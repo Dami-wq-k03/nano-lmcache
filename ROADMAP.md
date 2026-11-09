@@ -72,8 +72,8 @@ Done (pure Python, no GPU dependency):
 - [x] Synthetic workload replay (`datasets/`, `replay/`, DATA-1); the
       FreeInference opaque-block adapter has an initial version (DATA-2),
       with streaming replay, bounded detail, and exact online totals (VIS-11)
-- [x] Source research for the proposed vLLM 0.32.0 connector
-      (`docs/vllm-kv-connector.md`, V0); implementation is tracked by V1–V5
+- [x] Source research for the vLLM 0.33.0 connector (V0) and a validated
+      no-op connector (V1); external KV reuse is tracked by V2–V5
 
 Done (optional torch / GPU layer):
 
@@ -150,7 +150,7 @@ open an issue to discuss it.
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
 | **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
-| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | [Claimed (#25)](https://github.com/Dami-wq-k03/nano-lmcache/issues/25) |
+| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented and validated; not merged ([#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25)) |
 | V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | [Open (#26)](https://github.com/Dami-wq-k03/nano-lmcache/issues/26) |
 | V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | [Open (#27)](https://github.com/Dami-wq-k03/nano-lmcache/issues/27) |
 | V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | [Open (#28)](https://github.com/Dami-wq-k03/nano-lmcache/issues/28) |
@@ -890,12 +890,12 @@ before and after; all disk backend tests still pass.
 
 ## vLLM connector research
 
-**V0: done.** [Research notes](docs/vllm-kv-connector.md) pin the proposed
-implementation target to vLLM 0.32.0 and review its scheduler/worker hooks,
+**V0: done.** [Research notes](docs/vllm-kv-connector.md) pin the
+implementation target to vLLM 0.33.0 and review its scheduler/worker hooks,
 block tables and slot mapping, block-to-chunk conversion, APC versus external
 storage, and ExampleConnector's limitations against that release's source.
-This is documentation only; a working connector and GPU validation remain
-future work.
+V1 now provides a no-op connector with real-request GPU validation;
+external lookup, saves and restores remain V2–V5 work.
 
 V1–V5 track that implementation separately from the completed nano-vLLM
 integration. Use the V0 version baseline and a separate vLLM environment;
@@ -905,8 +905,11 @@ Start with one GPU, dense full attention, unquantized KV, and
 
 ### V1: Minimal connector skeleton
 
-**Status: claimed** by `WHoutstanding` in
-[#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25); not yet merged.
+**Status: implemented and validated; not yet merged.** Claimed by
+`WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
+The [validation record](docs/vllm-kv-connector.md#real-request-validation-2026-11-08)
+includes Qwen3-0.6B token-ID comparisons, local APC hit counts and real
+scheduler/worker logs from vLLM 0.33.0 on an RTX 4080.
 
 Prerequisites: I1, V0.
 

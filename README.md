@@ -142,7 +142,7 @@ GPU, local model weights, and the `nanovllm` dependency group.
 | Find a concept, command, or experiment | [Documentation index](docs/README.md) | Varies by topic |
 | Understand terminology and design | [Glossary and FAQ](docs/glossary.md), [architecture](docs/architecture.md) | Core package only |
 | Understand the engine adapter | [nano-vLLM integration design](docs/nanovllm-integration.md) | GPU to run; source readable independently |
-| Explore the full vLLM connector API | [vLLM research notes](docs/vllm-kv-connector.md) | Source review only; connector implementation is future work |
+| Explore the full vLLM connector API | [vLLM connector guide](docs/vllm-kv-connector.md) | No-op connector, real request logs and GPU output comparisons |
 | Study prefill/decode handoff | [PD guide](docs/pd-disaggregation.md) | Toy model; core package only |
 
 The core package has no runtime dependencies. PyTorch and inference-engine
@@ -152,8 +152,9 @@ dependencies are optional; installation and test commands live in
 ## Scope and contributing
 
 This is a teaching implementation for understanding LMCache-style systems.
-The working engine integration targets nano-vLLM; full vLLM integration is
-currently research. PD disaggregation uses a deterministic toy model and a
+External KV reuse works with nano-vLLM. The full vLLM integration provides a
+validated no-op connector; external KV lookup and transfer remain future work.
+PD disaggregation uses a deterministic toy model and a
 simulated timeline. Production performance and LMCache API compatibility
 are outside the project's current goals.
 
