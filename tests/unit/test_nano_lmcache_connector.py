@@ -1,9 +1,10 @@
 """Call the vLLM connector directly, without an LLM, model weights or GPU.
 
 Run with:
-    .venv/bin/python -m pytest -q tests/integration/vllm/test_nano_lmcache_connector.py
+    .venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
 
-Tests exercise the no-op contract and lifecycle tracing against real vLLM.
+Tests exercise scheduler prefix lookup, no-op worker hooks and lifecycle
+tracing against real vLLM. Lookup payloads are placeholders, not usable KV.
 """
 
 # Optional dependencies must be checked before importing the connector.
@@ -15,8 +16,6 @@ from types import SimpleNamespace
 import pytest
 
 torch = pytest.importorskip("torch")
-# The tests/integration/vllm directory can appear as a namespace package.
-# Check an engine submodule so CPU-only collection skips without real vLLM.
 pytest.importorskip("vllm.config")
 
 
@@ -51,7 +50,8 @@ def make_connector():
             kv_transfer_config=KVTransferConfig(
                 kv_connector="NanoLMCacheConnector",
                 kv_role="kv_both",
-            )
+            ),
+            cache_config=SimpleNamespace(block_size=4),
         )
         cache_config = KVCacheConfig(
             num_blocks=0, kv_cache_tensors=[], kv_cache_groups=[]
@@ -98,7 +98,6 @@ def test_connector_can_be_constructed(make_connector, role):
 
 @pytest.mark.parametrize("role", [KVConnectorRole.SCHEDULER, KVConnectorRole.WORKER])
 def test_factory_loads_external_connector(role):
-    """Exercise the external-module route used by --kv-transfer-config."""
     config = SimpleNamespace(
         kv_transfer_config=KVTransferConfig(
             kv_connector="NanoLMCacheConnector",
@@ -108,6 +107,7 @@ def test_factory_loads_external_connector(role):
             kv_role="kv_both",
         ),
         scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=True),
+        cache_config=SimpleNamespace(block_size=4),
     )
     cache_config = KVCacheConfig(
         num_blocks=0, kv_cache_tensors=[], kv_cache_groups=[]
@@ -121,7 +121,9 @@ def test_factory_loads_external_connector(role):
 
 
 @pytest.mark.parametrize("num_computed_tokens", [0, 4, 8])
-def test_scheduler_reports_zero_matches(scheduler, request_stub, num_computed_tokens):
+def test_scheduler_reports_zero_matches_with_empty_cache(
+    scheduler, request_stub, num_computed_tokens
+):
     request_stub.num_computed_tokens = num_computed_tokens
     original_tokens = list(request_stub.prompt_token_ids)
 
@@ -131,6 +133,102 @@ def test_scheduler_reports_zero_matches(scheduler, request_stub, num_computed_to
         ) == (0, False)
     assert request_stub.prompt_token_ids == original_tokens
     assert request_stub.num_computed_tokens == num_computed_tokens
+
+
+def test_scheduler_reports_matches_only_after_cache_is_populated(
+    scheduler, request_stub
+):
+    request_stub.prompt_token_ids = list(range(13))
+    cache = scheduler._nano_lmcache_engine
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
+
+    cache.store(request_stub.prompt_token_ids, [b"kv-0", b"kv-1", b"kv-2"])
+    # A different request can reuse the same prefix; IDs are not cache keys.
+    request_stub.request_id = "req-2"
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
+
+
+@pytest.mark.parametrize(
+    ("cached_tokens", "local_tokens", "expected"),
+    [
+        (12, 0, 12),
+        (12, 4, 8),
+        (12, 8, 4),
+        (12, 12, 0),
+        (8, 4, 4),
+        (8, 8, 0),
+        (4, 8, 0),
+    ],
+)
+def test_scheduler_reports_only_additional_matches(
+    scheduler, request_stub, cached_tokens, local_tokens, expected
+):
+    tokens = list(range(13))
+    request_stub.prompt_token_ids = tokens.copy()
+    request_stub.num_computed_tokens = 0
+    scheduler._nano_lmcache_engine.store(
+        tokens[:cached_tokens], [b"kv"] * (cached_tokens // 4)
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, local_tokens) == (
+        expected,
+        False,
+    )
+    assert request_stub.prompt_token_ids == tokens
+    assert request_stub.num_computed_tokens == 0
+
+
+@pytest.mark.parametrize(
+    ("prompt_length", "expected"),
+    [(1, 0), (3, 0), (4, 0), (5, 4), (7, 4), (8, 4), (12, 8), (13, 12)],
+)
+def test_scheduler_reuses_complete_chunks_and_leaves_token_for_logits(
+    scheduler, request_stub, prompt_length, expected
+):
+    scheduler._nano_lmcache_engine.store(list(range(16)), [b"kv"] * 4)
+    request_stub.prompt_token_ids = list(range(prompt_length))
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (expected, False)
+
+
+@pytest.mark.parametrize("token_ids", [None, []], ids=["missing", "empty"])
+def test_scheduler_reports_zero_without_prompt_tokens(
+    scheduler, request_stub, token_ids
+):
+    scheduler._nano_lmcache_engine.store(list(range(12)), [b"kv"] * 3)
+    request_stub.prompt_token_ids = token_ids
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
+    assert request_stub.prompt_token_ids is token_ids
+
+
+@pytest.mark.parametrize(
+    ("changed_index", "expected"), [(0, 0), (4, 4), (8, 8), (12, 12)]
+)
+def test_scheduler_matches_only_contiguous_shared_prefix(
+    scheduler, request_stub, changed_index, expected
+):
+    tokens = list(range(13))
+    scheduler._nano_lmcache_engine.store(tokens, [b"kv"] * 3)
+    request_stub.prompt_token_ids = tokens.copy()
+    request_stub.prompt_token_ids[changed_index] = 99
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (expected, False)
+
+
+def test_scheduler_rechecks_cache_after_invalidation(scheduler, request_stub):
+    request_stub.prompt_token_ids = list(range(13))
+    cache = scheduler._nano_lmcache_engine
+    cache.store(request_stub.prompt_token_ids, [b"kv"] * 3)
+    keys = cache.lookup(request_stub.prompt_token_ids).keys
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
+
+    cache.storage.invalidate(keys[1])
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (4, False)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 4) == (0, False)
 
 
 def test_scheduler_accepts_allocation(scheduler, request_stub):

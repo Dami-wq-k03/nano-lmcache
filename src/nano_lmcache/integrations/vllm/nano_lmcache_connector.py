@@ -1,7 +1,8 @@
-"""No-op connector with lifecycle tracing for vLLM 0.33.0.
+"""Scheduler prefix lookup with lifecycle tracing for vLLM 0.33.0.
 
-Import this module in the separate vLLM environment. Scheduler hooks report
-no external hits, and worker hooks perform no KV loads or saves.
+Import this module in the separate vLLM environment. Worker hooks still
+perform no KV loads or saves: positive lookup results are for controlled
+scheduler validation until the worker load path is implemented.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorRole,
 )
 from vllm.logger import init_logger
+
+from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 
 if TYPE_CHECKING:
     import torch
@@ -61,7 +64,7 @@ def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> N
 
 
 class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
-    """No-op connector shared by scheduler and worker roles."""
+    """Scheduler prefix lookup and no-op worker hooks with lifecycle tracing."""
 
     def __init__(
         self,
@@ -74,6 +77,12 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         self._step_sequence = 0
         self._trace_metadata: NanoLMCacheConnectorMetadata | None = None
         _log_call(self, "__init__", num_blocks=kv_cache_config.num_blocks)
+
+        self._block_size = vllm_config.cache_config.block_size
+        self._nano_lmcache_engine = ChunkedPrefixCache(
+            chunk_size=self._block_size,
+            namespace="vllm"
+        )
 
     # Worker-side methods.
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
@@ -191,14 +200,41 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
     def get_num_new_matched_tokens(
         self, request: Request, num_computed_tokens: int
     ) -> tuple[int | None, bool]:
+        """Report additional complete chunks beyond the local prefix."""
+        token_ids = request.prompt_token_ids
+        request_id = request.request_id
+        chunk_size = self._nano_lmcache_engine.chunk_size
+
+        external_prefix_tokens = 0
+        matched_end = 0
+        additional_matched_tokens = 0
+        reason = "no_prompt_token_ids"
+
+        if token_ids:
+            result = self._nano_lmcache_engine.lookup(
+                token_ids, request_id=request_id
+            )
+            external_prefix_tokens = result.matched_tokens
+            max_reusable_tokens = (len(token_ids) - 1) // chunk_size * chunk_size
+            matched_end = min(external_prefix_tokens, max_reusable_tokens)
+            additional_matched_tokens = max(0, matched_end - num_computed_tokens)
+            reason = "lookup"
+
         _log_call(
             self,
             "get_num_new_matched_tokens",
             request_id=request.request_id,
+            prompt_tokens=len(token_ids) if token_ids is not None else 0,
             num_computed_tokens=num_computed_tokens,
-            result=(0, False),
+            external_prefix_tokens=external_prefix_tokens,
+            matched_end=matched_end,
+            additional_matched_tokens=additional_matched_tokens,
+            chunk_size=chunk_size,
+            block_size=self._block_size,
+            reason=reason,
+            result=(additional_matched_tokens, False),
         )
-        return 0, False
+        return additional_matched_tokens, False
 
     def update_state_after_alloc(
         self, request: Request, blocks: KVCacheBlocks, num_external_tokens: int
