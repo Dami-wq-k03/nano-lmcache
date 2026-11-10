@@ -7,13 +7,16 @@ Tests exercise scheduler lookup, worker saves and lifecycle tracing against
 real vLLM. Scheduler-only lookup payloads are placeholders, not usable KV.
 """
 
+# Optional dependencies must be checked before importing the connector.
+# ruff: noqa: E402
+
 import pickle
 from types import SimpleNamespace
 
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("vllm.config")
+pytest.importorskip("vllm")
 
 
 from vllm.config import KVTransferConfig
