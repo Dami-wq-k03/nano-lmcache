@@ -291,7 +291,8 @@ class NanoLMCacheConnector(KVConnectorBase_V1):
 
     def shutdown(self) -> None:
         _log_call(self, "shutdown")
-        super().shutdown()
+        # vLLM 0.33.0's base shutdown() has no type annotations.
+        super().shutdown()  # type: ignore[no-untyped-call]
 
     # Scheduler-side methods.
     def get_num_new_matched_tokens(
