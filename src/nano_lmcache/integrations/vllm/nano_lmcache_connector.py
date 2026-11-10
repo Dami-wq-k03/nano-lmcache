@@ -1,27 +1,33 @@
 """Scheduler prefix lookup with lifecycle tracing for vLLM 0.33.0.
 
-Import this module in the separate vLLM environment. Worker hooks still
-perform no KV loads or saves: positive lookup results are for controlled
-scheduler validation until the worker load path is implemented.
+Import this module in the separate vLLM environment. Workers save complete
+CPU chunks from scheduler-generated prompt save plans. Loading is not
+implemented; positive lookup results remain for controlled scheduler
+validation. Save planning supports one full-attention KV cache group.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import torch
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
     KVConnectorMetadata,
     KVConnectorRole,
 )
 from vllm.logger import init_logger
+from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.tensor.kv_chunks import LayerKV, split_kv
 
 if TYPE_CHECKING:
-    import torch
     from vllm.config import VllmConfig
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (
         KVConnectorTransferResults,
@@ -34,17 +40,47 @@ if TYPE_CHECKING:
     from vllm.v1.outputs import KVConnectorOutput
     from vllm.v1.request import Request
 
-# vLLM configures handlers only for its own logger hierarchy. Use a child so
-# external-connector INFO traces inherit its level, formatter and handlers.
 logger = init_logger(f"vllm.{__name__}")
 
 
-@dataclass
-class NanoLMCacheConnectorMetadata(KVConnectorMetadata):  # type: ignore[misc]
-    """Serializable trace context; contains no KV load or save plans."""
+def _cache_namespace(config: VllmConfig) -> str:
+    model = config.model_config
+    identity = {
+        "model": model.model,
+        "revision": getattr(model.hf_config, "_commit_hash", None) or model.revision,
+        "hf_config": model.hf_config.to_dict(),
+        "dtype": str(model.dtype),
+        "quantization": model.quantization,
+        "kv_dtype": config.cache_config.cache_dtype,
+        "chunk_size": config.cache_config.block_size,
+        "tensor_parallel_size": config.parallel_config.tensor_parallel_size,
+        "pipeline_parallel_size": config.parallel_config.pipeline_parallel_size,
+        "layout": "layers,kv,heads,tokens,head_dim/v1",
+    }
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return "vllm-kv/v1/" + hashlib.sha256(payload.encode()).hexdigest()
 
+
+@dataclass(frozen=True)
+class ReqMeta:
+    """A complete prompt prefix that will be valid after this step's forward."""
+
+    request_id: str
+    token_ids: tuple[int, ...]
+    slot_mapping: tuple[int, ...]
+
+
+@dataclass
+class _SaveRequestState:
+    prompt_token_ids: tuple[int, ...]
+    block_ids: list[int]
+
+
+@dataclass
+class NanoLMCacheConnectorMetadata(KVConnectorMetadata):
     step_id: int = 0
     request_ids: tuple[str, ...] = ()
+    requests: tuple[ReqMeta, ...] = ()
 
 
 def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> None:
@@ -63,8 +99,8 @@ def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> N
     )
 
 
-class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
-    """Scheduler prefix lookup and no-op worker hooks with lifecycle tracing."""
+class NanoLMCacheConnector(KVConnectorBase_V1):
+    """Scheduler lookup and worker chunk saving with lifecycle tracing."""
 
     def __init__(
         self,
@@ -79,13 +115,25 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         _log_call(self, "__init__", num_blocks=kv_cache_config.num_blocks)
 
         self._block_size = vllm_config.cache_config.block_size
+        self._pending_save_layers: dict[str, dict[str, LayerKV]] = {}
+        self._save_requests: dict[str, _SaveRequestState] = {}
+        self._layer_names: list[str] = []
         self._nano_lmcache_engine = ChunkedPrefixCache(
-            chunk_size=self._block_size,
-            namespace="vllm"
+            chunk_size=self._block_size, namespace=_cache_namespace(vllm_config)
         )
 
     # Worker-side methods.
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
+        if self._layer_names and set(kv_caches) != set(self._layer_names):
+            raise ValueError("Registered KV cache layer set must remain unchanged")
+
+        self._layer_names = sorted(
+            kv_caches,
+            key=lambda name: [
+                (1, int(part)) if part.isdigit() else (0, part)
+                for part in re.split(r"(\d+)", name)
+            ],
+        )
         _log_call(
             self,
             "register_kv_caches",
@@ -94,9 +142,9 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 for name, tensor in kv_caches.items()
             },
         )
-        super().register_kv_caches(kv_caches)
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        self._pending_save_layers.clear()
         self._trace_metadata = (
             connector_metadata
             if isinstance(connector_metadata, NanoLMCacheConnectorMetadata)
@@ -110,10 +158,10 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         super().bind_connector_metadata(connector_metadata)
 
     def clear_connector_metadata(self) -> None:
-        # Log against the outgoing step, then discard both base and trace state.
         _log_call(self, "clear_connector_metadata")
         super().clear_connector_metadata()
         self._trace_metadata = None
+        self._pending_save_layers.clear()
 
     def start_load_kv(self, forward_context: ForwardContext, **kwargs: Any) -> None:
         _log_call(
@@ -134,6 +182,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         attn_metadata: AttentionMetadata,
         **kwargs: Any,
     ) -> None:
+        """Save complete all-layer chunks from a computed prompt prefix."""
         _log_call(
             self,
             "save_kv_layer",
@@ -145,8 +194,56 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             kwargs_keys=sorted(kwargs),
         )
 
+        connector_metadata = self._get_connector_metadata()
+        assert isinstance(connector_metadata, NanoLMCacheConnectorMetadata)
+
+        if not connector_metadata.requests:
+            return
+
+        expected_layers = set(self._layer_names)
+        if not expected_layers:
+            raise RuntimeError("KV cache layers must be registered before saving")
+        if layer_name not in expected_layers:
+            raise ValueError(f"Cannot save unregistered KV layer: {layer_name}")
+
+        chunk_size = self._nano_lmcache_engine.chunk_size
+        head_dim = kv_layer.shape[-1] // 2
+        for request in connector_metadata.requests:
+            num_tokens = len(request.token_ids) // chunk_size * chunk_size
+            if num_tokens == 0:
+                continue
+            slot_ids = request.slot_mapping[:num_tokens]
+
+            with gpu_sync_allowed():
+                slots = torch.tensor(slot_ids, device=kv_layer.device)
+                block_idxs = slots // self._block_size
+                offsets = slots % self._block_size
+                selected = kv_layer[block_idxs, :, offsets]
+                kv_cache = selected.detach().cpu()
+
+            keys = kv_cache[..., :head_dim].permute(1, 0, 2)
+            values = kv_cache[..., head_dim:].permute(1, 0, 2)
+            layers = self._pending_save_layers.setdefault(request.request_id, {})
+            layers[layer_name] = (keys, values)
+
+            if layers.keys() == expected_layers:
+                ordered_layers = [layers[name] for name in self._layer_names]
+                chunks = split_kv(ordered_layers, chunk_size)
+                self._nano_lmcache_engine.store(
+                    request.token_ids[:num_tokens],
+                    chunks,
+                    request_id=request.request_id,
+                )
+
     def wait_for_save(self) -> None:
         _log_call(self, "wait_for_save")
+        for request_id, layers in self._pending_save_layers.items():
+            missing = set(self._layer_names) - layers.keys()
+            if missing:
+                raise RuntimeError(
+                    f"Incomplete KV save for {request_id}: "
+                    f"missing layers {sorted(missing)}"
+                )
 
     def get_finished(
         self, finished_req_ids: set[str]
@@ -211,9 +308,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         reason = "no_prompt_token_ids"
 
         if token_ids:
-            result = self._nano_lmcache_engine.lookup(
-                token_ids, request_id=request_id
-            )
+            result = self._nano_lmcache_engine.lookup(token_ids, request_id=request_id)
             external_prefix_tokens = result.matched_tokens
             max_reusable_tokens = (len(token_ids) - 1) // chunk_size * chunk_size
             matched_end = min(external_prefix_tokens, max_reusable_tokens)
@@ -250,10 +345,61 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> NanoLMCacheConnectorMetadata:
+        for request_id in scheduler_output.finished_req_ids:
+            self._save_requests.pop(request_id, None)
+
+        computed_tokens: dict[str, int] = {}
+        for request in scheduler_output.scheduled_new_reqs:
+            self._save_requests[request.req_id] = _SaveRequestState(
+                prompt_token_ids=tuple(request.prompt_token_ids or ()),
+                block_ids=list(request.block_ids[0]),
+            )
+            computed_tokens[request.req_id] = request.num_computed_tokens
+
+        cached = scheduler_output.scheduled_cached_reqs
+        for index, request_id in enumerate(cached.req_ids):
+            state = self._save_requests[request_id]
+            new_blocks = cached.new_block_ids[index]
+            if request_id in cached.resumed_req_ids:
+                assert new_blocks is not None
+                state.block_ids = list(new_blocks[0])
+            elif new_blocks is not None:
+                state.block_ids.extend(new_blocks[0])
+            computed_tokens[request_id] = cached.num_computed_tokens[index]
+
+        requests: list[ReqMeta] = []
+        chunk_size = self._nano_lmcache_engine.chunk_size
+        scheduled = scheduler_output.num_scheduled_tokens
+        for request_id, scheduled_tokens in scheduled.items():
+            state = self._save_requests[request_id]
+            computed = computed_tokens[request_id]
+            if scheduled_tokens <= 0 or computed >= len(state.prompt_token_ids):
+                continue
+            computed_end = min(len(state.prompt_token_ids), computed + scheduled_tokens)
+            save_end = computed_end // chunk_size * chunk_size
+            if save_end == 0:
+                continue
+
+            block_state = scheduler_output.kv_connector_block_state
+            if block_state is not None:
+                block_ids = block_state.get_block_ids(request_id)
+                if block_ids is not None:
+                    state.block_ids = list(block_ids[0])
+
+            slots = tuple(
+                state.block_ids[position // self._block_size] * self._block_size
+                + position % self._block_size
+                for position in range(save_end)
+            )
+            requests.append(
+                ReqMeta(request_id, state.prompt_token_ids[:save_end], slots)
+            )
+
         self._step_sequence += 1
         metadata = NanoLMCacheConnectorMetadata(
             step_id=self._step_sequence,
             request_ids=tuple(sorted(scheduler_output.num_scheduled_tokens)),
+            requests=tuple(requests),
         )
         self._trace_metadata = metadata
         _log_call(
@@ -261,7 +407,6 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             "build_connector_meta",
             num_scheduled_tokens=dict(scheduler_output.num_scheduled_tokens),
         )
-        # Other scheduler callbacks need not belong to the step just built.
         self._trace_metadata = None
         return metadata
 
@@ -282,6 +427,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         _log_call(
             self, "request_finished", request_id=request.request_id, block_ids=block_ids
         )
+        self._save_requests.pop(request.request_id, None)
         result: tuple[bool, dict[str, Any] | None] = super().request_finished(
             request, block_ids
         )
