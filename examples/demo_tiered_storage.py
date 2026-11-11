@@ -45,7 +45,7 @@ def serve(
     payloads = list(result.values) + [
         f"kv-{tokens[i * CHUNK_SIZE]}" for i in range(result.matched_chunks, complete)
     ]
-    cache.store(tokens, payloads)
+    cache.store(tokens, payloads[result.matched_chunks:], start_chunk=result.matched_chunks)
 
     stats = storage.tier_stats
     print(
