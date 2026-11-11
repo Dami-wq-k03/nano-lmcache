@@ -1,3 +1,4 @@
+# mypy: disable-error-code="unused-ignore"
 """Scheduler prefix lookup with lifecycle tracing for vLLM 0.33.0.
 
 Import this module in the separate vLLM environment. Workers save complete
@@ -77,7 +78,7 @@ class _SaveRequestState:
 
 
 @dataclass
-class NanoLMCacheConnectorMetadata(KVConnectorMetadata):
+class NanoLMCacheConnectorMetadata(KVConnectorMetadata):  # type: ignore[misc]
     step_id: int = 0
     request_ids: tuple[str, ...] = ()
     requests: tuple[ReqMeta, ...] = ()
@@ -99,7 +100,7 @@ def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> N
     )
 
 
-class NanoLMCacheConnector(KVConnectorBase_V1):
+class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
     """Scheduler lookup and worker chunk saving with lifecycle tracing."""
 
     def __init__(
