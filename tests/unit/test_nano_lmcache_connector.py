@@ -15,8 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.torch
 torch = pytest.importorskip("torch")
-pytest.importorskip("vllm")
+pytest.importorskip("vllm.config")
 
 
 from vllm.config import KVTransferConfig

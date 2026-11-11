@@ -31,6 +31,12 @@ jobs:
       - name: Test
         run: uv run --locked --no-group nanovllm pytest
 
+      - name: Install vLLM for connector unit tests
+        run: uv pip install --python .venv/bin/python "vllm==0.33.0"
+
+      - name: Test vLLM connector unit tests
+        run: .venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
+
   tensor-test:
     runs-on: ubuntu-latest
 
