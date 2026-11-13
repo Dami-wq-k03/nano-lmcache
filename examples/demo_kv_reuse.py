@@ -88,8 +88,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model, revision=args.revision)
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        revision=args.revision,
-        torch_dtype=torch.float32,
+        revision=args.revision
     ).to(args.device).eval()
 
     model.config.revision = args.revision
