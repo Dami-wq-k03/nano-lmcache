@@ -12,9 +12,10 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
+# Heavy dependencies stay optional: `uv sync` installs none of them.
+# The nano-vLLM integration has its own dependency group, `nanovllm`.
 torch = ["torch>=2.6"]
 hf = ["torch>=2.6", "transformers>=4.45"]
-vllm = ["vllm==0.33.0; sys_platform == 'linux' and python_version < '3.15'"]
 
 [build-system]
 requires = ["uv_build>=0.12.12,<0.13.0"]
@@ -26,18 +27,21 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.17.1",
 ]
-
 tensor-test = [
     "torch>=2.6",
     "transformers>=4.45",
 ]
-
+# Runs nano-vLLM itself, for the integration tests (roadmap N2 to N4):
+#     uv sync --group nanovllm
+# Linux only: flash-attn comes as a prebuilt wheel for this torch build.
 nanovllm = [
     "torch>=2.6",
     "transformers>=4.51",
     "nano-vllm",
     "flash-attn==2.7.4.post1",
     "xxhash",
+    # Triton imports setuptools at run time to build its kernel launchers,
+    # but does not declare it.
     "setuptools",
 ]
 
@@ -62,19 +66,22 @@ python_version = "3.11"
 mypy_path = "src"
 strict = true
 
+# torch, transformers, nano-vLLM, and vLLM are optional; CI checks without them,
+# and nano-vLLM ships no type information.
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*", "transformers", "transformers.*", "nanovllm", "nanovllm.*", "vllm", "vllm.*"]
 ignore_missing_imports = true
 
+# On Linux, take torch from PyTorch's CUDA 12.4 index. PyPI's default Linux
+# wheel is built for CUDA 13.x and needs a very recent NVIDIA driver, while
+# CUDA 12.x wheels run on drivers >= 525 through CUDA minor-version
+# compatibility. torch >= 2.6 is required by current transformers releases.
+# Other platforms keep PyPI.
 [tool.uv]
 conflicts = [
     [{ group = "tensor-test" }, { extra = "torch" }],
     [{ group = "tensor-test" }, { extra = "hf" }],
     [{ group = "tensor-test" }, { group = "nanovllm" }],
-    [{ extra = "vllm" }, { extra = "torch" }],
-    [{ extra = "vllm" }, { extra = "hf" }],
-    [{ extra = "vllm" }, { group = "tensor-test" }],
-    [{ extra = "vllm" }, { group = "nanovllm" }],
 ]
 
 [tool.uv.sources]
@@ -84,9 +91,11 @@ torch = [
     { index = "pytorch-cu124", extra = "hf", marker = "sys_platform == 'linux'" },
     { index = "pytorch-cu124", group = "nanovllm", marker = "sys_platform == 'linux'" },
 ]
-
+# The integration targets one pinned nano-vLLM commit
+# (docs/nanovllm-integration.md); upgrading it is a separate task.
 nano-vllm = { git = "https://github.com/GeeeekExplorer/nano-vllm", rev = "bb823b3e06983d71485a8e1f23715ebd87d98ef8" }
-
+# Building flash-attn from source takes a long time and needs nvcc, so use
+# the official wheel built for torch 2.6, CUDA 12, and the pre-C++11 ABI.
 flash-attn = [
     { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.11'" },
     { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", marker = "sys_platform == 'linux' and python_version == '3.12'" },
