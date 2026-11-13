@@ -7,7 +7,7 @@ This page describes implemented behavior. Start with the
 [documentation index](README.md) to find a topic. Task status lives in
 [ROADMAP.md](../ROADMAP.md).
 
-Read by topic: [capacity](#capacity-and-eviction), [disk](#disk-storage),
+Read by topic: [capacity](#capacity-and-eviction), [eviction policies](#pluggable-eviction-policies), [disk](#disk-storage),
 [INT8 compression](#optional-int8-kv-compression), [tiers](#tiered-storage),
 [thread safety](#thread-safety), [offload](#gpu-to-cpu-offload), and
 [engine integration](#inference-integration).
@@ -37,6 +37,8 @@ graph TD
         CH["chunk_tokens, make_chunk_key<br/>core/chunking.py"]
         MET["CacheMetrics<br/>core/metrics.py"]
         ST["CacheStorage protocol<br/>storage/protocol.py"]
+        IDX["PrefixIndex<br/>prefix-safe mechanism"]
+        POL["EvictionPolicy<br/>LRU / LFU"]
         MEM["MemoryKVCache<br/>storage/memory.py"]
         SS["StorageStats<br/>storage/stats.py"]
     end
@@ -50,6 +52,8 @@ graph TD
     PC --> MET
     PC -->|"put / get via CacheStorage"| ST
     ST -.->|implemented by| MEM
+    MEM --> IDX
+    IDX --> POL
     MEM --> SS
     ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
 ```
@@ -173,9 +177,10 @@ graph LR
 
 Evicting `A` here would leave `B`, `C`, and `D` in memory, but a lookup
 starts at `A` and stops at the first miss, so they could never be
-reached. The storage therefore only evicts leaves (here, only `D`), and
-evicts the least recently used leaf first. After `D` goes, `C` becomes a
-leaf and is next in line.
+reached. The storage therefore only evicts leaves (here, only `D`). The
+configured policy chooses among those leaves; with the default LRU policy, the
+least recently used leaf goes first. After `D` goes, `C` becomes a leaf and can
+be ranked by the same policy.
 
 ## Nano: Core cache concepts
 
@@ -204,7 +209,8 @@ understood without a GPU or an inference engine.
 | `core/prefix_cache.py` | `ChunkedPrefixCache`: the store/lookup loop |
 | `core/metrics.py` | `CacheMetrics`: chunk-level hit/miss accounting |
 | `storage/protocol.py` | `CacheStorage` protocol: the `put`/`get` contract |
-| `storage/eviction.py` | `PrefixLRUIndex`: prefix-safe LRU bookkeeping shared by bounded backends |
+| `storage/eviction.py` | `PrefixIndex`: prefix-safe tree, admission, capacity, and byte accounting shared by bounded backends |
+| `storage/eviction_policies.py` | `EvictionPolicy`, `LRUEvictionPolicy`, and `LFUEvictionPolicy`: leaf candidate ranking |
 | `storage/disk.py` | `DiskKVCache`: one file per entry, survives restarts |
 | `storage/serializers.py` | `Serializer` protocol and the safe `JsonSerializer` default |
 | `storage/tiered.py` | `TieredStorage`: fast tier in front of a slow tier, write-through |
@@ -267,7 +273,7 @@ when both are set, **both must be satisfied**. With neither, the cache is
 unbounded. `max_bytes` must be a positive integer.
 
 `CPUOffloadKVCache` also exposes `max_bytes`, using each tensor's exact
-`value.nbytes` as its payload size in the shared `PrefixLRUIndex`.
+`value.nbytes` as its payload size in the shared `PrefixIndex`.
 `DiskKVCache` exposes the same limit, counting the complete serialized
 entry files instead of in-memory payload sizes (see **Disk storage**).
 
@@ -313,7 +319,9 @@ also stored. A plain per-entry LRU would break this: evicting `A` from
 The eviction rule therefore is:
 
 1. Only an entry with no descendants (a leaf) may be evicted.
-2. Among leaves, evict the least recently used. `get` refreshes recency.
+2. The configured policy chooses among leaves. With the default LRU policy,
+   the least recently used leaf goes first; LFU uses frequency first. `get`
+   refreshes access state.
 3. The parent of the entry being inserted is never the victim.
 4. If the new entry and its ancestors cannot fit, the write is dropped
    without evicting anything, so a prompt longer than the cache keeps its
@@ -321,11 +329,11 @@ The eviction rule therefore is:
    `max_bytes`.
 5. An entry whose parent is not stored is dropped.
 
-These rules live in `PrefixLRUIndex` (`storage/eviction.py`), which only
-tracks keys, parents, recency, and reported sizes, never payload objects.
-A backend asks it whether a new entry is admitted and which keys to
-evict, then moves the payloads itself, so
-memory, disk, and CPU-offload backends share one eviction policy.
+These rules live in `PrefixIndex` (`storage/eviction.py`), which only tracks
+keys, parents, leaf status, capacity, and reported sizes, never payload
+objects. The configured `EvictionPolicy` ranks eligible leaves separately; a
+backend asks the index which keys to remove and moves the payloads itself, so
+memory, disk, and CPU-offload backends share one prefix-safe mechanism.
 
 One write can evict several leaves until both limits are met. After a
 leaf goes, its parent may become a candidate, but the incoming entry's
@@ -341,33 +349,30 @@ its ancestors cannot fit, the old payload and all other entries remain
 unchanged. A successful overwrite refreshes recency; shrinking frees
 bytes for later writes.
 
-Victim selection uses a min-heap of `(last_access_tick, key)` leaf
-candidates in bounded indexes (either `max_entries` or `max_bytes` set). A new entry enters as a leaf; a hit or
-overwrite records a new tick. Old records are discarded lazily when a
-key is gone, has children, or has a newer tick. After a last child is
-evicted, its parent enters the heap using its **original last access
-tick**, so becoming a leaf does not change LRU order. The protected parent
-is skipped only for that admission and remains eligible for later writes.
+The default LRU victim selector uses a min-heap of
+`(last_access_tick, key)` leaf candidates in bounded indexes (either
+`max_entries` or `max_bytes` set). A new entry enters as a leaf; a hit or
+overwrite records a new tick. Old records are discarded lazily when a key is
+gone, has children, or has a newer tick. After a last child is evicted, its
+parent enters the heap using its **original last access tick**, so becoming a
+leaf does not change LRU order. LFU uses the same candidate lifecycle but its
+priority is `(frequency, last_access_tick, key)` and its internal-node
+frequencies are retained.
 
 Lazy records are periodically compacted once the heap exceeds both 64
-records and twice the number of stored entries. This keeps auxiliary
-memory O(n) and candidate maintenance O(log n) amortized. Individual
-operations can still discard many stale records or rebuild the heap.
-The 64-record floor avoids frequent rebuilds for tiny caches; above 2n
-records, at least n are stale or duplicate because at most n records are
-needed for current leaves. The O(n) rebuild costs O(1) per preceding addition
-when amortized,
-but the operation that triggers it can experience a latency spike.
-Unbounded indexes do not maintain candidates or access ticks. This avoids
-rescanning internal nodes on every eviction while keeping the exact
-existing policy, including after disk recovery replays recency.
+records and twice the number of stored entries. This keeps auxiliary memory
+O(n) and candidate maintenance O(log n) amortized. Individual operations can
+still discard many stale records or rebuild the heap. The 64-record floor
+avoids frequent rebuilds for tiny caches; above 2n records, at least n are
+stale or duplicate because at most n records are needed for current leaves.
+The O(n) rebuild costs O(1) per preceding addition when amortized, but the
+operation that triggers it can experience a latency spike.
 
-A simple FIFO-style leaf list could update in O(1), but appending a newly
-exposed parent would treat it as most recently used and change eviction
-order. The heap keeps current behavior, at the cost of extra bookkeeping
-on bounded writes and leaf hits. The
-[performance report](eviction-performance.md) compares both designs and
-includes short-chain overhead and deep-chain gains.
+Unbounded LRU indexes do not maintain candidate ticks because they never
+select a victim. LFU still records frequencies so its state is available for
+diagnostics, although no heap is needed until a bounded index is created.
+The [performance report](eviction-performance.md) compares LRU and LFU on
+uniform and skewed shared-prefix workloads.
 
 Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
@@ -393,7 +398,58 @@ descendants, while the tails of long prompts are evicted first. After
 eviction a request typically still hits its prefix and recomputes only
 the lost suffix, which the metrics count as misses.
 
-### Real KV tensors
+### Pluggable eviction policies
+
+Prefix safety and eviction order are deliberately separate layers:
+
+- `PrefixIndex` (`storage/eviction.py`) owns parent/child links, leaf status,
+  protected incoming chains, admission/rejection, entry limits, and byte
+  accounting. It never sees payload objects.
+- `EvictionPolicy` (`storage/eviction_policies.py`) owns access metadata and
+  ranks only the keys that the index reports as leaves. It does not maintain a
+  second prefix tree. When a child disappears, the index marks the parent as a
+  candidate and the policy reuses that node's existing access state.
+
+The memory, disk, and CPU-offload backends accept `eviction_policy="lru"` or
+`eviction_policy="lfu"`; the default is `"lru"`. A policy object or factory is
+copied/constructed per index, so two cache instances do not share mutable
+access state. In a `TieredStorage`, configure each tier independently; each
+tier must preserve a complete chain of its own.
+
+#### LRU
+
+`LRUEvictionPolicy` preserves the original behavior. A bounded index keeps a
+min-heap of `(last_access_tick, key)` leaf candidates. Hits and overwrites add a
+new lazy record; internal-node hits update their tick without making them
+eligible. Removing the last child exposes the parent using its previous tick,
+not a fresh access. A protected incoming parent is skipped for that admission
+and returned to the heap. Stale records are discarded lazily, and the heap is
+rebuilt above 64 records and twice the number of stored entries. Candidate
+operations are O(log n) amortized, with an occasional O(n) compaction.
+
+#### LFU
+
+`LFUEvictionPolicy` initializes every stored key at frequency 1. A real
+`get`/`touch` increments frequency and refreshes the last-access tick. A
+successful overwrite refreshes recency but is not counted as a cache hit. A
+leaf is ranked by `(frequency, last_access_tick, key)`, so lower frequency wins,
+then the older access, then stable lexicographic key order. Frequency state is
+kept for internal nodes too: if `A -> B -> C` loses `C`, `B` becomes a leaf
+with its accumulated frequency rather than being reset.
+
+LFU uses the same lazy min-heap and compaction thresholds as LRU. The prefix
+index still decides which keys are legal victims, so LFU cannot remove an
+internal node or an incoming protected ancestor. Heap records remain O(n)
+bounded; normal updates are O(log n) amortized and an occasional compaction is
+O(n).
+
+Disk recovery does not persist a new frequency field or change the entry-file
+format. Reopening a disk cache restores each key at LFU frequency 1 and uses
+file mtime only as the last-access tie-breaker; replaying mtime never calls
+`touch` and therefore never manufactures LFU hits. LRU continues to recover
+its exact recency order. This reset is intentional and should be considered
+when comparing a fresh process with a warm one.
+
 
 With a real model the payload of a chunk is one tensor holding the K and V
 of every layer for that chunk's tokens:
@@ -440,7 +496,7 @@ lives in GPU memory and is lost on restart.
   error and reopen before further use. Completed evictions are not rolled back.
 - **Recovery** on open deletes stray temp files, unreadable files, entries
   whose payload checksum is missing or mismatched, and entries whose
-  ancestors are missing, then rebuilds the `PrefixLRUIndex` parents-first.
+  ancestors are missing, then rebuilds the `PrefixIndex` parents-first.
   An entry written before checksum support is discarded and regenerated on
   demand. Sizes come from `stat().st_size`; file modification times restore
   LRU order. Opening above `max_bytes` or `max_entries` raises `ValueError`
@@ -560,7 +616,7 @@ which shows how much of the working set fits in the fast tier.
 
 Each `MemoryKVCache`, `DiskKVCache`, and `TieredStorage` instance owns one
 `threading.RLock`. The lock covers a backend's complete state change, not
-only `PrefixLRUIndex`: the index decides admission and eviction, while the
+only `PrefixIndex`: the index decides admission and eviction, while the
 backend also owns the corresponding payload dictionary or files. Holding one
 backend lock across both prevents a reader from seeing a payload after its
 index entry was removed, or an index entry before its file exists.
@@ -592,8 +648,8 @@ wrappers, and shared trace recorders are outside this thread-safety guarantee.
 copies them back to the GPU on a hit. GPU memory is shared by the model
 weights and the KV cache of running requests, while CPU memory is usually
 several times larger, so offloading lets a server keep far more reusable
-prefixes. It satisfies `CacheStorage` and evicts with `PrefixLRUIndex`, so
-it can be used on its own or as the fast tier of a `TieredStorage`.
+prefixes. It satisfies `CacheStorage` and evicts with the shared `PrefixIndex`
+and configured policy, so it can be used on its own or as the fast tier of a
 `run_with_prefix_cache` moves reused chunks to the model's device, so any
 backend may hand chunks back on the CPU.
 
@@ -652,8 +708,9 @@ The storage interface is in place: cache logic depends on the
 added without touching the cache loop. Capacity limits and prefix-safe
 eviction, including byte-based capacity, are implemented in `MemoryKVCache`,
 `DiskKVCache`, and `CPUOffloadKVCache`. Memory, disk, and tiered storage
-support threads sharing one instance as described above. Pluggable eviction
-policies and a shared cache server remain roadmap tasks M11 and M12.
+support threads sharing one instance as described above. Pluggable LRU/LFU
+eviction policies are implemented in M11; a shared cache server remains
+roadmap task M12.
 
 ## Inference integration
 

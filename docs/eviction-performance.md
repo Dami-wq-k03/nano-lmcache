@@ -1,4 +1,4 @@
-# Prefix-safe eviction performance (M2)
+# Prefix-safe eviction performance and policy comparison (M2/M11)
 
 ## Design decision
 
@@ -142,7 +142,68 @@ sweep, whose original paired measurements are retained above. The fixed
 case runs independently of custom short-chain churn options, so the
 default command always exposes the large-capacity scan cost.
 
-## Correctness checks
+## Policy comparison experiment
+
+The M11 benchmark adds a shared-system/user workload so policy quality is
+measured by reuse, not only by victim-selection time. Each request contains a
+two-chunk system prompt followed by a two-chunk user prompt. Workload A samples
+8 system-prompt families and 16 user prompts per family uniformly. Workload B
+uses the same catalog with a fixed Zipf exponent of 1.2, producing a small hot
+head and a long tail. `build_policy_workload` creates the complete request
+sequence before either cache runs, so LRU and LFU receive byte-for-byte the
+same sequence.
+
+### Setup and reproduction
+
+Measured on 2026-11-13, macOS 27.0.1, Apple arm64, Python 3.11.12, in the
+M11 working tree. The core package used `MemoryKVCache`, a 48-entry limit, and
+`CHUNK_SIZE=16`. Each policy ran five fresh-cache repeats over 5,000 requests;
+reported lookup/store latency is the best total divided by 5,000. Hit rate,
+reused tokens, evictions, and final occupancy are deterministic for the fixed
+seed and are not selected by timing.
+
+```bash
+uv run python benchmarks/bench_prefix_cache.py \
+  --chunks 100 1000 --capacity 64 --repeats 3 \
+  --churn-prompts 2000 --churn-chunks 8 \
+  --policy-requests 5000 --policy-seed 2026 \
+  --policy-capacity 48 --policy-repeats 5
+```
+
+The policy section of that run produced the following results. Latencies are
+average microseconds per request; the other columns are totals or final
+occupancy.
+
+| Workload | Policy | Hit rate | Reused tokens | Evictions | Occupancy | Lookup (us) | Store (us) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Uniform | LRU | 52.700% | 168,640 | 9,412 | 48 | 14.19 | 14.71 |
+| Uniform | LFU | 56.160% | 179,712 | 8,720 | 48 | 14.27 | 14.29 |
+| Zipf / skewed | LRU | 80.680% | 258,176 | 3,816 | 48 | 13.70 | 11.42 |
+| Zipf / skewed | LFU | 85.210% | 272,672 | 2,910 | 48 | 13.95 | 10.87 |
+
+### What this run says (and does not say)
+
+In this workload and capacity, LFU kept both hot system prefixes and repeated
+user tails more effectively: hit rate rose 3.46 percentage points for the
+uniform sequence and 4.53 points for the skewed sequence. It also performed
+fewer evictions (7.4% fewer for Uniform and 23.7% fewer for Zipf) and reused
+more tokens. The skewed workload makes the advantage more useful because a hot
+request can survive long-tail insertions.
+
+This run does **not** establish that LFU always wins. It used a stationary
+catalog and enough repeated requests for frequency to accumulate. A changing
+working set, a short measurement window, a much larger capacity, or a workload
+where recent requests are more predictive can favor LRU. LRU has a simpler
+access state and the same O(log n) heap operations; LFU stores a frequency for
+every key and updates a two-dimensional priority on hits. The measured
+latency differences here are small (LFU lookup was 0.08--0.25 us slower), so
+they should not be treated as a portable performance guarantee.
+
+The benchmark's unit tests check sequence determinism and result validity, not
+wall-clock thresholds. To try another trade-off, change `--policy-capacity`,
+`--policy-requests`, or `--policy-seed`, then report the full table rather
+than assuming LFU is better.
+
 
 `tests/unit/test_leaf_eviction.py` covers original access times on newly
 exposed leaves, internal-node hits, protected candidates, failed

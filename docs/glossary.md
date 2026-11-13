@@ -113,11 +113,18 @@ See: [Why eviction must respect prefix chains](architecture.md#why-eviction-must
 
 ### Prefix-safe eviction
 
-Eviction that never breaks a chain: only a leaf may be evicted, and the least recently used leaf goes first. The parent of the entry being added is never the victim. If no victim exists, or the new entry's parent is not stored, the new entry is rejected instead.
+Eviction that never breaks a chain: only a leaf may be evicted, and the
+configured policy chooses which eligible leaf goes first. The default LRU
+policy chooses the least recently used leaf; LFU chooses the lowest frequency,
+then oldest access, then stable key. The parent of the entry being added is
+never the victim. If no victim exists, or the new entry's parent is not stored,
+the new entry is rejected instead.
 
 Evicting `A` first would leave `B`, `C`, and `D` stored but unreachable, because a lookup starts at `A`. Prefix-safe eviction keeps this invariant: every stored entry has its whole ancestor chain stored.
 
-See: [`PrefixLRUIndex`](../src/nano_lmcache/storage/eviction.py), [Why eviction must respect prefix chains](architecture.md#why-eviction-must-respect-prefix-chains)
+See: [`PrefixIndex`](../src/nano_lmcache/storage/eviction.py),
+[`EvictionPolicy`](../src/nano_lmcache/storage/eviction_policies.py), and
+[Why eviction must respect prefix chains](architecture.md#why-eviction-must-respect-prefix-chains)
 
 ### Paged attention
 

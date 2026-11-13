@@ -47,8 +47,9 @@ Done (pure Python, no GPU dependency):
       concrete backend (`storage/protocol.py`)
 - [x] Capacity limits and **prefix-safe eviction**: only leaves are
       evicted, so no unreachable suffix is ever left behind
-- [x] Shared prefix-safe eviction bookkeeping `PrefixLRUIndex`
-      (`storage/eviction.py`), used by every bounded backend
+- [x] Shared prefix-safe index and policy bookkeeping (`PrefixIndex` with the
+      compatibility name `PrefixLRUIndex`, `storage/eviction.py`), used by
+      every bounded backend
 - [x] Disk backend `DiskKVCache`: one file per entry, crash-safe writes,
       survives restarts (`storage/disk.py`, M4)
 - [x] Write-through tiered storage `TieredStorage`, memory in front of
@@ -61,6 +62,9 @@ Done (pure Python, no GPU dependency):
       (`inspect.py`, M8), and byte-based disk capacity (M9)
 - [x] Thread-safe access to shared memory, disk, and tiered storage instances
       and synchronized lookup metrics (M10; no shared-directory multi-process writes)
+- [x] Pluggable prefix-safe eviction policies: heap-based LRU (default) and
+      LFU with bounded lazy candidates, shared by memory, disk, and CPU offload
+      (`storage/eviction_policies.py`, M11)
 - [x] Runnable demos (`examples/`), architecture notes
       (`docs/architecture.md`), a glossary and FAQ (`docs/glossary.md`),
       and a guided learning path (`docs/tutorial/README.md`, DOC-1)
@@ -131,7 +135,7 @@ open an issue to discuss it.
 | M8 | Cache inspector CLI | Easy | No | – | Done |
 | M9 | Byte-based capacity for the disk backend | Medium | No | – | Done |
 | M10 | Thread-safe storage | Medium | No | – | Done |
-| M11 | Pluggable eviction policies | Hard | No | – | Open |
+| M11 | Pluggable eviction policies | Hard | No | – | Done |
 | M12 | Shared cache server for several processes | Hard | No | M10 | Open |
 | **GPU: real KV tensors** | | | | | |
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
@@ -174,13 +178,13 @@ open an issue to discuss it.
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priority:** M11 (eviction-policy experiments), building on VIS-11's
-bounded workload replay and capacity comparisons. The initial guided learning path
-(DOC-1) is available in [English](docs/tutorial/README.md) and
-[Chinese](docs/zh-CN/tutorial.md).
-N5 and N6 remain performance follow-ups (see
-[the TTFT report](docs/nanovllm-benchmark.md)). Check the corresponding
-GitHub issue before starting a task. V1 is assigned to
+**Next priority:** M12 (shared cache server), with N5 and N6 remaining
+performance follow-ups (see [the TTFT report](docs/nanovllm-benchmark.md)).
+The M11 policy comparison is in
+[the eviction report](docs/eviction-performance.md).
+The initial guided learning path (DOC-1) is available in
+[English](docs/tutorial/README.md) and [Chinese](docs/zh-CN/tutorial.md).
+Check the corresponding GitHub issue before starting a task. V1 is assigned to
 `WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
 `Claimed` records an assignment, not a completed implementation; check the
 linked issue for current ownership and progress.
@@ -505,29 +509,30 @@ assumed.
 
 ### M11: Pluggable eviction policies
 
-`PrefixLRUIndex` hard-codes LRU among leaves. Prefix safety (only leaves,
-the incoming chain protected) is the mechanism; which leaf goes first is
-a policy, and LRU is not obviously the best one for prefix caching. A
-long, unique tail is less likely to be reused than a short shared system
-prompt.
+**Status: done.** `storage/eviction.py` now owns prefix-tree mechanics while
+`storage/eviction_policies.py` provides independent heap-backed LRU (the
+backward-compatible default) and LFU policies. Memory, disk, and CPU-offload
+backends accept the same policy configuration. LFU keeps frequency for
+internal nodes, uses recency and stable key tie-breakers, and resets recovered
+frequencies to 1 without changing the disk format.
 
-To do: separate the policy from the mechanism behind a small interface.
-Keep today's LRU heap as the default, and implement at least one
-alternative, such as LFU, FIFO, or deepest-leaf-first. Extend
-`benchmarks/bench_prefix_cache.py` with a workload of shared system
-prompts and diverse tails, and compare hit rates.
+The reproducible comparison workload in `benchmarks/bench_prefix_cache.py`
+contains uniform and Zipf/skewed shared-system/user requests. The report in
+[`docs/eviction-performance.md`](docs/eviction-performance.md) records hit
+rate, reused tokens, evictions, occupancy, lookup latency, and store latency.
+The independent policy tests include randomized insert/touch/evict/reinsert/
+invalidate sequences and disk recovery behavior.
 
-Acceptance criteria:
+Acceptance criteria completed:
 
-- The default behavior is unchanged: `tests/unit/test_bounded_memory.py`
-  and the eviction tests pass unmodified.
-- Each policy has randomized tests that check the prefix-safety
-  invariant.
-- The PR reports hit rates per policy, and the docs explain when each one
-  wins.
+- The default behavior is unchanged: existing bounded-memory, disk, and leaf
+  eviction tests pass without changing their assertions.
+- Both policies share prefix safety and randomized invariant checks.
+- The benchmark uses one fixed request sequence per seed for both policies,
+  and the docs explain the measured trade-offs and the restart frequency rule.
 
-What you learn: separating mechanism from policy, and measuring a policy
-on a realistic workload.
+What you learn: separating mechanism from policy, and measuring a policy on a
+realistic workload.
 
 ### M12: Shared cache server for several processes
 

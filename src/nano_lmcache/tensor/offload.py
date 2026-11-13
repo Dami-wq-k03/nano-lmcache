@@ -28,6 +28,7 @@ import torch
 from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.eviction import PrefixLRUIndex
+from nano_lmcache.storage.eviction_policies import PolicyLike
 from nano_lmcache.storage.stats import StorageStats
 
 
@@ -36,7 +37,9 @@ class CPUOffloadKVCache:
 
     Satisfies `CacheStorage`, so it drops into `ChunkedPrefixCache` or into
     `TieredStorage` as the fast tier. Capacity limits use the same
-    prefix-safe eviction as every other backend (`PrefixLRUIndex`).
+    prefix-safe mechanism and configured eviction policy as every other
+    backend (`PrefixIndex`). LRU is the default; LFU is available through
+    `eviction_policy="lfu"`.
     """
 
     def __init__(
@@ -48,12 +51,17 @@ class CPUOffloadKVCache:
         pin_memory: bool = True,
         non_blocking: bool = True,
         trace_recorder: TraceRecorder | None = None,
+        eviction_policy: PolicyLike = "lru",
     ) -> None:
         self._device = torch.device(device)
         self._pin_memory = pin_memory
         self._non_blocking = non_blocking
         self._trace_recorder = trace_recorder
-        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
+        self._index = PrefixLRUIndex(
+            max_entries,
+            max_bytes=max_bytes,
+            eviction_policy=eviction_policy,
+        )
         self._tensors: dict[str, torch.Tensor] = {}
 
     @property
@@ -69,6 +77,11 @@ class CPUOffloadKVCache:
     def max_bytes(self) -> int | None:
         """Payload byte limit, or None when unbounded."""
         return self._index.max_bytes
+
+    @property
+    def eviction_policy(self) -> str:
+        """Name of the leaf eviction policy."""
+        return self._index.eviction_policy
 
     @property
     def stats(self) -> StorageStats:
@@ -95,6 +108,12 @@ class CPUOffloadKVCache:
         if key not in self._tensors:
             raise KeyError(key)
         return self._index.parent_of(key)
+
+    def frequency_of(self, key: str) -> int:
+        """Return the policy frequency for a stored key."""
+        if key not in self._tensors:
+            raise KeyError(key)
+        return self._index.frequency_of(key)
 
     def put(
         self,
