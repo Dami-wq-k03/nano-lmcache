@@ -11,6 +11,8 @@ import io
 
 import torch
 
+from nano_lmcache.tensor.quantization import QuantizedKV, dequantize_kv, quantize_kv
+
 
 class TensorSerializer:
     """Encodes one tensor; always decodes onto the CPU.
@@ -50,18 +52,25 @@ class QuantizedTensorSerializer:
         ):
             raise TypeError("QuantizedTensorSerializer needs an FP16/BF16/FP32 tensor")
 
-        tensor = value.detach().float()
-        scales = tensor.abs().amax(dim=-2, keepdim=True) / 127
-        scales = torch.where(scales == 0, 1.0, scales)
-        quantized = (tensor / scales).round().clamp(-127, 127).to(torch.int8)
+        quantized = quantize_kv(value)
         buffer = io.BytesIO()
         torch.save(
-            {"values": quantized.cpu(), "scales": scales.cpu(), "dtype": value.dtype},
+            {
+                "values": quantized.values.cpu(),
+                "scales": quantized.scales.cpu(),
+                "dtype": quantized.dtype,
+                "token_axis": quantized.token_axis,
+            },
             buffer,
         )
         return buffer.getvalue()
 
     def loads(self, data: bytes) -> torch.Tensor:
         payload = torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
-        restored: torch.Tensor = payload["values"].float() * payload["scales"]
-        return restored.to(payload["dtype"])
+        quantized = QuantizedKV(
+            values=payload["values"],
+            scales=payload["scales"],
+            dtype=payload["dtype"],
+            token_axis=payload.get("token_axis", -2),
+        )
+        return dequantize_kv(quantized)

@@ -3,8 +3,8 @@
 Run with:
     .venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
 
-Tests exercise scheduler lookup, worker saves and lifecycle tracing against
-real vLLM. Scheduler-only lookup payloads are placeholders, not usable KV.
+Tests exercise scheduler lookup, worker saves/loads and lifecycle tracing
+against real vLLM. External lookup tests use a real shared RemoteCacheServer.
 """
 
 # Optional dependencies must be checked before importing the connector.
@@ -98,7 +98,9 @@ def make_connector():
     Configuration objects are created per call; no model or engine is loaded.
     """
 
-    def create(role: str | KVConnectorRole) -> NanoLMCacheConnector:
+    def create(
+        role: str | KVConnectorRole, *, remote_cache=None
+    ) -> NanoLMCacheConnector:
         if isinstance(role, str):
             role = KVConnectorRole[role]
 
@@ -106,6 +108,9 @@ def make_connector():
             kv_transfer_config=KVTransferConfig(
                 kv_connector="NanoLMCacheConnector",
                 kv_role="kv_both",
+                kv_connector_extra_config=(
+                    {} if remote_cache is None else {"remote_cache": remote_cache}
+                ),
             ),
             cache_config=SimpleNamespace(block_size=4, cache_dtype="auto"),
             model_config=_test_model_config(),
@@ -122,8 +127,25 @@ def make_connector():
 
 
 @pytest.fixture
-def scheduler(make_connector):
-    return make_connector("SCHEDULER")
+def shared_server():
+    from nano_lmcache.storage.remote import RemoteCacheServer
+
+    server = RemoteCacheServer()
+    server.start()
+    try:
+        yield server
+    finally:
+        server.close()
+
+
+def _endpoint(server):
+    host, port = server.address
+    return {"host": host, "port": port}
+
+
+@pytest.fixture
+def scheduler(make_connector, shared_server):
+    return make_connector("SCHEDULER", remote_cache=_endpoint(shared_server))
 
 
 @pytest.fixture
@@ -206,7 +228,7 @@ def test_scheduler_reports_matches_only_after_cache_is_populated(
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
 
-    cache.store(request_stub.prompt_token_ids, [b"kv-0", b"kv-1", b"kv-2"])
+    cache.store(request_stub.prompt_token_ids, [torch.zeros(3, 2, 2, 4, 3)] * 3)
     # A different request can reuse the same prefix; IDs are not cache keys.
     request_stub.request_id = "req-2"
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
@@ -232,7 +254,7 @@ def test_scheduler_reports_only_additional_matches(
     request_stub.prompt_token_ids = tokens.copy()
     request_stub.num_computed_tokens = 0
     scheduler._nano_lmcache_engine.store(
-        tokens[:cached_tokens], [b"kv"] * (cached_tokens // 4)
+        tokens[:cached_tokens], [torch.zeros(3, 2, 2, 4, 3)] * (cached_tokens // 4)
     )
 
     assert scheduler.get_num_new_matched_tokens(request_stub, local_tokens) == (
@@ -250,7 +272,9 @@ def test_scheduler_reports_only_additional_matches(
 def test_scheduler_reuses_complete_chunks_and_leaves_token_for_logits(
     scheduler, request_stub, prompt_length, expected
 ):
-    scheduler._nano_lmcache_engine.store(list(range(16)), [b"kv"] * 4)
+    scheduler._nano_lmcache_engine.store(
+        list(range(16)), [torch.zeros(3, 2, 2, 4, 3)] * 4
+    )
     request_stub.prompt_token_ids = list(range(prompt_length))
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (expected, False)
@@ -260,7 +284,9 @@ def test_scheduler_reuses_complete_chunks_and_leaves_token_for_logits(
 def test_scheduler_reports_zero_without_prompt_tokens(
     scheduler, request_stub, token_ids
 ):
-    scheduler._nano_lmcache_engine.store(list(range(12)), [b"kv"] * 3)
+    scheduler._nano_lmcache_engine.store(
+        list(range(12)), [torch.zeros(3, 2, 2, 4, 3)] * 3
+    )
     request_stub.prompt_token_ids = token_ids
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
@@ -274,21 +300,23 @@ def test_scheduler_matches_only_contiguous_shared_prefix(
     scheduler, request_stub, changed_index, expected
 ):
     tokens = list(range(13))
-    scheduler._nano_lmcache_engine.store(tokens, [b"kv"] * 3)
+    scheduler._nano_lmcache_engine.store(tokens, [torch.zeros(3, 2, 2, 4, 3)] * 3)
     request_stub.prompt_token_ids = tokens.copy()
     request_stub.prompt_token_ids[changed_index] = 99
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (expected, False)
 
 
-def test_scheduler_rechecks_cache_after_invalidation(scheduler, request_stub):
+def test_scheduler_rechecks_cache_after_invalidation(
+    scheduler, request_stub, shared_server
+):
     request_stub.prompt_token_ids = list(range(13))
     cache = scheduler._nano_lmcache_engine
-    cache.store(request_stub.prompt_token_ids, [b"kv"] * 3)
+    cache.store(request_stub.prompt_token_ids, [torch.zeros(3, 2, 2, 4, 3)] * 3)
     keys = cache.lookup(request_stub.prompt_token_ids).keys
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
 
-    cache.storage.invalidate(keys[1])
+    shared_server.storage.invalidate(keys[1])
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (4, False)
     assert scheduler.get_num_new_matched_tokens(request_stub, 4) == (0, False)
 
@@ -554,10 +582,10 @@ def _save_step(*, new=(), cached=(), counts=None, resumed=(), finished=()):
     ("tokens", "computed", "scheduled", "expected"),
     [
         (list(range(10)), 0, 6, 4),
-        (list(range(10)), 4, 6, 8),  
-        (list(range(8)), 0, 8, 8), 
-        (list(range(10)), 8, 5, 8),  
-        (list(range(10)), 10, 1, 0),  
+        (list(range(10)), 4, 6, 8),
+        (list(range(8)), 0, 8, 8),
+        (list(range(10)), 8, 5, 8),
+        (list(range(10)), 10, 1, 0),
         (list(range(10)), 0, 0, 0),
         (list(range(3)), 0, 3, 0),
         ([], 0, 1, 0),
@@ -611,7 +639,7 @@ def test_scheduler_plans_reach_worker_across_prefill_steps(
                 block, offset = (7, 2, 9)[position // 4], position % 4
                 value[block, :, offset] = originals[name][block, :, offset]
             worker.save_kv_layer(name, value, SimpleNamespace())
-            value.fill_(-1) 
+            value.fill_(-1)
         worker.wait_for_save()
         worker.clear_connector_metadata()
         result = worker._nano_lmcache_engine.lookup(tokens)
@@ -684,3 +712,122 @@ def test_scheduler_releases_finished_save_state(scheduler, via_callback):
         )
     )
     assert metadata.requests == (ReqMeta("req", (20, 21, 22, 23), (36, 37, 38, 39)),)
+
+
+def test_worker_local_storage_never_advertises_hits(make_connector, request_stub):
+    scheduler = make_connector("SCHEDULER")
+    scheduler._nano_lmcache_engine.store(list(range(12)), [torch.zeros(1)] * 3)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
+
+
+def test_shared_lookup_does_not_fetch_payloads(scheduler, request_stub, monkeypatch):
+    scheduler._nano_lmcache_engine.store(list(range(12)), [torch.zeros(1)] * 3)
+
+    def unexpected_get(key):
+        raise AssertionError("scheduler must only test key presence")
+
+    monkeypatch.setattr(scheduler._nano_lmcache_engine.storage, "get", unexpected_get)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (8, False)
+
+
+@pytest.mark.parametrize("local_tokens", [0, 4])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_shared_worker_loads_pickled_plans_into_new_slots(
+    scheduler, worker, save_layers, make_connector, shared_server, local_tokens, resumed
+):
+    # Produce chunks through the existing worker save path, not scheduler injection.
+    worker = make_connector("WORKER", remote_cache=_endpoint(shared_server))
+    worker.register_kv_caches(save_layers)
+    tokens = tuple(range(9))
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=(ReqMeta("source", tokens[:8], (28, 29, 30, 31, 8, 9, 10, 11)),)
+        )
+    )
+    for name, value in save_layers.items():
+        worker.save_kv_layer(name, value, SimpleNamespace())
+    worker.wait_for_save()
+    request = SimpleNamespace(request_id="target", prompt_token_ids=list(tokens))
+    assert scheduler.get_num_new_matched_tokens(request, local_tokens) == (
+        8 - local_tokens,
+        False,
+    )
+    blocks = KVCacheBlocks(
+        blocks=([KVCacheBlock(3), KVCacheBlock(8), KVCacheBlock(1)],)
+    )
+    scheduler.update_state_after_alloc(request, blocks, 8 - local_tokens)
+    if resumed:
+        scheduler.build_connector_meta(
+            _save_step(new=[_new_save_request("target", list(tokens), [7, 2, 9])])
+        )
+        output = _save_step(
+            cached=[("target", ([3, 8, 1],), 8)],
+            resumed={"target"},
+            counts={"target": 1},
+        )
+    else:
+        output = _save_step(
+            new=[_new_save_request("target", list(tokens), [3, 8, 1], 8)],
+            counts={"target": 1},
+        )
+    metadata = pickle.loads(pickle.dumps(scheduler.build_connector_meta(output)))
+    assert len(metadata.loads) == (8 - local_tokens) // 4
+    assert metadata.loads[0].slot_mapping == (
+        (12, 13, 14, 15) if local_tokens == 0 else (32, 33, 34, 35)
+    )
+    assert scheduler.build_connector_meta(SchedulerOutput.make_empty()).loads == ()
+    target = make_connector("WORKER", remote_cache=_endpoint(shared_server))
+    layers = {name: torch.full_like(value, -99) for name, value in save_layers.items()}
+    target.register_kv_caches(layers)
+    target.bind_connector_metadata(metadata)
+    with pytest.raises(RuntimeError, match="must precede"):
+        target.wait_for_layer_load(next(iter(layers)))
+    target.start_load_kv(SimpleNamespace(attn_metadata=None))
+    for name, value in layers.items():
+        target.wait_for_layer_load(name)
+        for index in range(local_tokens // 4, 2):
+            assert torch.equal(value[(3, 8)[index]], save_layers[name][(7, 2)[index]])
+        assert torch.all(value[1] == -99)
+        if local_tokens:
+            assert torch.all(value[3] == -99)
+    assert target.get_block_ids_with_load_errors() == set()
+    assert target.get_transfer_results(set()).finished_recving == set()
+    # Repeated submission must not overwrite attention's newly written KV.
+    for value in layers.values():
+        value.fill_(5)
+    target.start_load_kv(SimpleNamespace(attn_metadata=None))
+    assert all(torch.all(value == 5) for value in layers.values())
+    target.clear_connector_metadata()
+
+
+def test_missing_chunk_reports_blocks_and_does_not_save_failed_forward(
+    scheduler, worker, save_layers, request_stub, shared_server
+):
+    from nano_lmcache.integrations.vllm.kv_load import ChunkLoadPlan
+
+    cache = scheduler._nano_lmcache_engine
+    cache.store(list(range(12)), [torch.zeros(3, 2, 2, 4, 3)] * 3)
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (8, False)
+    keys = cache.lookup(list(range(12))).keys
+    shared_server.storage.invalidate(keys[1])
+    worker._load_adapter.storage = cache.storage
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=(
+                ReqMeta("req", tuple(range(12)), tuple(range(12))),
+                ReqMeta("shared", (20, 21, 22, 23), (28, 29, 30, 31)),
+            ),
+            loads=(ChunkLoadPlan("req", keys[1], (28, 29, 30, 31)),),
+        )
+    )
+    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
+    assert worker.get_block_ids_with_load_errors() == {7}
+    assert worker.get_block_ids_with_load_errors() == {7}
+    for name, value in save_layers.items():
+        worker.save_kv_layer(name, value, SimpleNamespace())
+    worker.wait_for_save()
+    assert worker._nano_lmcache_engine.lookup(list(range(12))).matched_tokens == 0
+    assert worker._nano_lmcache_engine.lookup([20, 21, 22, 23]).matched_tokens == 0
+    assert cache.lookup(list(range(12))).matched_tokens == 4
+    worker.clear_connector_metadata()
+    assert worker.get_block_ids_with_load_errors() == set()

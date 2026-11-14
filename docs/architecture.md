@@ -9,7 +9,8 @@ This page describes implemented behavior. Start with the
 
 Read by topic: [capacity](#capacity-and-eviction), [eviction policies](#pluggable-eviction-policies), [disk](#disk-storage),
 [INT8 compression](#optional-int8-kv-compression), [tiers](#tiered-storage),
-[thread safety](#thread-safety), [offload](#gpu-to-cpu-offload), and
+[thread safety](#thread-safety), [offload](#gpu-to-cpu-offload),
+[experimental data plane](#experimental-data-plane-abi), and
 [engine integration](#inference-integration).
 
 ## Diagrams
@@ -72,6 +73,23 @@ tokens, and stores the result split into chunks with `split_kv`.
 Dependencies only point from `tensor/` into `core/`, never back. To
 `ChunkedPrefixCache` and the storage a chunk tensor is just an opaque
 payload, which is why the core still runs without PyTorch installed.
+
+### Experimental data-plane ABI
+
+The experimental `nano_lmcache.experimental.dataplane` package starts the
+next layer without changing the teaching API. `KVLayout` describes model
+namespace, model revision, tokenizer fingerprint, page size, dtype, NHD/HND key
+and value axes, and layer ordering without importing PyTorch. `KVPageRef` describes one physical copy and keeps
+its reservation, transfer, ready, failure, and eviction states explicit.
+
+`KVPageDirectory` owns the logical-to-physical mapping. One logical page can
+therefore have independent GPU, pinned-CPU, CPU, NVMe, or remote replicas;
+the directory chooses a ready authoritative copy and falls back to another
+ready replica when that copy is evicted. Layout, token range, and generation
+must match across replicas, while compression and physical page IDs may
+differ. The optional tensor adapters consume this ABI without making the core
+package depend on PyTorch; the descriptor package itself intentionally contains
+no GPU code.
 
 ### How a chunk key is built
 
@@ -216,13 +234,20 @@ understood without a GPU or an inference engine.
 | `storage/tiered.py` | `TieredStorage`: fast tier in front of a slow tier, write-through |
 | `storage/stats.py` | `StorageStats`: eviction and rejection counters |
 | `storage/memory.py` | `MemoryKVCache`: optionally bounded, prefix-safe LRU storage |
+| `storage/remote.py` | Length-prefixed JSON shared-cache server/client with batch lookup |
+| `storage/async_write.py` | Bounded write-behind queue with commit visibility and backpressure |
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`: per-layer KV tensors <-> chunk tensors (needs torch) |
 | `tensor/offload.py` | `CPUOffloadKVCache`: GPU chunks kept in pinned CPU memory (needs torch) |
+| `tensor/transfer.py` | Pinned buffer pool and stream/event-based asynchronous page copies (needs torch) |
+| `tensor/page_ops.py` | Torch reference gather/scatter for non-contiguous page tables (needs torch) |
+| `tensor/quantization.py` | Per-head/channel-axis INT8 reference quantization (needs torch) |
 | `integrations/nanovllm/layout.py` | `KVBlockLayout`: what a nano-vLLM block's bytes depend on, and its cache namespace |
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
-| `integrations/vllm/nano_lmcache_connector.py` | No-op vLLM 0.33.0 connector with scheduler/worker lifecycle logs; [GPU validation](vllm-kv-connector.md#real-request-validation-2026-11-08) |
+| `integrations/vllm/nano_lmcache_connector.py` | Partial vLLM 0.33.0 scheduler lookup and worker save path; external worker load remains open |
+| `experimental/dataplane/` | PyTorch-independent `KVLayout`, page lifecycle, logical/physical replica directory, and CPU reference store |
+| `experimental/scheduler.py` | Transparent recompute/load estimator and duplicate-safe prefetch state machine |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 | `observability/` | Request context, trace events, recorder, and storage tracing |
@@ -232,6 +257,8 @@ understood without a GPU or an inference engine.
 The `tensor` package is optional. Nothing in `core` or `storage` imports
 it, so the cache concepts work without PyTorch installed.
 
+The GPU/data-plane measurements are collected in the
+[GPU experiment report](gpu-experiment-report.md).
 Callers go through `ChunkedPrefixCache`, which owns a `CacheMetrics`
 instance and depends only on the `CacheStorage` protocol, never on a
 concrete backend. `None` is reserved to mean "miss", so `store()`
