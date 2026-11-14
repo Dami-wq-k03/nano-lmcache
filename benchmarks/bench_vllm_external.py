@@ -115,8 +115,18 @@ def generate_case(
         # Compile/warm engine paths with a different prefix; measured cold prompt
         # must still be absent from external storage.
         warm = list(reversed(tokens))
-        for _ in range(args.warmup):
+        for index in range(args.warmup):
+            writes_before = len(server.writes) if server is not None else 0
             engine.generate([{"prompt_token_ids": warm}], params, use_tqdm=False)
+            if server is not None and index == 0:
+                # Drain the first warmup before another request can observe a
+                # partial prefix. Otherwise its late PUTs can falsely satisfy
+                # the measured cold request's publication counter.
+                deadline = time.monotonic() + 30
+                while len(server.writes) < writes_before + args.prompt_tokens // 16:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("warmup writes did not publish")
+                    time.sleep(0.01)
         cases = [("cold", tokens)] + [("repeat", tokens)] * args.repeats
         for index in range(getattr(args, "store_repeats", args.repeats)):
             novel = tokens.copy()
@@ -143,7 +153,11 @@ def generate_case(
             if phase == "repeat" and (server is not None or local_apc):
                 expected_reads = expected_hits // 16 if server is not None else 0
                 if reads != expected_reads:
-                    raise RuntimeError(f"expected payload reads, got {reads}")
+                    raise RuntimeError(
+                        f"phase={phase}: expected {expected_reads} payload reads, "
+                        f"got {reads}; cached_tokens={output.num_cached_tokens}; "
+                        f"writes={writes_before}"
+                    )
                 if output.num_cached_tokens != expected_hits:
                     raise RuntimeError(
                         f"wrong cached tokens: {output.num_cached_tokens}"
