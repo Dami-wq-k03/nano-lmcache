@@ -38,6 +38,7 @@
 | [INT8 KV 压缩（英文）](../quantized-kv.md) | 节省多少空间，会增加哪些误差和延迟？ |
 | [nano-vLLM TTFT（英文）](../nanovllm-benchmark.md) | 何时从内存或磁盘加载比重新计算前缀便宜？ |
 | [GPU/数据平面实验（英文）](../gpu-experiment-report.md) | 在开发 GPU 上，pinned/异步复制、页面操作、INT8、重启恢复和 write-behind 的实测结果是什么？ |
+| [服务验证（英文）](../serving-validation-report.md) | 真实 vLLM 外部命中、异步导出、NVMe 冷读和双卡模型交接 |
 
 [GPU 验证记录（英文）](../gpu-validation.md)记录了完整测试、真实模型示例、跨进程磁盘恢复和引擎 Trace 渲染的实测结果。
 

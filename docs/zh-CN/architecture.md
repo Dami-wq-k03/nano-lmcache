@@ -221,7 +221,7 @@ graph LR
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`：L2 块计数、读取和保存 |
 | `integrations/nanovllm/engine.py` | `attach()`：在运行中的引擎内恢复 L2、保存新块（需要 nano-vLLM） |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`：引擎块与张量载荷之间转换（需要 torch） |
-| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 的部分 scheduler 查询和 worker 保存路径；worker 外部加载仍待完成 |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 共享存储查询、保存/加载和可选异步发布；真实外部命中生成已验证 |
 | `experimental/dataplane/` | 与 PyTorch 无关的 `KVLayout`、页面生命周期、逻辑/物理副本目录和 CPU 参考存储 |
 | `experimental/scheduler.py` | 透明的重算/加载估算器和去重 prefetch 状态机 |
 | `observability/` | 请求上下文、事件模式、Recorder 与存储 Trace |
@@ -431,7 +431,7 @@ TieredStorage(
 
 缓存逻辑依赖 `CacheStorage` 协议。`MemoryKVCache`、`DiskKVCache` 和 `CPUOffloadKVCache`
 已实现条目/字节容量与前缀安全淘汰。内存、磁盘和分层实例支持上述范围内的线程共享访问。
-可插拔淘汰策略与多进程共享缓存服务分别是路线图 M11、M12，尚未实现。
+可插拔淘汰策略和小型多进程共享缓存服务已实现（M11/M12）。
 
 ## 推理引擎集成
 
@@ -453,3 +453,13 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 ## 设计原则
 
 每个阶段都应引入一个有意义的新概念，并通过测试和可运行的示例来展示其行为。
+
+## vLLM 异步导出
+
+`tensor.async_store.AsyncTensorWriteStorage` 拥有 GPU 快照，通过独立 CUDA Stream
+复制到有界页锁定池。后台线程等待事件，再克隆 CPU 数据并发布，避免后端引用被复用的池缓冲区。
+队列或池满时施加背压；关闭时排空并报告错误。GPU Gather 和快照仍有成本。
+没有新增完整分块时跳过导出。只有 vLLM Worker 创建异步写入器。
+
+`RemoteCacheServer` 接受字节存储后端，包括持久化 `CoalescedDiskKVCache`。
+真实 vLLM、NVMe 和双卡模型实测及范围见[服务验证（英文）](../serving-validation-report.md)。

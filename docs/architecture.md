@@ -272,7 +272,7 @@ understood without a GPU or an inference engine.
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
-| `integrations/vllm/nano_lmcache_connector.py` | Partial vLLM 0.33.0 scheduler lookup and worker save path; external worker load remains open |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 shared-store lookup, save/load and optional asynchronous publication; real external-hit generation validated |
 | `experimental/dataplane/` | PyTorch-independent `KVLayout`, page lifecycle, logical/physical replica directory, and CPU reference store |
 | `experimental/scheduler.py` | Transparent recompute/load estimator and duplicate-safe prefetch state machine |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
@@ -763,8 +763,7 @@ added without touching the cache loop. Capacity limits and prefix-safe
 eviction, including byte-based capacity, are implemented in `MemoryKVCache`,
 `DiskKVCache`, and `CPUOffloadKVCache`. Memory, disk, and tiered storage
 support threads sharing one instance as described above. Pluggable LRU/LFU
-eviction policies are implemented in M11; a shared cache server remains
-roadmap task M12.
+eviction policies and a small shared cache service are implemented (M11/M12).
 
 ## Inference integration
 
@@ -793,3 +792,16 @@ disaggregated scheduling. See the [PD guide](pd-disaggregation.md).
 
 Each stage should add one meaningful concept, with tests and runnable
 examples demonstrating its behavior.
+
+## Asynchronous vLLM export
+
+`tensor.async_store.AsyncTensorWriteStorage` owns GPU snapshots and copies them
+on an independent CUDA stream into a bounded pinned pool. A worker waits for
+the event and clones CPU data before backend publication, so retained values
+never alias recycled buffers. Saturation applies backpressure; shutdown drains
+writes and surfaces errors. GPU gather/snapshot still costs time. Requests with
+no newly complete chunk skip export. Only vLLM workers create this writer.
+
+`RemoteCacheServer` accepts byte-storage backends, including persistent
+`CoalescedDiskKVCache`. See [serving validation](serving-validation-report.md)
+for actual vLLM, NVMe and two-GPU model measurements and their scope.

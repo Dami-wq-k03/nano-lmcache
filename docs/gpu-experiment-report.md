@@ -4,6 +4,9 @@ This report records the first implementation and measurements from the research
 roadmap. Results are measurements of this checkout and this machine, not
 portable performance guarantees.
 
+The [serving follow-up](serving-validation-report.md) supersedes the V4, async
+store, NVMe and model-handoff status below. Earlier measurements remain historical.
+
 ## Current checkout validation (2026-11-14)
 
 Local checks: full suite **748 passed, 75 skipped**; CPU tensor group

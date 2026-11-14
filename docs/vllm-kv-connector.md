@@ -178,12 +178,21 @@ Run targeted validation from the repository root:
 .venv/bin/mypy --follow-imports=silent src/nano_lmcache/integrations/vllm
 ```
 
-The implementation's local validation environment has CPU PyTorch, **no
-vLLM installation and no CUDA**. The targeted run completed **17 passed,
-6 skipped** (one whole real-vLLM unit module, the CUDA adapter test and four
-GPU integration cases). Ruff and source-only mypy checks passed. The existing
-integration file remains the V3 save/generation regression; no real-model warm
-external-hit generation or performance result is claimed for V4.
+Real vLLM 0.33.0 GPU external-hit generation is now measured with APC disabled,
+actual remote payload GETs and exact output-token comparison. See the
+[serving validation report](serving-validation-report.md) for samples,
+TTFT/TPOT and limitations. Earlier CPU-only validation is historical.
+
+### Optional asynchronous publication
+
+Set `kv_connector_extra_config={"remote_cache": {"host": host, "port": port},
+"async_store": True, "write_queue": 32}`. Only workers create the writer;
+schedulers access shared storage directly. Owned GPU snapshots are copied via
+CUDA events into a bounded pinned pool and published in a background thread.
+Saturation blocks producers; shutdown drains pending writes. Publication can
+finish after the request, so the benchmark reports that wait separately.
+Requests with no newly complete chunk skip export. Loads remain synchronous;
+novel-prefix benchmark samples exercise repeated actual stores.
 
 ## V3: scheduler-to-worker and real-model KV validation
 
