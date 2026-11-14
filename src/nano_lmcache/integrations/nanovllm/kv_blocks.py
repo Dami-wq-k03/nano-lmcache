@@ -27,12 +27,9 @@ CPU offload, disk and tiered storage) works for nano-vLLM blocks
 unchanged, and a reader learns one layout instead of one per engine.
 """
 
-import torch
+from collections.abc import Sequence
 
-# Axis order that turns a block view [kv, layer, token, head, dim] into a
-# chunk [layer, kv, head, token, dim]. The same permutation turns a chunk
-# back into block order, because it only swaps two pairs of axes.
-_BLOCK_TO_CHUNK = (1, 0, 3, 2, 4)
+import torch
 
 
 def chunk_shape(kv_cache: torch.Tensor) -> tuple[int, int, int, int, int]:
@@ -49,11 +46,25 @@ def export_block(kv_cache: torch.Tensor, block_id: int) -> torch.Tensor:
     be a copy, not a view: nano-vLLM reuses a physical block for other
     tokens once the sequence that owned it finishes.
     """
-    _check_block_id(kv_cache, block_id)
-    block = kv_cache[:, :, block_id]
-    # `.contiguous()` already copies a permuted view; `.clone()` guarantees
-    # a copy even in the corner case where the permuted view is contiguous.
-    return block.permute(_BLOCK_TO_CHUNK).contiguous().clone()
+    return export_blocks(kv_cache, [block_id])[0]
+
+
+def export_blocks(
+    kv_cache: torch.Tensor, block_ids: Sequence[int]
+) -> list[torch.Tensor]:
+    """Gather blocks once; return independent, contiguous [L, 2, H, T, D] chunks.
+
+    The chunks are disjoint views of one owned batch, not views of the engine's
+    reusable cache. Block order (including repeated source IDs) is preserved.
+    """
+    _check_kv_cache(kv_cache)
+    for block_id in block_ids:
+        _check_block_id(kv_cache, block_id)
+    if not block_ids:
+        return []
+    indices = torch.tensor(block_ids, dtype=torch.long, device=kv_cache.device)
+    batch = kv_cache.index_select(2, indices).permute(2, 1, 0, 4, 3, 5).contiguous()
+    return list(batch.unbind(0))
 
 
 def import_block(
@@ -70,7 +81,42 @@ def import_block(
     before the copy has finished. Code that runs the model on another
     stream must synchronize first.
     """
-    _check_block_id(kv_cache, block_id)
+    import_blocks(kv_cache, [block_id], [payload])
+
+
+def import_blocks(
+    kv_cache: torch.Tensor,
+    block_ids: Sequence[int],
+    payloads: Sequence[torch.Tensor],
+) -> None:
+    """Validate a batch, then scatter on the current stream before forward.
+
+    Stack on each source device so mixed CPU/GPU storage tiers still work,
+    with one transfer and indexed scatter per source device, not per block.
+    Destination IDs must be unique; duplicate indexed writes are ambiguous.
+    """
+    _check_kv_cache(kv_cache)
+    if len(block_ids) != len(payloads):
+        raise ValueError("block_ids and payloads must have the same length")
+    if len(set(block_ids)) != len(block_ids):
+        raise ValueError("destination block_ids must be unique")
+    groups: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
+    for block_id, payload in zip(block_ids, payloads, strict=True):
+        _check_block_id(kv_cache, block_id)
+        _check_payload(kv_cache, payload)
+        groups.setdefault(payload.device, []).append((block_id, payload))
+    for group in groups.values():
+        indices = torch.tensor(
+            [block_id for block_id, _ in group],
+            dtype=torch.long,
+            device=kv_cache.device,
+        )
+        batch = torch.stack([payload for _, payload in group])
+        source = batch.permute(2, 1, 0, 4, 3, 5).to(kv_cache.device)
+        kv_cache.index_copy_(2, indices, source)
+
+
+def _check_payload(kv_cache: torch.Tensor, payload: torch.Tensor) -> None:
     expected = chunk_shape(kv_cache)
 
     if payload.dim() != len(expected):
@@ -100,9 +146,6 @@ def import_block(
             f"dtype {kv_cache.dtype}"
         )
 
-    kv_cache[:, :, block_id].copy_(payload.permute(_BLOCK_TO_CHUNK))
-
-
 def _check_kv_cache(kv_cache: torch.Tensor) -> None:
     if kv_cache.dim() != 6 or kv_cache.shape[0] != 2:
         raise ValueError(
@@ -116,5 +159,5 @@ def _check_block_id(kv_cache: torch.Tensor, block_id: int) -> None:
     num_blocks = kv_cache.shape[2]
     # Negative IDs must be rejected explicitly: nano-vLLM pads block tables
     # with -1, and `kv_cache[:, :, -1]` would quietly mean the last block.
-    if not 0 <= block_id < num_blocks:
+    if type(block_id) is not int or not 0 <= block_id < num_blocks:
         raise ValueError(f"block_id must be in 0..{num_blocks - 1}, got {block_id}")

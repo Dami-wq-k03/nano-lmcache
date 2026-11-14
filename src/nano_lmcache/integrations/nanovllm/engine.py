@@ -39,7 +39,7 @@ import torch
 from nanovllm.engine.block_manager import BlockManager
 
 from nano_lmcache.integrations.nanovllm.external_cache import NanoVLLMExternalCache
-from nano_lmcache.integrations.nanovllm.kv_blocks import export_block, import_block
+from nano_lmcache.integrations.nanovllm.kv_blocks import export_blocks, import_blocks
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
 from nano_lmcache.observability.context import current_request_id, request_context
 
@@ -203,11 +203,11 @@ class ExternalBlockManager(BlockManager):  # type: ignore[misc]
             return
         with request_context(_request_id(seq)):
             keys = self.external.block_keys(seq.token_ids, end)
-            payloads = []
-            for index in missing:
+            payloads = export_blocks(
+                self.kv_cache, [seq.block_table[index] for index in missing]
+            )
+            for index, payload in zip(missing, payloads, strict=True):
                 block_id = seq.block_table[index]
-                payload = export_block(self.kv_cache, block_id)
-                payloads.append(payload)
                 self.external.record_event(
                     "gpu_export",
                     chunk_index=index,
@@ -329,9 +329,14 @@ def _wrap_run(runner: Any, manager: ExternalBlockManager) -> None:
         # Same CUDA stream as the forward pass, so attention cannot read a
         # block before its copy has finished (rule 6).
         pending_loads, manager._pending_loads = manager._pending_loads, []
+        if pending_loads:
+            import_blocks(
+                runner.kv_cache,
+                [item.block_id for item in pending_loads],
+                [item.payload for item in pending_loads],
+            )
         for item in pending_loads:
             with request_context(item.request_id):
-                import_block(runner.kv_cache, item.block_id, item.payload)
                 manager.external.record_event(
                     "gpu_import",
                     chunk_index=item.chunk_index,

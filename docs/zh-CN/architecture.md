@@ -1,7 +1,7 @@
 
 [English](../architecture.md) | [简体中文](architecture.md)
 
-本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-03。实验报告与更完整的性能推导见对应英文专题。
+本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-14。实验报告与更完整的性能推导见对应英文专题。
 
 # 架构
 
@@ -9,7 +9,8 @@
 [文档目录](README.md)。任务状态统一见 [ROADMAP（英文）](../../ROADMAP.md)。
 
 按主题阅读：[容量](#容量与淘汰)、[磁盘](#磁盘存储)、[INT8 压缩](#可选-int8-kv-压缩)、
-[分层](#分层存储)、[线程安全](#线程安全)、[卸载](#gpu-到-cpu-的卸载)和[引擎集成](#推理引擎集成)。
+[分层](#分层存储)、[线程安全](#线程安全)、[卸载](#gpu-到-cpu-的卸载)、
+[实验性数据平面](#实验性数据平面-abi)和[引擎集成](#推理引擎集成)。
 
 ## 图示
 
@@ -56,6 +57,33 @@ graph TD
 调用方有两种使用方式。第一种是直接使用 `ChunkedPrefixCache`，存储任意类型的数据载荷，纯 Python 示例和测试就是这样做的。第二种是调用 `run_with_prefix_cache` 来运行真实模型：该函数查找已缓存的前缀，通过 `join_kv` 将匹配到的分块张量还原为 `past_key_values`，让模型处理剩余 token，再通过 `split_kv` 将结果拆分为分块并存储。
 
 依赖关系只允许从 `tensor/` 指向 `core/`，不能反向依赖。对于 `ChunkedPrefixCache` 和存储层而言，分块张量只是一个不透明的数据载荷，因此即使没有安装 PyTorch，核心逻辑仍然可以运行。
+
+### 实验性数据平面 ABI
+
+实验性的 `nano_lmcache.experimental.dataplane` 包在不改变教学 API 的前提下，开始提供下一层抽象。`KVLayout` 描述模型命名空间、模型 revision、tokenizer 指纹、page 大小、dtype、NHD/HND 的 K/V 轴顺序以及 layer 排列，而且不导入 PyTorch。`KVPageRef` 描述一个物理副本，并明确记录 reservation、transfer、ready、failure 和 eviction 状态。
+
+`KVPageDirectory` 负责逻辑页到物理副本的映射。因此，同一个 logical page 可以同时拥有 GPU、pinned CPU、CPU、NVMe 或 remote 副本；目录会选择 ready 的 authoritative 副本，在它被淘汰后回退到其他 ready 副本。所有副本必须匹配 layout、token range 和 generation，但 compression 和物理 page ID 可以不同。可选的 tensor adapter 会消费这个 ABI，同时不让核心包依赖 PyTorch；descriptor 包本身刻意不包含 GPU 代码。
+
+### 实验性执行与存储适配器
+
+`tensor/kernels.py` 提供显式选择的 CUDA/Triton gather/scatter；
+`tensor/codecs.py` 提供 GPU INT8 和参考版 FP8/INT4 分块量化。
+`tensor/mapped_host.py` 由 GPU 线程直接写 mapped pinned 主机内存，
+部分场景会变慢，因此不会自动启用。`tensor/peer.py` 明确区分 peer access
+与 pinned 主机内存中转。传输完成前，调用方必须保持输入不变，等待对应事件后再归还缓冲区。
+
+`storage/remote.py` 提供支持批量查找的本地 TCP 服务。
+`storage/async_write.py` 将自有、不可变的载荷排入后台线程，关闭时拒绝新写入，
+排空已接受的任务，即使后端失败也会退出线程。读取待提交的 key 会等待写入完成。
+nano-vLLM 示例的 `--async-store` 仅将 tier 写入移入后台，GPU 导出仍在请求路径上。
+
+`storage/coalesced.py` 使用追加文件和原子发布的带校验索引。
+容量只计算存活载荷，不包含失效文件片段，目前没有压缩回收工具。
+`storage/prefetch.py` 提供有界线程预取，future 及结果由调用方持有。
+`storage/uring.py` 是独立的可选 Linux 注册缓冲区读取器，不支持时明确报错，
+尚未接入 packed backend。这些实现不代表已经获得 GDS 或冷 NVMe 的吞吐结果。
+
+复现命令、硬件、性能退化与待验证项见[实验报告（英文）](../gpu-experiment-report.md)。
 
 ### 如何生成分块键
 
@@ -180,21 +208,29 @@ graph LR
 | `storage/tiered.py` | `TieredStorage`：在较慢的存储层前设置较快的存储层，采用写穿透策略 |
 | `storage/stats.py` | `StorageStats`：记录淘汰和拒绝写入的次数 |
 | `storage/memory.py` | `MemoryKVCache`：可选有界容量、采用前缀安全 LRU 策略的内存存储 |
+| `storage/remote.py` | 长度前缀 JSON 共享缓存服务/客户端，支持批量查询 |
+| `storage/async_write.py` | 有界 write-behind 队列、提交可见性与背压 |
 | `tensor/kv_chunks.py` | `split_kv` / `join_kv`：在逐层 KV 张量与分块张量之间转换（需要 torch） |
 | `tensor/offload.py` | `CPUOffloadKVCache`：将 GPU 分块保存在页锁定的 CPU 内存中（需要 torch） |
+| `tensor/transfer.py` | 基于 pinned buffer pool 和 stream/event 的异步页面复制（需要 torch） |
+| `tensor/page_ops.py` | 非连续 page table 的 torch gather/scatter 参考实现（需要 torch） |
+| `tensor/quantization.py` | 按 head/channel 轴的 INT8 参考量化（需要 torch） |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`：为磁盘提供无损或可选 INT8 张量编码（需要 torch） |
 | `tensor/hf.py` | `run_with_prefix_cache`：与 HuggingFace 模型一起复用前缀 KV（需要 torch 和 transformers） |
 | `integrations/nanovllm/layout.py` | `KVBlockLayout`：引擎块字节布局及缓存命名空间 |
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`：L2 块计数、读取和保存 |
 | `integrations/nanovllm/engine.py` | `attach()`：在运行中的引擎内恢复 L2、保存新块（需要 nano-vLLM） |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`：引擎块与张量载荷之间转换（需要 torch） |
-| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 空操作 Connector，记录 scheduler/worker 生命周期；[GPU 验证（英文）](../vllm-kv-connector.md#real-request-validation-2026-11-08) |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 共享存储查询、保存/加载和可选异步发布；真实外部命中生成已验证 |
+| `experimental/dataplane/` | 与 PyTorch 无关的 `KVLayout`、页面生命周期、逻辑/物理副本目录和 CPU 参考存储 |
+| `experimental/scheduler.py` | 透明的重算/加载估算器和去重 prefetch 状态机 |
 | `observability/` | 请求上下文、事件模式、Recorder 与存储 Trace |
 | `datasets/`、`replay/` | 合成/Token 工作负载、FreeInference 适配与回放报告 |
 | `visualization/`、`visualize.py` | 导入已有 Trace，生成离线 HTML 查看器 |
 
 `tensor` 包是可选的。`core` 和 `storage` 都不会导入它，因此即使没有安装 PyTorch，也可以使用缓存核心概念。
 
+GPU/数据平面实测见[GPU/数据平面实验报告（英文）](../gpu-experiment-report.md)。
 调用方通过 `ChunkedPrefixCache` 进行操作。它拥有一个 `CacheMetrics` 实例，并且只依赖 `CacheStorage` 协议，而不依赖任何具体的存储后端。`None` 专门用于表示未命中，因此 `store()` 会拒绝 `None` 数据载荷。
 
 ### 有界工作负载回放
@@ -395,7 +431,7 @@ TieredStorage(
 
 缓存逻辑依赖 `CacheStorage` 协议。`MemoryKVCache`、`DiskKVCache` 和 `CPUOffloadKVCache`
 已实现条目/字节容量与前缀安全淘汰。内存、磁盘和分层实例支持上述范围内的线程共享访问。
-可插拔淘汰策略与多进程共享缓存服务分别是路线图 M11、M12，尚未实现。
+可插拔淘汰策略和小型多进程共享缓存服务已实现（M11/M12）。
 
 ## 推理引擎集成
 
@@ -417,3 +453,13 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 ## 设计原则
 
 每个阶段都应引入一个有意义的新概念，并通过测试和可运行的示例来展示其行为。
+
+## vLLM 异步导出
+
+`tensor.async_store.AsyncTensorWriteStorage` 拥有 GPU 快照，通过独立 CUDA Stream
+复制到有界页锁定池。后台线程等待事件，再克隆 CPU 数据并发布，避免后端引用被复用的池缓冲区。
+队列或池满时施加背压；关闭时排空并报告错误。GPU Gather 和快照仍有成本。
+没有新增完整分块时跳过导出。只有 vLLM Worker 创建异步写入器。
+
+`RemoteCacheServer` 接受字节存储后端，包括持久化 `CoalescedDiskKVCache`。
+真实 vLLM、NVMe 和双卡模型实测及范围见[服务验证（英文）](../serving-validation-report.md)。

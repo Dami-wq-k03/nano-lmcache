@@ -67,13 +67,132 @@ available, the scheduler's current block table takes precedence, including
 copy-on-write replacements. Finished requests release their planning state.
 
 The worker gathers the whole planned prefix again on each prefill step and
-stores chunks after all layers arrive. Incremental writes and external loads
-are separate follow-up work. Scheduler and worker
-in-memory caches remain separate; worker saves do not enable external hits in
-the scheduler. Cache namespaces fingerprint the model path/ID, revision, HF
-configuration, model/KV dtype, quantization, parallel sizes, chunk size and
-layout version. Local paths must identify immutable weights; this is a
-configuration fingerprint, not a weight-content hash.
+stores chunks after all layers arrive. Incremental writes remain follow-up
+work. By default, scheduler and worker in-memory caches remain separate;
+worker saves do not enable external hits in the scheduler. The shared-store
+option below enables external loads. Cache namespaces fingerprint the model
+path/ID, revision, HF configuration, model/KV dtype, quantization, parallel
+sizes, chunk size and layout version. Local paths must identify immutable
+weights; this is a configuration fingerprint, not a weight-content hash.
+
+## V4: shared external worker KV loads
+
+Configure **the same endpoint** for the scheduler and worker roles:
+
+```python
+from vllm.config import KVTransferConfig
+
+transfer_config = KVTransferConfig(
+    kv_connector="NanoLMCacheConnector",
+    kv_connector_module_path="nano_lmcache.integrations.vllm.nano_lmcache_connector",
+    kv_role="kv_both",
+    kv_load_failure_policy="recompute",
+    kv_connector_extra_config={
+        "remote_cache": {"host": "127.0.0.1", "port": 9000},
+    },
+)
+# Pass kv_transfer_config=transfer_config to LLM(...).
+```
+
+Run the existing cache service separately, keeping its process alive:
+
+```python
+import threading
+from nano_lmcache.storage.remote import RemoteCacheServer
+
+server = RemoteCacheServer(host="127.0.0.1", port=9000)
+server.start()
+try:
+    threading.Event().wait()
+finally:
+    server.close()
+```
+
+The service is an experimental, in-memory TCP store: no authentication, TLS
+or restart persistence. Use a trusted network only. Scheduler and workers
+create separate `RemoteCacheClient` instances using the existing
+`TensorSerializer` (`weights_only=True`, CPU decoding). Without `remote_cache`,
+the connector remains save-only and **always reports zero external hits**,
+even if its scheduler-local cache has entries.
+
+The supported shared-load scope is deliberately narrow: vLLM **0.33.0**, one
+ordinary causal full-attention cache group, equal K/V head dimensions,
+FP16/BF16/FP32, `cache_dtype="auto"`, no model quantization, no LoRA or
+multimodal models, TP=PP=1 and no kernel-block splitting. The shared option
+rejects unsupported configured groups/parallelism/dtypes, and registration
+checks `[num_blocks, num_kv_heads, block_size, 2 * head_dim]` views. Chunk size
+is exactly block size. This does not add hybrid, MLA, sliding-window,
+quantized KV, asynchronous scheduler loads or sleep-mode support.
+
+1. Scheduler lookup tests chained chunk-key **presence**, not tensor payloads.
+   It stops at the first miss, subtracts the local APC prefix and leaves at
+   least one prompt token for logits. It returns `(additional_tokens, False)`;
+   the scheduler sets `has_sync_kv_loads` for a positive allocated hit.
+2. Allocation records the local boundary and admitted external range.
+   `metadata.loads` contains picklable `ChunkLoadPlan(request_id, key,
+   slot_mapping)` objects, one per chunk, with no tensors or engine/request
+   objects. Plans use the current destination block table, including resumed
+   requests and scheduler-provided replacements. Already-local slots are not
+   loaded. For example, chunks saved from blocks `[7, 2]` can load into
+   `[3, 8]` in the next request.
+3. `start_load_kv()` fetches CPU chunks and scatters every layer's K and V into
+   registered worker buffers. It does **not** require attention metadata:
+   the 0.33 V2 runner can call it with `ForwardContext.attn_metadata=None`.
+   Remote reads are synchronous; CUDA writes use the device's current stream
+   and record per-layer completion events. `wait_for_layer_load()` enqueues
+   a stream wait before attention. CPU writes finish immediately. Repeated
+   starts in the same step do not overwrite KV again; clearing/rebinding
+   metadata drains outstanding events and resets step-local state.
+4. Missing entries (including eviction after lookup), undecodable payloads,
+   wrong shape/dtype or non-finite tensors report the affected **destination
+   block IDs** through `get_block_ids_with_load_errors()` in the same step.
+   Validation precedes all-layer writes for each chunk. Failed requests do
+   not publish any saves from that forward, including downstream KV. vLLM
+   discards the affected output and recomputes from the first invalid block
+   when `kv_load_failure_policy="recompute"`; its default `"fail"` instead
+   fails the request. Successful synchronous loads do not report asynchronous
+   `finished_recving` IDs. Arbitrary finite-valued corruption is not detected:
+   the existing tensor serializer has no content checksum.
+
+### V4 validation and limitations
+
+Engine-independent CPU tests in
+[`test_vllm_kv_load.py`](../tests/unit/test_vllm_kv_load.py) exercise the actual
+adapter against a live local cache service, with independent writer/reader
+clients, pickle round trips, nonconsecutive slots, all-layer K/V comparisons,
+APC-prefix exclusion, missing/corrupt chunks, step reset and event-wait
+semantics. The adapter module imports without either torch or vLLM.
+The optional real-vLLM connector unit tests also cover scheduler-to-worker
+plans, new/resumed requests, independent role clients and failed-forward save
+suppression. A CUDA-marked adapter test checks another stream's event wait.
+
+Run targeted validation from the repository root:
+
+```bash
+.venv/bin/python -m pytest -q \
+  tests/unit/test_vllm_kv_load.py \
+  tests/unit/test_nano_lmcache_connector.py \
+  tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py
+.venv/bin/ruff check src/nano_lmcache/integrations/vllm \
+  tests/unit/test_vllm_kv_load.py tests/unit/test_nano_lmcache_connector.py
+.venv/bin/mypy --follow-imports=silent src/nano_lmcache/integrations/vllm
+```
+
+Real vLLM 0.33.0 GPU external-hit generation is now measured with APC disabled,
+actual remote payload GETs and exact output-token comparison. See the
+[serving validation report](serving-validation-report.md) for samples,
+TTFT/TPOT and limitations. Earlier CPU-only validation is historical.
+
+### Optional asynchronous publication
+
+Set `kv_connector_extra_config={"remote_cache": {"host": host, "port": port},
+"async_store": True, "write_queue": 32}`. Only workers create the writer;
+schedulers access shared storage directly. Owned GPU snapshots are copied via
+CUDA events into a bounded pinned pool and published in a background thread.
+Saturation blocks producers; shutdown drains pending writes. Publication can
+finish after the request, so the benchmark reports that wait separately.
+Requests with no newly complete chunk skip export. Loads remain synchronous;
+novel-prefix benchmark samples exercise repeated actual stores.
 
 ## V3: scheduler-to-worker and real-model KV validation
 
@@ -156,9 +275,10 @@ removed. Model-loading output, framework warnings and pytest output are excluded
 The [NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log)
 contains 672 entries emitted by the connector's `_log_call()` helper while
 saving real Qwen3 KV, in both full and chunked prefill. This INFO
-trace run completed **2 passed, 2 deselected in 76.30 seconds**. External
-loading remains unimplemented; scheduler-side external lookup returns zero
-because its storage is separate from the worker's saved CPU chunks.
+trace run completed **2 passed, 2 deselected in 76.30 seconds**. In that V3
+run external loading was unimplemented; scheduler-side external lookup
+returned zero because its storage was separate from the worker's CPU chunks.
+V4's opt-in shared-store load path is described above.
 
 | Setting | Recorded value |
 | --- | --- |
@@ -227,7 +347,7 @@ to CPU. The last required layer completes the six all-layer chunks and stores
 them. `wait_for_save()` checks that no layers are missing.
 
 The V2 runner invokes `start_load_kv()` after forward in this no-external-load
-case. It remains a no-op. The earlier sequence diagram illustrates the
+case. There is no load work. The earlier sequence diagram illustrates the
 synchronous-load path; it is not the ordering of this save-only trace.
 
 ### NanoLMCacheConnector calls during chunked prefill

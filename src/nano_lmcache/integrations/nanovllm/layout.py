@@ -19,11 +19,14 @@ picking the fields that seem to matter.
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from nano_lmcache.integrations.nanovllm.kv_blocks import chunk_shape
+
+if TYPE_CHECKING:
+    from nano_lmcache.experimental.dataplane.layout import KVLayout
 
 BLOCK_FORMAT_VERSION = 1
 
@@ -192,6 +195,23 @@ class KVBlockLayout:
         for size in self.chunk_shape:
             count *= size
         return count * int(torch.empty((), dtype=self.torch_dtype).element_size())
+
+    def to_kv_layout(self) -> "KVLayout":
+        """Describe canonical stored chunks via the engine-independent page ABI."""
+        from nano_lmcache.experimental.dataplane.layout import KVLayout
+
+        return KVLayout(
+            model_namespace=self.namespace(),
+            model_revision=self.revision,
+            num_layers=self.num_layers,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            page_tokens=self.block_size,
+            dtype=self.dtype,
+            key_layout="HND",
+            value_layout="HND",
+            engine_layout_version=f"nanovllm-kv/v{BLOCK_FORMAT_VERSION}",
+        )
 
     def namespace(self) -> str:
         """Differs whenever any field, or the block format version, differs."""

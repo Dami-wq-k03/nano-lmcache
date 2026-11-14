@@ -1,10 +1,8 @@
 # mypy: disable-error-code="unused-ignore"
-"""Scheduler prefix lookup with lifecycle tracing for vLLM 0.33.0.
+"""Shared external KV loading and worker chunk saving for vLLM 0.33.0.
 
-Import this module in the separate vLLM environment. Workers save complete
-CPU chunks from scheduler-generated prompt save plans. Loading is not
-implemented; positive lookup results remain for controlled scheduler
-validation. Save planning supports one full-attention KV cache group.
+The default in-process store is save-only. External hits require a shared
+RemoteCacheClient endpoint, one ordinary full-attention group and TP=PP=1.
 """
 
 from __future__ import annotations
@@ -26,7 +24,16 @@ from vllm.logger import init_logger
 from vllm.utils.gpu_sync_debug import gpu_sync_allowed
 
 from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.integrations.vllm.kv_load import (
+    ChunkLoadPlan,
+    KVLoadAdapter,
+    chunk_keys,
+)
+from nano_lmcache.storage.protocol import CacheStorage
+from nano_lmcache.storage.remote import RemoteCacheClient
+from nano_lmcache.tensor.async_store import AsyncTensorWriteStorage
 from nano_lmcache.tensor.kv_chunks import LayerKV, split_kv
+from nano_lmcache.tensor.serializers import TensorSerializer
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -82,6 +89,7 @@ class NanoLMCacheConnectorMetadata(KVConnectorMetadata):  # type: ignore[misc]
     step_id: int = 0
     request_ids: tuple[str, ...] = ()
     requests: tuple[ReqMeta, ...] = ()
+    loads: tuple[ChunkLoadPlan, ...] = ()
 
 
 def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> None:
@@ -101,7 +109,7 @@ def _log_call(connector: NanoLMCacheConnector, method: str, **details: Any) -> N
 
 
 class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
-    """Scheduler lookup and worker chunk saving with lifecycle tracing."""
+    """Scheduler lookup and worker chunk save/load with lifecycle tracing."""
 
     def __init__(
         self,
@@ -119,9 +127,63 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         self._pending_save_layers: dict[str, dict[str, LayerKV]] = {}
         self._save_requests: dict[str, _SaveRequestState] = {}
         self._layer_names: list[str] = []
-        self._nano_lmcache_engine = ChunkedPrefixCache(
-            chunk_size=self._block_size, namespace=_cache_namespace(vllm_config)
+        self._namespace = _cache_namespace(vllm_config)
+        transfer_config = vllm_config.kv_transfer_config
+        assert transfer_config is not None
+        remote = transfer_config.kv_connector_extra_config.get("remote_cache")
+        self._shared_storage = remote is not None
+        storage: CacheStorage | None = None
+        if remote is not None:
+            from vllm.v1.kv_cache_interface import FullAttentionSpec
+
+            if (
+                vllm_config.parallel_config.tensor_parallel_size != 1
+                or vllm_config.parallel_config.pipeline_parallel_size != 1
+                or vllm_config.cache_config.cache_dtype != "auto"
+                or vllm_config.model_config.quantization is not None
+                or getattr(vllm_config.model_config, "is_multimodal_model", False)
+                or getattr(vllm_config, "lora_config", None) is not None
+                or len(kv_cache_config.kv_cache_groups) > 1
+                or any(
+                    type(group.kv_cache_spec) is not FullAttentionSpec
+                    or group.kv_cache_spec.head_size != group.kv_cache_spec.head_size_v
+                    or group.kv_cache_spec.sliding_window is not None
+                    or group.kv_cache_spec.attention_chunk_size is not None
+                    or group.kv_cache_spec.non_causal
+                    for group in kv_cache_config.kv_cache_groups
+                )
+            ):
+                raise ValueError(
+                    "Shared KV loads require unquantized text-only full attention, "
+                    "one cache group, auto KV dtype, no LoRA and TP=PP=1"
+                )
+            storage = RemoteCacheClient(
+                remote["host"], remote["port"], serializer=TensorSerializer()
+            )
+        self._remote_storage = (
+            storage if isinstance(storage, RemoteCacheClient) else None
         )
+        self._async_store: AsyncTensorWriteStorage | None = None
+        if transfer_config.kv_connector_extra_config.get("async_store", False):
+            if storage is None:
+                raise ValueError("async_store requires a shared remote_cache")
+            if role is KVConnectorRole.WORKER:
+                self._async_store = AsyncTensorWriteStorage(
+                    storage,
+                    max_pending=transfer_config.kv_connector_extra_config.get(
+                        "write_queue", 32
+                    ),
+                )
+                storage = self._async_store
+        self._nano_lmcache_engine = ChunkedPrefixCache(
+            chunk_size=self._block_size, namespace=self._namespace, storage=storage
+        )
+        self._load_adapter = KVLoadAdapter(
+            self._nano_lmcache_engine.storage, self._block_size
+        )
+        # Lookup records the local boundary; allocation may cap the remote hit.
+        self._matched_loads: dict[str, tuple[int, tuple[str, ...]]] = {}
+        self._pending_loads: dict[str, tuple[int, tuple[str, ...]]] = {}
 
     # Worker-side methods.
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
@@ -135,6 +197,18 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 for part in re.split(r"(\d+)", name)
             ],
         )
+        if self._shared_storage and any(
+            tensor.ndim != 4
+            or tensor.shape[2] != self._block_size
+            or tensor.shape[-1] % 2
+            or tensor.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+            for tensor in kv_caches.values()
+        ):
+            raise ValueError("Shared loads require [blocks, heads, block_size, 2D] KV")
+        self._load_adapter.reset()
+        self._load_adapter.layers = {
+            name: kv_caches[name] for name in self._layer_names
+        }
         _log_call(
             self,
             "register_kv_caches",
@@ -145,6 +219,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         )
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
+        self._load_adapter.reset()
         self._pending_save_layers.clear()
         self._trace_metadata = (
             connector_metadata
@@ -160,6 +235,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
 
     def clear_connector_metadata(self) -> None:
         _log_call(self, "clear_connector_metadata")
+        self._load_adapter.reset()
         super().clear_connector_metadata()
         self._trace_metadata = None
         self._pending_save_layers.clear()
@@ -172,9 +248,20 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             attn_metadata_type=type(forward_context.attn_metadata).__name__,
             kwargs_keys=sorted(kwargs),
         )
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, NanoLMCacheConnectorMetadata)
+        # The V2 runner may supply a context with attn_metadata=None. Registered
+        # KV views and scheduler slot plans are sufficient; do not skip loads.
+        with gpu_sync_allowed():
+            self._load_adapter.start(metadata.loads)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         _log_call(self, "wait_for_layer_load", layer_name=layer_name)
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, NanoLMCacheConnectorMetadata)
+        if metadata.loads and not self._load_adapter.started:
+            raise RuntimeError("start_load_kv must precede attention for external hits")
+        self._load_adapter.wait(layer_name)
 
     def save_kv_layer(
         self,
@@ -210,6 +297,13 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         chunk_size = self._nano_lmcache_engine.chunk_size
         head_dim = kv_layer.shape[-1] // 2
         for request in connector_metadata.requests:
+            # A failed load invalidates this forward's downstream KV too. Never
+            # publish it as a new shared prefix before scheduler recomputation.
+            if request.request_id in self._load_adapter.failed_requests or any(
+                slot // self._block_size in self._load_adapter.errors
+                for slot in request.slot_mapping
+            ):
+                continue
             num_tokens = len(request.token_ids) // chunk_size * chunk_size
             if num_tokens == 0:
                 continue
@@ -220,7 +314,9 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 block_idxs = slots // self._block_size
                 offsets = slots % self._block_size
                 selected = kv_layer[block_idxs, :, offsets]
-                kv_cache = selected.detach().cpu()
+                kv_cache = selected.detach()
+                if self._async_store is None:
+                    kv_cache = kv_cache.cpu()
 
             keys = kv_cache[..., :head_dim].permute(1, 0, 2)
             values = kv_cache[..., head_dim:].permute(1, 0, 2)
@@ -269,8 +365,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         _log_call(self, "get_block_ids_with_load_errors")
-        result: set[int] = super().get_block_ids_with_load_errors()
-        return result
+        return set(self._load_adapter.errors)
 
     def get_kv_connector_kv_cache_events(self) -> None:
         _log_call(self, "get_kv_connector_kv_cache_events")
@@ -292,6 +387,9 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
 
     def shutdown(self) -> None:
         _log_call(self, "shutdown")
+        self._load_adapter.reset()
+        if self._async_store is not None:
+            self._async_store.close()
         # vLLM 0.33.0's base shutdown() has no type annotations.
         super().shutdown()  # type: ignore[no-untyped-call]
 
@@ -309,13 +407,25 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         additional_matched_tokens = 0
         reason = "no_prompt_token_ids"
 
-        if token_ids:
-            result = self._nano_lmcache_engine.lookup(token_ids, request_id=request_id)
-            external_prefix_tokens = result.matched_tokens
-            max_reusable_tokens = (len(token_ids) - 1) // chunk_size * chunk_size
-            matched_end = min(external_prefix_tokens, max_reusable_tokens)
+        self._matched_loads.pop(request_id, None)
+        if self._remote_storage is None:
+            reason = "worker_local_storage"
+        elif token_ids and num_computed_tokens % chunk_size == 0:
+            keys = chunk_keys(token_ids[:-1], chunk_size, self._namespace)
+            matched_keys = []
+            for key in keys:
+                if key not in self._remote_storage:
+                    break
+                matched_keys.append(key)
+            external_prefix_tokens = len(matched_keys) * chunk_size
+            matched_end = external_prefix_tokens
             additional_matched_tokens = max(0, matched_end - num_computed_tokens)
-            reason = "lookup"
+            if additional_matched_tokens:
+                self._matched_loads[request_id] = (
+                    num_computed_tokens,
+                    tuple(matched_keys),
+                )
+            reason = "shared_lookup"
 
         _log_call(
             self,
@@ -343,12 +453,27 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             block_ids=blocks.get_block_ids(),
             num_external_tokens=num_external_tokens,
         )
+        self._pending_loads.pop(request.request_id, None)
+        match = self._matched_loads.pop(request.request_id, None)
+        if num_external_tokens > 0:
+            if match is None or num_external_tokens % self._block_size:
+                raise ValueError("External allocation requires a block-aligned lookup")
+            local_tokens, keys = match
+            start = local_tokens // self._block_size
+            end = start + num_external_tokens // self._block_size
+            if end > len(keys):
+                raise ValueError("External allocation exceeds the matched prefix")
+            self._pending_loads[request.request_id] = (local_tokens, keys[start:end])
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> NanoLMCacheConnectorMetadata:
         for request_id in scheduler_output.finished_req_ids:
             self._save_requests.pop(request_id, None)
+            self._matched_loads.pop(request_id, None)
+            self._pending_loads.pop(request_id, None)
+        for request_id in scheduler_output.preempted_req_ids or ():
+            self._pending_loads.pop(request_id, None)
 
         computed_tokens: dict[str, int] = {}
         for request in scheduler_output.scheduled_new_reqs:
@@ -369,6 +494,29 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 state.block_ids.extend(new_blocks[0])
             computed_tokens[request_id] = cached.num_computed_tokens[index]
 
+        block_state = scheduler_output.kv_connector_block_state
+        if block_state is not None:
+            for request_id in computed_tokens:
+                block_ids = block_state.get_block_ids(request_id)
+                if block_ids is not None:
+                    self._save_requests[request_id].block_ids = list(block_ids[0])
+
+        loads = []
+        for request_id in scheduler_output.num_scheduled_tokens:
+            pending = self._pending_loads.pop(request_id, None)
+            if pending is None:
+                continue
+            start, keys = pending
+            state = self._save_requests[request_id]
+            for index, key in enumerate(keys):
+                position = start + index * self._block_size
+                slots = tuple(
+                    state.block_ids[token // self._block_size] * self._block_size
+                    + token % self._block_size
+                    for token in range(position, position + self._block_size)
+                )
+                loads.append(ChunkLoadPlan(request_id, key, slots))
+
         requests: list[ReqMeta] = []
         chunk_size = self._nano_lmcache_engine.chunk_size
         scheduled = scheduler_output.num_scheduled_tokens
@@ -379,14 +527,10 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 continue
             computed_end = min(len(state.prompt_token_ids), computed + scheduled_tokens)
             save_end = computed_end // chunk_size * chunk_size
-            if save_end == 0:
+            # A partial tail after a cache hit completed no new chunk. Avoid
+            # exporting and serializing the restored prefix a second time.
+            if save_end <= computed // chunk_size * chunk_size:
                 continue
-
-            block_state = scheduler_output.kv_connector_block_state
-            if block_state is not None:
-                block_ids = block_state.get_block_ids(request_id)
-                if block_ids is not None:
-                    state.block_ids = list(block_ids[0])
 
             slots = tuple(
                 state.block_ids[position // self._block_size] * self._block_size
@@ -402,6 +546,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             step_id=self._step_sequence,
             request_ids=tuple(sorted(scheduler_output.num_scheduled_tokens)),
             requests=tuple(requests),
+            loads=tuple(loads),
         )
         self._trace_metadata = metadata
         _log_call(
@@ -430,6 +575,8 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             self, "request_finished", request_id=request.request_id, block_ids=block_ids
         )
         self._save_requests.pop(request.request_id, None)
+        self._matched_loads.pop(request.request_id, None)
+        self._pending_loads.pop(request.request_id, None)
         result: tuple[bool, dict[str, Any] | None] = super().request_finished(
             request, block_ids
         )

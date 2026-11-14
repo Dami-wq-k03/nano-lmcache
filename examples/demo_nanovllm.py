@@ -38,6 +38,7 @@ from nanovllm import LLM, SamplingParams
 from nano_lmcache.integrations.nanovllm import KVBlockLayout, NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.engine import attach
 from nano_lmcache.observability import TraceRecorder, TracingStorage, request_context
+from nano_lmcache.storage.async_write import AsyncWriteBehindStorage
 from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.tiered import TieredStorage
@@ -124,6 +125,17 @@ def main() -> None:
         "--memory-max-entries", type=int, default=None,
         help="limit the memory L2 tier to observe disk restores and eviction",
     )
+    parser.add_argument(
+        "--async-store",
+        action="store_true",
+        help="queue L2 writes in a bounded background worker",
+    )
+    parser.add_argument(
+        "--write-queue",
+        type=int,
+        default=32,
+        help="maximum pending L2 writes with --async-store",
+    )
     args = parser.parse_args()
 
     if args.clear:
@@ -133,6 +145,7 @@ def main() -> None:
 
     llm = LLM(args.model, enforce_eager=True, tensor_parallel_size=1,
               gpu_memory_utilization=0.5, max_model_len=4096)
+    write_behind: AsyncWriteBehindStorage | None = None
     try:
         layout = KVBlockLayout.from_hf_config(
             llm.model_runner.config.hf_config,
@@ -152,6 +165,11 @@ def main() -> None:
                 slow=TracingStorage(disk, recorder, name="disk"),
                 trace_recorder=recorder,
             )
+        if args.async_store:
+            write_behind = AsyncWriteBehindStorage(
+                storage, max_pending=args.write_queue
+            )
+            storage = write_behind
         # Warm up first. nano-vLLM compiles several layers and its sampler with
         # torch.compile, and the first new sequence length or batch size
         # triggers a recompile. That costs hundreds of milliseconds, has nothing
@@ -168,6 +186,8 @@ def main() -> None:
             ask(llm, manager, llm.tokenizer.encode(DOCUMENT + question),
                 f"question-{index}", recorder)
 
+        if write_behind is not None:
+            write_behind.flush()
         print(f"L2 now holds {len(disk)} blocks on disk.")
         if manager.stats.l2_hit_blocks == 0:
             print("Run the script again: the next process restores them from disk.")
@@ -179,8 +199,12 @@ def main() -> None:
             }, indent=2), encoding="utf-8")
             print(f"Trace written to {args.trace_output}")
     finally:
-        atexit.unregister(llm.exit)
-        llm.exit()
+        try:
+            if write_behind is not None:
+                write_behind.close()
+        finally:
+            atexit.unregister(llm.exit)
+            llm.exit()
 
 
 if __name__ == "__main__":

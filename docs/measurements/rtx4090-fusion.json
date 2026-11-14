@@ -1,0 +1,230 @@
+{
+  "environment": {
+    "source_sha256": "6c3dce106d33ffb5068188c35500eea63792c96ad3cf0aefb8a1d6f53d617b2d",
+    "command": [
+      "benchmarks/bench_gpu_fusion.py",
+      "--warmup",
+      "5",
+      "--repeats",
+      "30",
+      "--json",
+      "/tmp/nano-lmcache-pr-fusion.json"
+    ],
+    "python": "3.11.16",
+    "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+    "torch": "2.6.0+cu124",
+    "cuda_runtime": "12.4",
+    "git_sha": "ac20685",
+    "device": "cuda:0",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "driver": "580.178.04",
+    "gpu_clock_power": [
+      "210 MHz, 405 MHz, 450.00 W",
+      "2790 MHz, 10501 MHz, 450.00 W"
+    ]
+  },
+  "command": [
+    "benchmarks/bench_gpu_fusion.py",
+    "--warmup",
+    "5",
+    "--repeats",
+    "30",
+    "--json",
+    "/tmp/nano-lmcache-pr-fusion.json"
+  ],
+  "warmup": 5,
+  "repeats": 30,
+  "allocation_scope": "preallocated host outputs; quant_dma allocates GPU codec outputs",
+  "results": [
+    {
+      "kind": "pack_export",
+      "backend": "torch_pack_dma",
+      "bytes": 524288,
+      "pages": 16,
+      "p50_ms": 0.03819200024008751,
+      "p95_ms": 0.039455998688936234,
+      "p99_ms": 0.04095999896526337,
+      "host_call_p50_ms": 0.018923543393611908
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_pack_dma",
+      "bytes": 524288,
+      "pages": 16,
+      "p50_ms": 0.1472640037536621,
+      "p95_ms": 0.16838400065898895,
+      "p99_ms": 0.17420800030231476,
+      "host_call_p50_ms": 0.09870948269963264
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_mapped_pack",
+      "bytes": 524288,
+      "pages": 16,
+      "p50_ms": 0.11219200119376183,
+      "p95_ms": 0.1740799993276596,
+      "p99_ms": 0.1812479943037033,
+      "host_call_p50_ms": 0.08376152254641056
+    },
+    {
+      "kind": "pack_export",
+      "backend": "torch_pack_dma",
+      "bytes": 8388608,
+      "pages": 256,
+      "p50_ms": 0.3500320017337799,
+      "p95_ms": 0.35657599568367004,
+      "p99_ms": 0.36559998989105225,
+      "host_call_p50_ms": 0.01665600575506687
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_pack_dma",
+      "bytes": 8388608,
+      "pages": 256,
+      "p50_ms": 0.3401760011911392,
+      "p95_ms": 0.34355199337005615,
+      "p99_ms": 0.34563198685646057,
+      "host_call_p50_ms": 0.02475001383572817
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_mapped_pack",
+      "bytes": 8388608,
+      "pages": 256,
+      "p50_ms": 0.35921600461006165,
+      "p95_ms": 0.3635199964046478,
+      "p99_ms": 0.3635199964046478,
+      "host_call_p50_ms": 0.02830603625625372
+    },
+    {
+      "kind": "pack_export",
+      "backend": "torch_pack_dma",
+      "bytes": 33554432,
+      "pages": 1024,
+      "p50_ms": 1.4869440197944641,
+      "p95_ms": 1.491968035697937,
+      "p99_ms": 1.4921280145645142,
+      "host_call_p50_ms": 0.01382885966449976
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_pack_dma",
+      "bytes": 33554432,
+      "pages": 1024,
+      "p50_ms": 1.444815993309021,
+      "p95_ms": 1.4499200582504272,
+      "p99_ms": 1.4506880044937134,
+      "host_call_p50_ms": 0.021456973627209663
+    },
+    {
+      "kind": "pack_export",
+      "backend": "cuda_mapped_pack",
+      "bytes": 33554432,
+      "pages": 1024,
+      "p50_ms": 1.4673919677734375,
+      "p95_ms": 1.4786560535430908,
+      "p99_ms": 1.4796799421310425,
+      "host_call_p50_ms": 0.025175977498292923
+    },
+    {
+      "kind": "quant_export",
+      "backend": "torch_quant_dma",
+      "tokens": 16,
+      "raw_bytes": 1835008,
+      "host_bytes": 1146880,
+      "p50_ms": 0.18887999653816223,
+      "p95_ms": 0.19884799420833588,
+      "p99_ms": 0.19897599518299103,
+      "host_call_p50_ms": 0.15301001258194447
+    },
+    {
+      "kind": "quant_export",
+      "backend": "triton_quant_dma",
+      "tokens": 16,
+      "raw_bytes": 1835008,
+      "host_bytes": 1146880,
+      "p50_ms": 0.13300800323486328,
+      "p95_ms": 0.14662399888038635,
+      "p99_ms": 0.15904000401496887,
+      "host_call_p50_ms": 0.09948632214218378
+    },
+    {
+      "kind": "quant_export",
+      "backend": "cuda_mapped_quant",
+      "tokens": 16,
+      "raw_bytes": 1835008,
+      "host_bytes": 1146880,
+      "p50_ms": 0.08142400160431862,
+      "p95_ms": 0.084927998483181,
+      "p99_ms": 0.08499199897050858,
+      "host_call_p50_ms": 0.03724393900483847
+    },
+    {
+      "kind": "quant_export",
+      "backend": "torch_quant_dma",
+      "tokens": 64,
+      "raw_bytes": 7340032,
+      "host_bytes": 3899392,
+      "p50_ms": 0.3012159913778305,
+      "p95_ms": 0.3178879916667938,
+      "p99_ms": 0.41971200704574585,
+      "host_call_p50_ms": 0.1393310958519578
+    },
+    {
+      "kind": "quant_export",
+      "backend": "triton_quant_dma",
+      "tokens": 64,
+      "raw_bytes": 7340032,
+      "host_bytes": 3899392,
+      "p50_ms": 0.2486560046672821,
+      "p95_ms": 0.3028480112552643,
+      "p99_ms": 0.33404800295829773,
+      "host_call_p50_ms": 0.09572389535605907
+    },
+    {
+      "kind": "quant_export",
+      "backend": "cuda_mapped_quant",
+      "tokens": 64,
+      "raw_bytes": 7340032,
+      "host_bytes": 3899392,
+      "p50_ms": 0.8913280069828033,
+      "p95_ms": 0.9328640103340149,
+      "p99_ms": 1.0124800205230713,
+      "host_call_p50_ms": 0.02720195334404707
+    },
+    {
+      "kind": "quant_export",
+      "backend": "torch_quant_dma",
+      "tokens": 256,
+      "raw_bytes": 29360128,
+      "host_bytes": 14909440,
+      "p50_ms": 1.2940640449523926,
+      "p95_ms": 1.3000320196151733,
+      "p99_ms": 1.3008960485458374,
+      "host_call_p50_ms": 0.12232351582497358
+    },
+    {
+      "kind": "quant_export",
+      "backend": "triton_quant_dma",
+      "tokens": 256,
+      "raw_bytes": 29360128,
+      "host_bytes": 14909440,
+      "p50_ms": 0.7349599897861481,
+      "p95_ms": 0.7400959730148315,
+      "p99_ms": 0.7420799732208252,
+      "host_call_p50_ms": 0.0765766017138958
+    },
+    {
+      "kind": "quant_export",
+      "backend": "cuda_mapped_quant",
+      "tokens": 256,
+      "raw_bytes": 29360128,
+      "host_bytes": 14909440,
+      "p50_ms": 3.672576069831848,
+      "p95_ms": 3.7290239334106445,
+      "p99_ms": 3.7353599071502686,
+      "host_call_p50_ms": 0.026780995540320873
+    }
+  ]
+}

@@ -65,6 +65,9 @@ Done (pure Python, no GPU dependency):
 - [x] Pluggable prefix-safe eviction policies: heap-based LRU (default) and
       LFU with bounded lazy candidates, shared by memory, disk, and CPU offload
       (`storage/eviction_policies.py`, M11)
+- [x] Length-prefixed JSON shared cache server with batch lookup and bounded
+      write-behind storage (`storage/remote.py`, `storage/async_write.py`, M12
+      baseline)
 - [x] Runnable demos (`examples/`), architecture notes
       (`docs/architecture.md`), a glossary and FAQ (`docs/glossary.md`),
       and a guided learning path (`docs/tutorial/README.md`, DOC-1)
@@ -100,6 +103,34 @@ Done (optional torch / GPU layer):
       (`docs/nanovllm-benchmark.md`, N4)
 - [x] Real nano-vLLM traces rendered by the offline viewer
       (`docs/engine-traces.md`, VIS-10)
+- [x] Pinned buffer pool, asynchronous CUDA stream/event transfers, torch page
+      gather/scatter reference operations, and per-head INT8 reference codec
+      (`tensor/transfer.py`, `tensor/page_ops.py`, `tensor/quantization.py`)
+
+Done (experimental data-plane foundation, report A01–A03):
+
+- [x] PyTorch-independent `KVLayout` ABI for NHD/HND axes and
+      layer/page-major ordering
+- [x] `KVPageRef` lifecycle state machine with explicit transfer and eviction
+      transitions
+- [x] `KVPageDirectory` separating one logical page from GPU, CPU, pinned,
+      NVMe, or remote physical replicas (`experimental/dataplane/`)
+- [x] CPU reference page store, load/recompute estimator, duplicate-safe
+      prefetch state machine, and environment-complete GPU benchmark
+- [x] GPU and Qwen3-0.6B measurements recorded in
+      [`docs/gpu-experiment-report.md`](docs/gpu-experiment-report.md)
+
+The data-plane package is additive and experimental. CUDA/Triton gather/scatter,
+INT8 GPU codecs, mapped-host export and two-GPU transport have correctness
+coverage on RTX 4090 hardware. Blockwise FP8/INT4 and K8V4/K4V4 remain research
+references. Packed disk reads, optional Linux io_uring, host prefetch and
+cost-aware policies are available as separate experimental components.
+
+Real vLLM external-hit generation, bounded asynchronous GPU export, cold-NVMe
+reads and a two-GPU HF model handoff are measured in the
+[serving follow-up](docs/serving-validation-report.md). Performance gates remain
+open; a unified serving scheduler, engine-level PD, GDS and NIXL/RDMA remain open.
+See the report for measured wins AND regressions; custom kernels are opt-in.
 
 
 ## How to claim a task
@@ -136,7 +167,7 @@ open an issue to discuss it.
 | M9 | Byte-based capacity for the disk backend | Medium | No | – | Done |
 | M10 | Thread-safe storage | Medium | No | – | Done |
 | M11 | Pluggable eviction policies | Hard | No | – | Done |
-| M12 | Shared cache server for several processes | Hard | No | M10 | Open |
+| M12 | Shared cache server for several processes | Hard | No | M10 | Baseline done; batch/remote hardening open |
 | **GPU: real KV tensors** | | | | | |
 | G1 | Verify KV reuse correctness with a real model | Medium | Optional | I1 | Done |
 | G2 | GPU to CPU offload backend | Hard | Yes | G1 | Done |
@@ -150,15 +181,15 @@ open an issue to discuss it.
 | N2 | Restore L2 hits into nano-vLLM's GPU blocks | Hard | Yes | N1 | Done |
 | N3 | Save newly completed KV blocks | Medium | Yes | N2 | Done |
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
-| N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Open |
-| N6 | Faster disk tier reads | Medium | Optional | N4 | Open |
+| N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Prototype done; production integration open |
+| N6 | Faster disk tier reads | Medium | Optional | N4 | Packed/prefetch NVMe baseline measured; engine integration open |
 | **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
-| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented and validated; not merged ([#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25)) |
-| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | [Open (#26)](https://github.com/Dami-wq-k03/nano-lmcache/issues/26) |
-| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | [Open (#27)](https://github.com/Dami-wq-k03/nano-lmcache/issues/27) |
-| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | [Open (#28)](https://github.com/Dami-wq-k03/nano-lmcache/issues/28) |
-| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | [Open (#29)](https://github.com/Dami-wq-k03/nano-lmcache/issues/29) |
+| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented; real generation validated |
+| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Implemented; real external hits validated |
+| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Implemented; real save/generation validated |
+| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Implemented; real external-hit generation validated |
+| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Benchmark measured; performance gates open |
 | **PD disaggregation** | | | | | |
 | PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
 | PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
@@ -178,8 +209,10 @@ open an issue to discuss it.
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priority:** M12 (shared cache server), with N5 and N6 remaining
-performance follow-ups (see [the TTFT report](docs/nanovllm-benchmark.md)).
+**Next priority:** reduce measured external-load overhead and TPOT regression,
+validate broader workloads and integrate asynchronous export into nano-vLLM.
+N6 now has cold/warm NVMe component measurements; PD-3 still requires two
+nano-vLLM engines. See [serving validation](docs/serving-validation-report.md).
 The M11 policy comparison is in
 [the eviction report](docs/eviction-performance.md).
 The initial guided learning path (DOC-1) is available in
@@ -899,8 +932,8 @@ before and after; all disk backend tests still pass.
 implementation target to vLLM 0.33.0 and review its scheduler/worker hooks,
 block tables and slot mapping, block-to-chunk conversion, APC versus external
 storage, and ExampleConnector's limitations against that release's source.
-V1 now provides a no-op connector with real-request GPU validation;
-external lookup, saves and restores remain V2–V5 work.
+V1–V4 now have real external-hit generation validation; V5 has reproducible
+TTFT/TPOT measurements, with performance acceptance still open.
 
 V1–V5 track that implementation separately from the completed nano-vLLM
 integration. Use the V0 version baseline and a separate vLLM environment;

@@ -40,6 +40,8 @@ results are measurements under those conditions, not universal speedup claims.
 | [Eviction performance](eviction-performance.md) | How does a leaf heap preserve LRU order while reducing victim-selection cost? |
 | [INT8 KV compression](quantized-kv.md) | How much space does quantization save, and what errors and latency does it add? |
 | [nano-vLLM TTFT](nanovllm-benchmark.md) | When do memory/disk loads cost less than recomputing the prefix? |
+| [GPU/data-plane experiments](gpu-experiment-report.md) | What do pinned/asynchronous copies, page operations, INT8, restart recovery, and write-behind measure on the development GPU? |
+| [Serving validation](serving-validation-report.md) | Real vLLM external hits, async export, cold NVMe and two-GPU model handoff |
 
 The [GPU validation record](gpu-validation.md) documents a complete test run,
 real-model examples, two-process disk restoration, and engine trace rendering.
