@@ -261,8 +261,9 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
                 worker.nano_save_plans.append(
                     {
                         "step_id": metadata.step_id,
-                        "request_id": request.request_id,
+                        "request_id": request.req_id,
                         "tokens": len(request.token_ids),
+                        "skip": request.save_spec.skip_leading_tokens,
                         "slots": list(request.slot_mapping),
                     }
                 )
@@ -274,7 +275,7 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         from vllm.distributed.kv_transfer import get_kv_transfer_group
 
         connector = get_kv_transfer_group()
-        result = connector._nano_lmcache_engine.lookup(prompt)
+        result = connector._save_cache.lookup(prompt)
         torch.save(
             {
                 "chunks": list(result.values),
@@ -282,7 +283,7 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
                 "matched_tokens": result.matched_tokens,
                 "layer_names": connector._layer_names,
                 "plans": worker.nano_save_plans,
-                "namespace": connector._nano_lmcache_engine._namespace,
+                "namespace": connector._save_cache._namespace,
             },
             path,
         )
@@ -310,7 +311,9 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
     assert len(saved["layer_names"]) == num_layers
     assert len(set(saved["keys"])) == 6
     planned_lengths = [plan["tokens"] for plan in saved["plans"]]
-    assert planned_lengths == ([32, 64, 96, 96] if chunked else [96])
+    assert planned_lengths == ([32, 64, 96] if chunked else [96])
+    planned_skips = [plan["skip"] for plan in saved["plans"]]
+    assert planned_skips == ([0, 32, 64] if chunked else [0])
     assert saved["namespace"].startswith("vllm-kv/v1/")
 
     first, expected_first = saved["chunks"][0], expected_chunks[0]

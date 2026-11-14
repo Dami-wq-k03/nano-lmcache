@@ -81,7 +81,8 @@ The connector unit test `test_scheduler_plans_reach_worker_across_prefill_steps`
 uses real vLLM scheduler data classes and serializes the generated metadata
 before binding it to the worker. Logical blocks reside at physical IDs
 `[7, 2, 9]`. Four forwards advance the computed token count through
-`3, 6, 8, 10`; the cache must contain `0, 4, 8, 8` tokens respectively.
+`3, 6, 8, 10`; the cache must contain `0, 4, 8, 8` tokens respectively. Only
+the two steps that complete a new chunk emit a save plan.
 Uncomputed slots contain NaNs, and source buffers are overwritten immediately
 after each save callback. Exact tensor comparisons verify token order, K/V
 separation, all-layer assembly, complete-chunk boundaries and copy ownership.
@@ -104,8 +105,9 @@ TP=1, APC off, one sequence and a single full-attention cache group.
 
 Each run saves six `[28, 2, 8, 16, 128]` chunks covering 96 tokens; the final
 token is excluded. The full-prefill budget is 512 tokens and emits one
-96-token plan. A 32-token budget emits plans for 32, 64, 96 and 96 tokens.
-Decode steps emit none. Every element of every layer's K and V is compared
+96-token plan. A 32-token budget emits plans at 32, 64 and 96 prefix tokens,
+each skipping the chunks already published (`skip_leading_tokens` 0, 32 and
+64). Decode steps emit none. Every element of every layer's K and V is compared
 using `atol=1e-3, rtol=1e-3`, plus a per-layer/KV relative RMS limit of `1e-3`.
 Negative controls require token-shifted and K/V-swapped chunks to fail.
 
@@ -119,8 +121,8 @@ An absolute error can exceed `atol` while still passing the combined
 The recorded environment is RTX 4080 / driver 595.99.02, vLLM 0.33.0,
 PyTorch 2.14.0+cu130 and Transformers 5.20.2.
 
-Final validation: **70 connector unit tests passed**, and the complete GPU
-integration file finished **4 passed in 77.51 seconds** (two BF16 generation
+Final validation: **73 connector unit tests passed**, and the complete GPU
+integration file finished **4 passed in 74.98 seconds** (two BF16 generation
 comparisons and two FP32 KV comparisons). Ruff checks also passed for the
 connector and both test modules. The separately recorded
 [NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log) covers
@@ -247,10 +249,11 @@ nano_lmcache pid=268059 role=WORKER call=204 step=4 request_ids=('0-83cf75d9',) 
 nano_lmcache pid=268059 role=WORKER call=261 step=4 request_ids=('0-83cf75d9',) method=wait_for_save args={}
 ```
 
-The scheduled token counts are 32, 32, 32 and 1. Their save plans cover 32, 64,
-96 and 96 prefix tokens respectively, as checked by the real-model test.
-Each plan gathers the complete valid prefix again. Later decode steps have no
-save plans, even though vLLM still invokes the layer hooks.
+The scheduled token counts are 32, 32, 32 and 1. Save plans are emitted at 32,
+64 and 96 prefix tokens with `skip_leading_tokens` 0, 32 and 64; the final
+1-token step emits no plan, as checked by the real-model test. Each plan
+gathers only the newly completed token span. Later decode steps have no save
+plans, even though vLLM still invokes the layer hooks.
 
 ## Paged KV cache: blocks, block tables and slot mapping
 

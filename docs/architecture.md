@@ -216,7 +216,7 @@ understood without a GPU or an inference engine.
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
-| `integrations/vllm/nano_lmcache_connector.py` | No-op vLLM 0.33.0 connector with scheduler/worker lifecycle logs; [GPU validation](vllm-kv-connector.md#real-request-validation-2026-11-08) |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 connector: scheduler prefix lookup and worker prompt-chunk saves from the paged KV cache; loading is V4. [GPU validation](vllm-kv-connector.md#v3-scheduler-to-worker-and-real-model-kv-validation) |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
 | `tensor/hf.py` | `run_with_prefix_cache`: reuse prefix KV with a HuggingFace model (needs torch + transformers) |
 | `observability/` | Request context, trace events, recorder, and storage tracing |
@@ -664,6 +664,15 @@ format in `integrations/nanovllm/kv_blocks.py`, is in
 blocks before prefill and saves completed blocks synchronously. See the
 [TTFT report](nanovllm-benchmark.md) for measured costs and
 [engine trace guide](engine-traces.md) for L1/L2 and GPU transfer events.
+
+The vLLM 0.33.0 connector applies the same external-cache model to vLLM's
+paged KV cache. The scheduler keeps one `RequestTracker` per request and
+plans only chunks that became complete in the current step; each worker
+gathers that newly completed token span from the paged buffer using the slot
+mapping, assembles all layers, and stores the chunks in CPU memory. Scheduler
+lookup and worker saves use separate process-local caches, so external reuse
+in generation awaits V4's load path. See the
+[vLLM connector guide](vllm-kv-connector.md).
 
 The core package should remain independently understandable and
 testable. Integration-specific dependencies should be introduced only

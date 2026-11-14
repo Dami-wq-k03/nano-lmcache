@@ -152,7 +152,7 @@ open an issue to discuss it.
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
 | V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented and validated; not merged ([#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25)) |
 | V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | [Open (#26)](https://github.com/Dami-wq-k03/nano-lmcache/issues/26) |
-| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | [Open (#27)](https://github.com/Dami-wq-k03/nano-lmcache/issues/27) |
+| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Implemented and validated ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)) |
 | V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | [Open (#28)](https://github.com/Dami-wq-k03/nano-lmcache/issues/28) |
 | V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | [Open (#29)](https://github.com/Dami-wq-k03/nano-lmcache/issues/29) |
 | **PD disaggregation** | | | | | |
@@ -944,7 +944,10 @@ generation also requires V4's worker load path.
 
 ### V3: Worker side: save chunks from the paged KV cache
 
-**Status: open** ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)).
+**Status: implemented and validated** ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)).
+Claimed by `WHoutstanding`. The [validation record](docs/vllm-kv-connector.md#v3-scheduler-to-worker-and-real-model-kv-validation)
+covers FP32 full and chunked prefill on an RTX 4080, including saved-chunk
+comparison with HuggingFace and negative controls.
 Prerequisites: V1, G1.
 
 Gather the request's K/V from the per-layer paged cache using its block

@@ -39,6 +39,7 @@ from nano_lmcache.integrations.vllm.nano_lmcache_connector import (
     NanoLMCacheConnector,
     NanoLMCacheConnectorMetadata,
     ReqMeta,
+    SaveSpec,
     _cache_namespace,
 )
 
@@ -201,7 +202,7 @@ def test_scheduler_reports_matches_only_after_cache_is_populated(
     scheduler, request_stub
 ):
     request_stub.prompt_token_ids = list(range(13))
-    cache = scheduler._nano_lmcache_engine
+    cache = scheduler._lookup_cache
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
@@ -231,7 +232,7 @@ def test_scheduler_reports_only_additional_matches(
     tokens = list(range(13))
     request_stub.prompt_token_ids = tokens.copy()
     request_stub.num_computed_tokens = 0
-    scheduler._nano_lmcache_engine.store(
+    scheduler._lookup_cache.store(
         tokens[:cached_tokens], [b"kv"] * (cached_tokens // 4)
     )
 
@@ -250,7 +251,7 @@ def test_scheduler_reports_only_additional_matches(
 def test_scheduler_reuses_complete_chunks_and_leaves_token_for_logits(
     scheduler, request_stub, prompt_length, expected
 ):
-    scheduler._nano_lmcache_engine.store(list(range(16)), [b"kv"] * 4)
+    scheduler._lookup_cache.store(list(range(16)), [b"kv"] * 4)
     request_stub.prompt_token_ids = list(range(prompt_length))
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (expected, False)
@@ -260,7 +261,7 @@ def test_scheduler_reuses_complete_chunks_and_leaves_token_for_logits(
 def test_scheduler_reports_zero_without_prompt_tokens(
     scheduler, request_stub, token_ids
 ):
-    scheduler._nano_lmcache_engine.store(list(range(12)), [b"kv"] * 3)
+    scheduler._lookup_cache.store(list(range(12)), [b"kv"] * 3)
     request_stub.prompt_token_ids = token_ids
 
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (0, False)
@@ -274,7 +275,7 @@ def test_scheduler_matches_only_contiguous_shared_prefix(
     scheduler, request_stub, changed_index, expected
 ):
     tokens = list(range(13))
-    scheduler._nano_lmcache_engine.store(tokens, [b"kv"] * 3)
+    scheduler._lookup_cache.store(tokens, [b"kv"] * 3)
     request_stub.prompt_token_ids = tokens.copy()
     request_stub.prompt_token_ids[changed_index] = 99
 
@@ -283,7 +284,7 @@ def test_scheduler_matches_only_contiguous_shared_prefix(
 
 def test_scheduler_rechecks_cache_after_invalidation(scheduler, request_stub):
     request_stub.prompt_token_ids = list(range(13))
-    cache = scheduler._nano_lmcache_engine
+    cache = scheduler._lookup_cache
     cache.store(request_stub.prompt_token_ids, [b"kv"] * 3)
     keys = cache.lookup(request_stub.prompt_token_ids).keys
     assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (12, False)
@@ -411,11 +412,11 @@ def test_worker_stores_complete_cpu_chunks(worker, save_layers, prompt_length):
     for index, (name, value) in enumerate(save_layers.items()):
         worker.save_kv_layer(name, value, SimpleNamespace())
         if index < len(save_layers) - 1:
-            assert worker._nano_lmcache_engine.lookup(tokens).matched_tokens == 0
+            assert worker._save_cache.lookup(tokens).matched_tokens == 0
         assert torch.equal(value, originals[name])
         value.fill_(-1)
     worker.wait_for_save()
-    result = worker._nano_lmcache_engine.lookup(tokens)
+    result = worker._save_cache.lookup(tokens)
     assert result.matched_tokens == prompt_length // 4 * 4
     for chunk_index, chunk in enumerate(result.values):
         assert chunk.shape == (3, 2, 2, 4, 3)
@@ -445,7 +446,7 @@ def test_worker_does_not_combine_layers_from_different_steps(worker, save_layers
     worker.bind_connector_metadata(metadata)
     for name in names[1:]:
         worker.save_kv_layer(name, save_layers[name], SimpleNamespace())
-    assert worker._nano_lmcache_engine.lookup(tokens).matched_tokens == 0
+    assert worker._save_cache.lookup(tokens).matched_tokens == 0
     with pytest.raises(RuntimeError, match="missing layers"):
         worker.wait_for_save()
 
@@ -463,8 +464,8 @@ def test_worker_keeps_requests_separate(worker, save_layers):
     for name, value in save_layers.items():
         worker.save_kv_layer(name, value, SimpleNamespace())
     worker.wait_for_save()
-    chunk_a = worker._nano_lmcache_engine.lookup(tokens_a).values[0]
-    chunk_b = worker._nano_lmcache_engine.lookup(tokens_b).values[0]
+    chunk_a = worker._save_cache.lookup(tokens_a).values[0]
+    chunk_b = worker._save_cache.lookup(tokens_b).values[0]
     original = save_layers["model.layers.0.self_attn"]
     assert torch.equal(chunk_a[0, 0], original[7, :, :, :3])
     assert torch.equal(chunk_b[0, 0], original[2, :, :, :3])
@@ -516,7 +517,7 @@ def test_empty_step_drops_previous_request_ids(scheduler):
     metadata = scheduler.build_connector_meta(SchedulerOutput.make_empty())
     assert metadata.step_id == 2
     assert metadata.request_ids == ()
-    assert metadata.requests == ()
+    assert metadata.requests == []
 
 
 def _new_save_request(request_id, tokens, blocks, computed=0):
@@ -576,15 +577,88 @@ def test_scheduler_plans_only_complete_computed_prompt_chunks(
     assert pickle.dumps(output) == original
     assert pickle.loads(pickle.dumps(metadata)) == metadata
     if expected == 0:
-        assert metadata.requests == ()
+        assert metadata.requests == []
     else:
-        assert metadata.requests == (
+        assert metadata.requests == [
             ReqMeta(
                 "req",
                 tuple(tokens[:expected]),
                 (28, 29, 30, 31, 8, 9, 10, 11)[:expected],
             ),
+        ]
+
+
+def test_scheduler_plans_only_newly_completed_chunks(scheduler):
+    first = _save_step(
+        new=[_new_save_request("req", list(range(8)), [7])], counts={"req": 4}
+    )
+    assert scheduler.build_connector_meta(first).requests == [
+        ReqMeta("req", (0, 1, 2, 3), (28, 29, 30, 31))
+    ]
+
+    second = _save_step(cached=[("req", ([2],), 4)], counts={"req": 4})
+    assert scheduler.build_connector_meta(second).requests == [
+        ReqMeta(
+            "req",
+            tuple(range(8)),
+            (28, 29, 30, 31, 8, 9, 10, 11),
+            SaveSpec(skip_leading_tokens=4),
         )
+    ]
+
+    third = _save_step(cached=[("req", None, 8)], counts={"req": 1})
+    assert scheduler.build_connector_meta(third).requests == []
+
+
+def test_worker_saves_only_the_new_token_span(worker, save_layers):
+    originals = {name: value.clone() for name, value in save_layers.items()}
+
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=(ReqMeta("req", (0, 1, 2, 3), (28, 29, 30, 31)),)
+        )
+    )
+    for name, value in save_layers.items():
+        worker.save_kv_layer(name, value, SimpleNamespace())
+    worker.wait_for_save()
+    worker.clear_connector_metadata()
+    assert worker._save_cache.lookup((0, 1, 2, 3)).matched_tokens == 4
+
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=(
+                ReqMeta(
+                    "req",
+                    tuple(range(8)),
+                    (28, 29, 30, 31, 8, 9, 10, 11),
+                    SaveSpec(skip_leading_tokens=4),
+                ),
+            )
+        )
+    )
+    for name, value in save_layers.items():
+        value.fill_(float("nan"))
+        for position in range(4, 8):
+            block, offset = (7, 2)[position // 4], position % 4
+            value[block, :, offset] = originals[name][block, :, offset]
+        worker.save_kv_layer(name, value, SimpleNamespace())
+        value.fill_(-1)
+    worker.wait_for_save()
+
+    result = worker._save_cache.lookup(tuple(range(8)))
+    assert result.matched_tokens == 8
+    original = originals["model.layers.0.self_attn"]
+    assert torch.equal(result.values[1][0, 0], original[2, :, :, :3])
+
+
+def test_connector_builds_role_specific_caches(make_connector):
+    scheduler = make_connector("SCHEDULER")
+    worker = make_connector("WORKER")
+
+    assert scheduler._lookup_cache is not None
+    assert scheduler._save_cache is None
+    assert worker._save_cache is not None
+    assert worker._lookup_cache is None
 
 
 def test_scheduler_plans_reach_worker_across_prefill_steps(
@@ -614,7 +688,7 @@ def test_scheduler_plans_reach_worker_across_prefill_steps(
             value.fill_(-1) 
         worker.wait_for_save()
         worker.clear_connector_metadata()
-        result = worker._nano_lmcache_engine.lookup(tokens)
+        result = worker._save_cache.lookup(tokens)
         assert result.matched_tokens == expected_tokens
         for chunk_index, chunk in enumerate(result.values):
             for layer_index, model_index in enumerate((0, 2, 10)):
@@ -624,7 +698,7 @@ def test_scheduler_plans_reach_worker_across_prefill_steps(
                 assert torch.equal(chunk[layer_index, 1], source[block, :, :, 3:])
 
     decode = _save_step(cached=[("req", None, 10)], counts={"req": 1})
-    assert scheduler.build_connector_meta(decode).requests == ()
+    assert scheduler.build_connector_meta(decode).requests == []
 
 
 def test_scheduler_replaces_blocks_on_resume_and_keeps_requests_separate(scheduler):
@@ -639,7 +713,7 @@ def test_scheduler_replaces_blocks_on_resume_and_keeps_requests_separate(schedul
     )
     preempted = SchedulerOutput.make_empty()
     preempted.preempted_req_ids = {"a"}
-    assert scheduler.build_connector_meta(preempted).requests == ()
+    assert scheduler.build_connector_meta(preempted).requests == []
     metadata = scheduler.build_connector_meta(
         _save_step(
             cached=[("a", ([9, 1],), 0), ("b", None, 6)],
@@ -647,10 +721,20 @@ def test_scheduler_replaces_blocks_on_resume_and_keeps_requests_separate(schedul
             resumed={"a"},
         )
     )
-    assert metadata.requests == (
-        ReqMeta("a", tuple(range(8)), (36, 37, 38, 39, 4, 5, 6, 7)),
-        ReqMeta("b", tuple(range(20, 28)), (12, 13, 14, 15, 16, 17, 18, 19)),
-    )
+    assert metadata.requests == [
+        ReqMeta(
+            "a",
+            tuple(range(8)),
+            (36, 37, 38, 39, 4, 5, 6, 7),
+            SaveSpec(skip_leading_tokens=4),
+        ),
+        ReqMeta(
+            "b",
+            tuple(range(20, 28)),
+            (12, 13, 14, 15, 16, 17, 18, 19),
+            SaveSpec(skip_leading_tokens=4),
+        ),
+    ]
 
 
 def test_scheduler_uses_current_blocks_after_copy_on_write(scheduler):
@@ -677,10 +761,10 @@ def test_scheduler_releases_finished_save_state(scheduler, via_callback):
         scheduler.request_finished(SimpleNamespace(request_id="req"), [7, 2])
     else:
         scheduler.build_connector_meta(_save_step(finished={"req"}))
-    assert "req" not in scheduler._save_requests
+    assert "req" not in scheduler._request_trackers
     metadata = scheduler.build_connector_meta(
         _save_step(
             new=[_new_save_request("req", list(range(20, 24)), [9])], counts={"req": 4}
         )
     )
-    assert metadata.requests == (ReqMeta("req", (20, 21, 22, 23), (36, 37, 38, 39)),)
+    assert metadata.requests == [ReqMeta("req", (20, 21, 22, 23), (36, 37, 38, 39))]
