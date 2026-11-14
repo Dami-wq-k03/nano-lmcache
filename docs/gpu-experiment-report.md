@@ -24,6 +24,7 @@ rerun as part of this validation.
 | Packed disk, host prefetch, io_uring | CPU corruption/recovery/concurrency tests; io_uring is optional and requires Linux permissions; no cold-NVMe result |
 | vLLM V4 | Shared-store load adapter tested on CPU and CUDA; real vLLM 0.33 external-hit generation remains open |
 | Async store | Background tier writes only; GPU gather/export remains on the request path; no TPOT <5% claim |
+| Transfer observability | Engine metadata traces exist; dedicated queue/start/end CUDA timeline export is still open |
 
 The closeout also fixes write-behind shutdown after backend errors, serializes
 submission against shutdown, preserves an explicitly supplied empty remote
@@ -132,8 +133,9 @@ The first pass implemented and tested the following pieces:
   and bounded write-behind storage with backpressure.
 - N5 prototype: `demo_nanovllm.py --async-store` moves tier writes to a bounded
   worker and flushes on shutdown.
-- O01: existing trace schema plus transfer lifecycle events and nano-vLLM trace
-  rendering.
+- O01 partial: existing engine metadata traces and nano-vLLM trace rendering.
+  CUDA queue/start/end event export and a Chrome compute/copy timeline are
+  still open; transfer handles alone do not provide that trace.
 
 At that first-pass snapshot, the vLLM V4 external-load path, custom GPU kernels,
 NVMe direct I/O, P2P/PD transport, GDS, RDMA/NIXL, and CacheBlend were open. They need a
