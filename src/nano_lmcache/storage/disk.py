@@ -12,8 +12,8 @@ File layout, one file per key inside `directory`:
 The file name is a hash of the key rather than the key itself, so no key
 (not even "../x") can address a path outside the directory. The header
 records the key and its parent, which lets a new process rebuild the
-prefix chains. A file's modification time records when it was last used,
-so least-recently-used order also survives a restart.
+prefix chains. The file's modification time records recency metadata, so LRU
+order survives a restart and LFU can use it as its tie-breaker.
 
 The directory belongs to the cache: on open, the cache deletes leftover
 temporary files, entries with missing or mismatched payload checksums, and
@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import cast
 
 from nano_lmcache.storage.eviction import PrefixLRUIndex
+from nano_lmcache.storage.eviction_policies import PolicyLike
 from nano_lmcache.storage.serializers import JsonSerializer, Serializer
 from nano_lmcache.storage.stats import StorageStats
 
@@ -72,9 +73,11 @@ def _has_matching_payload_crc32(header: EntryHeader, payload: bytes) -> bool:
 class DiskKVCache:
     """Optionally bounded, prefix-safe cache persisted in a directory.
 
-    Eviction follows the same rules as `MemoryKVCache`, through a shared
-    `PrefixLRUIndex`; evicting an entry deletes its file.
-    Byte capacity counts complete entry files: header, newline, and payload.
+    Eviction follows the same prefix-safe rules as `MemoryKVCache`, through a
+    shared `PrefixIndex`; the configured policy ranks eligible leaves and
+    evicting an entry deletes its file. The default policy is LRU; LFU can be
+    selected with `eviction_policy="lfu"`. Byte capacity counts complete
+    entry files: header, newline, and payload.
     Reopen after an I/O exception to rebuild the index from disk.
     """
 
@@ -85,11 +88,16 @@ class DiskKVCache:
         max_entries: int | None = None,
         max_bytes: int | None = None,
         serializer: Serializer | None = None,
+        eviction_policy: PolicyLike = "lru",
     ) -> None:
         self._directory = Path(directory)
         self._directory.mkdir(parents=True, exist_ok=True)
         self._serializer = serializer if serializer is not None else JsonSerializer()
-        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
+        self._index = PrefixLRUIndex(
+            max_entries,
+            max_bytes=max_bytes,
+            eviction_policy=eviction_policy,
+        )
         self._lock = threading.RLock()
         # Last-used times are written as file mtimes. Keeping them strictly
         # increasing makes the order exact even when two accesses land in
@@ -116,6 +124,11 @@ class DiskKVCache:
     def max_bytes(self) -> int | None:
         """Entry-file byte limit, or None when unbounded."""
         return self._index.max_bytes
+
+    @property
+    def eviction_policy(self) -> str:
+        """Name of the leaf eviction policy."""
+        return self._index.eviction_policy
 
     @property
     def nbytes(self) -> int:
@@ -149,6 +162,13 @@ class DiskKVCache:
             if key not in self._index:
                 raise KeyError(key)
             return self._index.parent_of(key)
+
+    def frequency_of(self, key: str) -> int:
+        """Return the policy frequency for a stored key."""
+        with self._lock:
+            if key not in self._index:
+                raise KeyError(key)
+            return self._index.frequency_of(key)
 
     def put(
         self,
@@ -304,9 +324,10 @@ class DiskKVCache:
 
         for key in restorable:
             self._index.restore(key, found[key][0], size_bytes=found[key][2])
-        # Restore had to go parents-first; now replay true recency.
+        # Restore recency without replaying hits.  LFU intentionally starts
+        # every recovered key at frequency 1; mtimes only restore tie order.
         for key in sorted(restorable, key=lambda k: found[k][1]):
-            self._index.touch(key)
+            self._index.restore_access(key, found[key][1])
 
         # Anything not restorable has a missing ancestor: unreachable.
         for key in found.keys() - set(restorable):

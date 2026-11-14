@@ -1,28 +1,26 @@
-"""Prefix-safe LRU eviction, kept separate from where payloads live.
+"""Prefix-safe admission mechanics with pluggable leaf eviction policies.
 
-Every bounded backend (memory, disk, CPU offload) needs the same rules, so
-the bookkeeping lives here and each backend only moves bytes:
+The index owns the prefix tree, capacity checks, byte accounting, and
+protected ancestor chain.  An :class:`EvictionPolicy` only ranks keys that
+this index reports as leaves.  Memory, disk, and CPU-offload backends therefore
+share the same prefix-safety mechanism while choosing an eviction order.
 
-1. Only an entry with no children (a leaf) may be evicted.
-2. Among leaves, the least recently used goes first.
-3. A new entry's parent, or the key being overwritten, is protected.
-4. If the entry and its ancestors cannot fit, the write is rejected
-   without evicting anything, keeping the longest prefix that fits.
-5. An entry whose parent is not present is rejected.
-
-Together these keep one invariant: every entry's whole ancestor chain is
-present. A prefix lookup walks a chain from its root and stops at the
-first miss, so an entry without its ancestors could never be reached.
-
-A backend calls `admit` before storing a payload, deletes the payloads of
-the keys it names as evicted, and stores the new payload only if admitted.
+The historical ``PrefixLRUIndex`` name remains as a compatibility alias.  Its
+default policy is still LRU; pass ``eviction_policy="lfu"`` for LFU.
 """
 
-import heapq
+from __future__ import annotations
+
 from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import cast
 
+from nano_lmcache.storage.eviction_policies import (
+    EvictionPolicy,
+    PolicyLike,
+    make_eviction_policy,
+)
 from nano_lmcache.storage.stats import StorageStats
 
 
@@ -31,19 +29,25 @@ class Admission:
     """What a backend must do to make room for one new entry."""
 
     admitted: bool
-    # Keys whose payloads the backend must delete, oldest first.
+    # Keys whose payloads the backend must delete, oldest/best first.
     evicted: tuple[str, ...]
 
 
-class PrefixLRUIndex:
-    """Tracks keys, their parents, recency, and backend-reported sizes.
+class PrefixIndex:
+    """Track prefix relationships and delegate victim ordering to a policy.
 
-    Backends report `size_bytes`, which defaults to zero.
-    Both entry and byte limits are enforced when supplied.
+    Backends report ``size_bytes``, which defaults to zero.  Both entry and
+    byte limits are enforced when supplied.  Only leaves can be removed, and
+    an incoming key's parent (or the key itself for an overwrite) is protected
+    for the duration of admission.
     """
 
     def __init__(
-        self, max_entries: int | None = None, *, max_bytes: int | None = None
+        self,
+        max_entries: int | None = None,
+        *,
+        max_bytes: int | None = None,
+        eviction_policy: PolicyLike = "lru",
     ) -> None:
         if max_entries is not None and max_entries <= 0:
             raise ValueError("max_entries must be positive")
@@ -56,23 +60,15 @@ class PrefixLRUIndex:
 
         self._max_entries = max_entries
         self._max_bytes = max_bytes
+        self._policy = make_eviction_policy(
+            eviction_policy, bounded=self._bounded
+        )
         self._sizes: dict[str, int] = {}
         self._nbytes = 0
-        # Order is recency: the first key is the least recently used.
+        # Order is recency for the public compatibility API: first is oldest.
         # The value is the key's parent (None for a chain root).
         self._parents: OrderedDict[str, str | None] = OrderedDict()
         self._child_counts: dict[str, int] = {}
-        self._clock = 0
-        # In bounded indexes (either limit set), _last_access and _parents
-        # have the same keys at public-operation boundaries. Removing a key
-        # deletes its tick; stale heap records are identified by a missing
-        # or different tick.
-        # Unbounded indexes leave _last_access empty.
-        self._last_access: dict[str, int] = {}
-        # Bounded indexes keep leaf candidates ordered by access time. Hits
-        # and becoming an internal node invalidate old heap records lazily.
-        # Unbounded indexes need no candidates, since they never evict.
-        self._leaf_heap: list[tuple[int, str]] = []
         self._stats = StorageStats()
 
     @property
@@ -95,6 +91,32 @@ class PrefixLRUIndex:
         """Eviction and rejection totals."""
         return self._stats
 
+    @property
+    def eviction_policy(self) -> str:
+        """Name of the policy used by this index."""
+        return self._policy.name
+
+    @property
+    def policy(self) -> EvictionPolicy:
+        """The independent policy instance owned by this index."""
+        return self._policy
+
+    @property
+    def _leaf_heap(self) -> list[tuple[tuple[int, ...], str, int]]:
+        """Compatibility view used by heap-bound tests and diagnostics."""
+        heap = getattr(self._policy, "_heap", None)
+        if heap is None:
+            return []
+        return cast(list[tuple[tuple[int, ...], str, int]], heap)
+
+    @property
+    def _last_access(self) -> dict[str, int]:
+        """Compatibility view of policy access ticks."""
+        last_access = getattr(self._policy, "last_access", None)
+        if last_access is None:
+            return {}
+        return cast(dict[str, int], last_access)
+
     def __len__(self) -> int:
         return len(self._parents)
 
@@ -102,25 +124,28 @@ class PrefixLRUIndex:
         return key in self._parents
 
     def keys_by_recency(self) -> Iterator[str]:
-        """Keys from least to most recently used."""
+        """Keys from least to most recently used/written."""
         return iter(self._parents)
 
     def parent_of(self, key: str) -> str | None:
-        """The parent recorded for `key`, which must be present."""
+        """The parent recorded for ``key``, which must be present."""
         return self._parents[key]
 
+    def frequency_of(self, key: str) -> int:
+        """Return the policy frequency for a stored key."""
+        return self._policy.frequency_of(key)
+
     def touch(self, key: str) -> None:
-        """Mark `key` as most recently used, for example after a hit."""
+        """Mark ``key`` as most recently used after a real cache hit."""
         self._parents.move_to_end(key)
-        self._record_access(key)
+        self._policy.on_touch(key, is_leaf=self._is_leaf(key))
 
     def discard_subtree(self, key: str) -> tuple[str, ...]:
-        """Remove `key` and its descendants, returning children first.
+        """Remove ``key`` and descendants, returning children first.
 
-        This is for a backend that discovers an entry is unusable, rather
-        than capacity-driven eviction. Removing descendants before their
-        parent keeps the prefix chain valid after every individual removal.
-        It deliberately does not count as an eviction.
+        This is for a backend that discovers an entry is unusable, rather than
+        capacity-driven eviction.  It deliberately does not count as an
+        eviction.
         """
         if key not in self._parents:
             return ()
@@ -131,7 +156,6 @@ class PrefixLRUIndex:
                 children.setdefault(parent, []).append(child)
 
         discarded: list[str] = []
-        # True marks a node ready for post-order removal
         pending = [(key, False)]
         while pending:
             current, visited = pending.pop()
@@ -148,10 +172,10 @@ class PrefixLRUIndex:
     def admit(
         self, key: str, parent_key: str | None, *, size_bytes: int = 0
     ) -> Admission:
-        """Decide whether `key` may be stored, and what must go to fit it."""
+        """Decide whether ``key`` may be stored and what must be removed."""
         _validate_size(size_bytes)
         present = key in self._parents
-        # Re-storing a present key: its place in its chain cannot change.
+        # Re-storing a present key cannot change its place in the chain.
         if present:
             parent_key = self._parents[key]
 
@@ -162,9 +186,7 @@ class PrefixLRUIndex:
         added_entries = 0 if present else 1
         added_bytes = size_bytes - self._sizes.get(key, 0)
         if not self._fits(len(self) + added_entries, self._nbytes + added_bytes):
-            # Check the smallest possible surviving chain before evicting.
-            # Otherwise an impossible write could discard unrelated data
-            # before discovering that its protected ancestors take too much room.
+            # Preflight the smallest required surviving chain before evicting.
             chain_entries, chain_bytes = 1, size_bytes
             ancestor = parent_key
             while ancestor is not None:
@@ -179,8 +201,7 @@ class PrefixLRUIndex:
         protected = key if present else parent_key
         while not self._fits(len(self) + added_entries, self._nbytes + added_bytes):
             victim = self._find_victim(protected=protected)
-            # The preflight proved that evicting down to the protected
-            # chain is enough, so an unprotected leaf must exist here.
+            # The preflight proved that an unprotected leaf must exist here.
             assert victim is not None
             self._remove(victim)
             self._stats.evictions += 1
@@ -189,7 +210,7 @@ class PrefixLRUIndex:
         if present:
             self._sizes[key] = size_bytes
             self._nbytes += added_bytes
-            self.touch(key)
+            self._move_after_write(key)
         else:
             self._add(key, parent_key, size_bytes)
         return Admission(admitted=True, evicted=tuple(evicted))
@@ -205,20 +226,25 @@ class PrefixLRUIndex:
         subtree = [key]
         for parent in subtree:
             subtree.extend(children.get(parent, ()))
-        # Recency need not put parents before children. Traverse the tree,
-        # then remove leaves first so _remove keeps child counts consistent.
+        # Remove leaves first so child counts stay valid.
         victims = tuple(reversed(subtree))
         for victim in victims:
             self._remove(victim)
             self._stats.evictions += 1
         return victims
 
-    def restore(self, key: str, parent_key: str | None, *, size_bytes: int = 0) -> None:
-        """Re-add an entry that already exists, for example after a restart.
+    def restore(
+        self,
+        key: str,
+        parent_key: str | None,
+        *,
+        size_bytes: int = 0,
+    ) -> None:
+        """Re-add an existing entry without evicting or changing stats.
 
-        Unlike `admit`, this never evicts and never counts stats; a backend
-        uses it to rebuild its index from storage it already holds. Restore
-        keys from least to most recently used, parents before children.
+        A restored entry starts with policy frequency 1.  A backend may then
+        call :meth:`restore_access` with persisted recency metadata; that
+        updates ordering without replaying fake cache hits.
         """
         _validate_size(size_bytes)
         if parent_key is not None and parent_key not in self._parents:
@@ -228,11 +254,15 @@ class PrefixLRUIndex:
         if self._max_bytes is not None and self._nbytes + size_bytes > self._max_bytes:
             raise ValueError("cannot restore more bytes than max_bytes")
 
-        self._add(key, parent_key, size_bytes)
+        self._add(key, parent_key, size_bytes, restored=True)
+
+    def restore_access(self, key: str, access_tick: int) -> None:
+        """Restore recency without increasing LFU frequency."""
+        self._parents.move_to_end(key)
+        self._policy.on_restore_access(key, access_tick)
 
     @property
     def _bounded(self) -> bool:
-        # Either limit can force evictions, so either needs leaf candidates.
         return self._max_entries is not None or self._max_bytes is not None
 
     def _fits(self, entries: int, nbytes: int) -> bool:
@@ -240,7 +270,16 @@ class PrefixLRUIndex:
             self._max_bytes is None or nbytes <= self._max_bytes
         )
 
-    def _add(self, key: str, parent_key: str | None, size_bytes: int) -> None:
+    def _add(
+        self,
+        key: str,
+        parent_key: str | None,
+        size_bytes: int,
+        *,
+        restored: bool = False,
+    ) -> None:
+        if parent_key is not None and self._child_counts.get(parent_key, 0) == 0:
+            self._policy.on_leaf_status_change(parent_key, is_leaf=False)
         self._parents[key] = parent_key
         self._sizes[key] = size_bytes
         self._nbytes += size_bytes
@@ -248,66 +287,38 @@ class PrefixLRUIndex:
             self._child_counts[parent_key] = (
                 self._child_counts.get(parent_key, 0) + 1
             )
-        self._record_access(key)
+        if restored:
+            self._policy.on_restore(key, is_leaf=True)
+        else:
+            self._policy.on_insert(key, is_leaf=True)
 
     def _remove(self, key: str) -> None:
         parent_key = self._parents.pop(key)
         self._nbytes -= self._sizes.pop(key)
-        self._last_access.pop(key, None)
+        self._policy.on_remove(key)
         self._child_counts.pop(key, None)
         if parent_key is not None:
             self._child_counts[parent_key] -= 1
-            if self._bounded and self._child_counts[parent_key] == 0:
-                # Exposure is not an access. Reinsert with the parent's last
-                # actual access time, preserving the original LRU policy.
-                heapq.heappush(
-                    self._leaf_heap, (self._last_access[parent_key], parent_key)
-                )
+            if self._child_counts[parent_key] == 0:
+                # Exposure is not an access.  The policy retains the parent's
+                # frequency and last-access state while making it eligible.
+                self._policy.on_leaf_status_change(parent_key, is_leaf=True)
 
-    def _record_access(self, key: str) -> None:
-        if not self._bounded:
-            return
-        self._clock += 1
-        self._last_access[key] = self._clock
-        if self._child_counts.get(key, 0):
-            return
-        heapq.heappush(self._leaf_heap, (self._clock, key))
+    def _move_after_write(self, key: str) -> None:
+        self._parents.move_to_end(key)
+        self._policy.on_write(key, is_leaf=self._is_leaf(key))
 
-        # 64 is a small-cache slack floor: avoid rebuilding a tiny heap on
-        # frequent hits. Above 2*n records, at most n records are needed
-        # for current leaves; stale/duplicate records justify an O(n)
-        # rebuild. Charging that rebuild
-        # to the preceding additions costs O(1) amortized per addition;
-        # heap operations remain O(log n). A rebuild can still cause a
-        # latency spike, while retained records stay O(n) overall.
-        if len(self._leaf_heap) > 64 and len(self._leaf_heap) > 2 * len(self._parents):
-            self._leaf_heap = [
-                (tick, candidate)
-                for candidate, tick in self._last_access.items()
-                if self._child_counts.get(candidate, 0) == 0
-            ]
-            heapq.heapify(self._leaf_heap)
+    def _is_leaf(self, key: str) -> bool:
+        return self._child_counts.get(key, 0) == 0
 
     def _find_victim(self, protected: str | None) -> str | None:
-        """Least recently used leaf, excluding `protected`.
+        """Choose the best eligible leaf, excluding ``protected``."""
+        return self._policy.choose_victim(protected)
 
-        A stale record is popped at most once. A protected leaf is only
-        skipped for this admission; keep it for future victim selection.
-        """
-        protected_leaf: tuple[int, str] | None = None
-        victim = None
-        while self._leaf_heap:
-            tick, key = heapq.heappop(self._leaf_heap)
-            if self._last_access.get(key) != tick or self._child_counts.get(key, 0):
-                continue
-            if key == protected:
-                protected_leaf = (tick, key)
-                continue
-            victim = key
-            break
-        if protected_leaf is not None:
-            heapq.heappush(self._leaf_heap, protected_leaf)
-        return victim
+
+# Backward-compatible public name used by existing callers and tests.  The
+# implementation is now generic even though the old name says LRU.
+PrefixLRUIndex = PrefixIndex
 
 
 def _validate_size(size_bytes: int) -> None:

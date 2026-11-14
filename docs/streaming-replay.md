@@ -152,8 +152,9 @@ retains the prefix until the revisit (1/4 hits, no eviction). Read
 The same flags apply to opaque-block replay and the memory/disk/tiered
 backends. Disk and tiered cold comparisons need separate empty directories;
 reusing a directory intentionally measures a warm persistent cache instead.
-The eviction policy remains prefix-safe leaf LRU; alternative policies are
-the separate M11 task.
+The default eviction policy is prefix-safe leaf LRU; configure LFU on the
+memory, disk, or CPU-offload backend when comparing alternative policies. See
+the [M11 policy report](eviction-performance.md#policy-comparison-experiment).
 
 ## Validate memory growth
 

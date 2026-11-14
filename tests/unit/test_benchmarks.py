@@ -134,3 +134,83 @@ def test_cli_accepts_deep_chain_churn_parameters():
     assert "Deep-chain eviction churn (large capacity):" in result.stdout
     assert "64 prompts x 1024 chunks, capacity 8192:" in result.stdout
     assert "8192 of 65536 chunks kept" in result.stdout
+
+
+    bench = load_bench()
+
+    first = bench.build_policy_workload("zipf", requests=50, seed=7)
+    second = bench.build_policy_workload("zipf", requests=50, seed=7)
+
+    assert first == second
+    assert len(first) == 50
+    assert all(len(request.token_ids) == 4 * bench.CHUNK_SIZE for request in first)
+
+
+def test_policy_workload_results_are_correct_without_timing_assertions():
+    bench = load_bench()
+
+    lru = bench.run_policy_workload(
+        "uniform", policy="lru", requests=80, seed=7, capacity=12, repeats=1
+    )
+    lfu = bench.run_policy_workload(
+        "uniform", policy="lfu", requests=80, seed=7, capacity=12, repeats=1
+    )
+
+    assert lru.seed == lfu.seed == 7
+    assert lru.requests == lfu.requests == 80
+    assert lru.capacity == lfu.capacity == 12
+    assert lru.workload == lfu.workload == "uniform"
+    assert 0.0 <= lru.hit_rate <= 1.0
+    assert 0.0 <= lfu.hit_rate <= 1.0
+    assert lru.reused_tokens >= 0
+    assert lfu.reused_tokens >= 0
+    assert lru.eviction_count >= 0
+    assert lfu.eviction_count >= 0
+    assert 0 < lru.occupancy <= 12
+    assert 0 < lfu.occupancy <= 12
+    assert lru.lookup_seconds > 0
+    assert lru.store_seconds > 0
+    assert lfu.lookup_seconds > 0
+    assert lfu.store_seconds > 0
+
+
+def test_policy_table_contains_both_workloads_and_policies():
+    bench = load_bench()
+    results = bench.run_policy_benchmark(
+        requests=20, seed=3, capacity=8, repeats=1
+    )
+
+    table = bench.format_policy_table(results)
+
+    assert len(results) == 4
+    assert "uniform" in table
+    assert "zipf" in table
+    assert "lru" in table
+    assert "lfu" in table
+    assert "hit rate" in table
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BENCH_PATH),
+            "--chunks",
+            "4",
+            "--capacity",
+            "2",
+            "--repeats",
+            "1",
+            "--churn-prompts",
+            "3",
+            "--churn-chunks",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "3 prompts x 5 chunks, capacity unbounded:" in result.stdout
+    assert "3 prompts x 5 chunks, capacity 2:" in result.stdout
+    assert "2 of 15 chunks kept" in result.stdout
+    assert "Deep-chain eviction churn (large capacity):" in result.stdout
+    assert "64 prompts x 1024 chunks, capacity 8192:" in result.stdout
+    assert "8192 of 65536 chunks kept" in result.stdout

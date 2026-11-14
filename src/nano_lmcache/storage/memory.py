@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import replace
 
 from nano_lmcache.storage.eviction import PrefixLRUIndex
+from nano_lmcache.storage.eviction_policies import PolicyLike
 from nano_lmcache.storage.stats import StorageStats
 
 
@@ -17,9 +18,10 @@ class MemoryKVCache:
     particular KV-tensor representation (e.g. PyTorch tensors).
 
     Capacity can be bounded by entries, payload bytes, or both. When full, the
-    least recently used *leaf* is evicted, following the prefix-safe rules
-    in `PrefixLRUIndex`: evicting an entry that still has descendants would
-    strand them, since a prefix lookup could never reach them again.
+    configured policy evicts an eligible leaf, following the prefix-safe rules
+    in `PrefixIndex`: evicting an entry that still has descendants would
+    strand them, since a prefix lookup could never reach those descendants.
+    The default policy is LRU; LFU is available via `eviction_policy="lfu"`.
 
     `size_fn` measures each payload on `put`, defaulting to the shallow
     `sys.getsizeof`. For tensors or containers of bytes, that measures the
@@ -35,8 +37,13 @@ class MemoryKVCache:
         *,
         max_bytes: int | None = None,
         size_fn: Callable[[object], int] = sys.getsizeof,
+        eviction_policy: PolicyLike = "lru",
     ) -> None:
-        self._index = PrefixLRUIndex(max_entries, max_bytes=max_bytes)
+        self._index = PrefixLRUIndex(
+            max_entries,
+            max_bytes=max_bytes,
+            eviction_policy=eviction_policy,
+        )
         self._size_fn = size_fn
         self._values: dict[str, object] = {}
         self._lock = threading.RLock()
@@ -50,6 +57,11 @@ class MemoryKVCache:
     def max_bytes(self) -> int | None:
         """Payload byte limit, or None when unbounded."""
         return self._index.max_bytes
+
+    @property
+    def eviction_policy(self) -> str:
+        """Name of the leaf eviction policy."""
+        return self._index.eviction_policy
 
     @property
     def nbytes(self) -> int:
@@ -83,6 +95,13 @@ class MemoryKVCache:
             if key not in self._values:
                 raise KeyError(key)
             return self._index.parent_of(key)
+
+    def frequency_of(self, key: str) -> int:
+        """Return the policy frequency for a stored key."""
+        with self._lock:
+            if key not in self._values:
+                raise KeyError(key)
+            return self._index.frequency_of(key)
 
     def put(
         self,

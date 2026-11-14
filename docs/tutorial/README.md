@@ -18,6 +18,7 @@ Linux and an NVIDIA GPU. Step 8 returns to the core package.
 | [6. Real tensors](#6-reuse-real-model-tensors) | Does reuse preserve model output, and does it save time? |
 | [7. Engine restoration](#7-restore-a-real-engines-cache) | How do external L2 blocks return to the engine's GPU L1? |
 | [8. PD disaggregation](#8-split-prefill-and-decode) | What must a prefill worker hand over so a decode worker can continue? |
+| [9. Eviction policy lab](#9-compare-lru-and-lfu) | Which leaf policy fits a uniform or skewed workload? |
 
 ## 1. Build chunk keys
 
@@ -88,7 +89,8 @@ Tests `test_lookup_stops_when_first_chunk_misses` and
 
 The bounded sections of the prefix-cache demo show why ordinary per-entry
 LRU is insufficient: deleting a parent strands every stored descendant.
-Only a leaf can be evicted; among leaves, the least recently used goes first.
+Only a leaf can be evicted; the configured policy chooses among leaves. The
+default LRU policy evicts the least recently used leaf first.
 
 ```bash
 uv run python -m nano_lmcache.visualize --scenario prefix_branching --max-entries 3 \
@@ -288,6 +290,54 @@ decode worker has no way to recompute a missing tail.
 Read the [PD disaggregation guide](../pd-disaggregation.md), then the
 single teaching module
 [`disaggregation.py`](../../src/nano_lmcache/disaggregation.py).
+
+## 9. Compare LRU and LFU
+
+Prefix safety is the mechanism; the leaf order is a policy. LRU is the
+backward-compatible default, while LFU keeps an access frequency for internal
+nodes as well as leaves.
+
+Run the deterministic comparison (the timing columns are machine-specific):
+
+```bash
+uv run python benchmarks/bench_prefix_cache.py \
+  --policy-requests 5000 --policy-seed 2026 \
+  --policy-capacity 48 --policy-repeats 5
+uv run pytest tests/unit/test_eviction_policies.py tests/unit/test_benchmarks.py
+```
+
+Try the policies directly in a Python session:
+
+```python
+from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.storage.memory import MemoryKVCache
+
+storage = MemoryKVCache(max_entries=8, eviction_policy="lfu")
+cache = ChunkedPrefixCache(
+    chunk_size=2, namespace="policy-lab", storage=storage
+)
+cache.store([1, 2, 3, 4], ["system", "tail"])
+cache.lookup([1, 2, 3, 4])  # a real hit increments LFU frequency
+print(storage.eviction_policy, storage.frequency_of(next(storage.keys())))
+```
+
+Now change `eviction_policy` to `"lru"` and compare the benchmark's hit rate,
+reused tokens, evictions, final occupancy, lookup latency, and store latency.
+Workload A (`uniform`) spreads requests across system families; Workload B
+(`zipf`) repeats a small hot set and injects a long tail. Both policies consume
+the same fixed-seed sequence. In the recorded run, LFU won on both workloads,
+but that is an observation rather than a rule: LRU can be preferable when the
+working set changes quickly because it forgets old frequency sooner.
+
+An internal node's frequency is not reset when its last child is evicted. Disk
+recovery deliberately starts LFU frequencies at 1 because frequencies are not
+persisted in the existing file format; file mtimes restore only the recency
+tie-breaker. Read the [policy report](../eviction-performance.md) before
+interpreting a restart experiment.
+
+Read [`storage/eviction.py`](../../src/nano_lmcache/storage/eviction.py),
+[`storage/eviction_policies.py`](../../src/nano_lmcache/storage/eviction_policies.py),
+and the [benchmark report](../eviction-performance.md).
 
 Return to the [documentation index](../README.md), or choose a contribution
 from the [roadmap](../../ROADMAP.md).
