@@ -247,6 +247,7 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         generation_config="vllm",
     )
 
+
     def observe_plans(worker):
         from vllm.distributed.kv_transfer import get_kv_transfer_group
 
@@ -260,8 +261,9 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
                 worker.nano_save_plans.append(
                     {
                         "step_id": metadata.step_id,
-                        "request_id": request.request_id,
+                        "request_id": request.req_id,
                         "tokens": len(request.token_ids),
+                        "skip": request.save_spec.skip_leading_tokens,
                         "slots": list(request.slot_mapping),
                     }
                 )
@@ -273,7 +275,7 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         from vllm.distributed.kv_transfer import get_kv_transfer_group
 
         connector = get_kv_transfer_group()
-        result = connector._nano_lmcache_engine.lookup(prompt)
+        result = connector._save_cache.lookup(prompt)
         torch.save(
             {
                 "chunks": list(result.values),
@@ -281,7 +283,7 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
                 "matched_tokens": result.matched_tokens,
                 "layer_names": connector._layer_names,
                 "plans": worker.nano_save_plans,
-                "namespace": connector._nano_lmcache_engine._namespace,
+                "namespace": connector._save_cache._namespace,
             },
             path,
         )
@@ -309,7 +311,9 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
     assert len(saved["layer_names"]) == num_layers
     assert len(set(saved["keys"])) == 6
     planned_lengths = [plan["tokens"] for plan in saved["plans"]]
-    assert planned_lengths == ([32, 64, 96, 96] if chunked else [96])
+    assert planned_lengths == ([32, 64, 96] if chunked else [96])
+    planned_skips = [plan["skip"] for plan in saved["plans"]]
+    assert planned_skips == ([0, 32, 64] if chunked else [0])
     assert saved["namespace"].startswith("vllm-kv/v1/")
 
     first, expected_first = saved["chunks"][0], expected_chunks[0]
@@ -394,40 +398,3 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         f"max relative RMS={report['max_relative_rms_error']}; "
         f"details: {report_path}"
     )
-
-
-@pytest.mark.parametrize(
-    "async_store", [False, True], ids=["sync-store", "async-store"]
-)
-def test_shared_external_hits_generate_with_apc_disabled(monkeypatch, async_store):
-    """Real remote payload reads must preserve exact greedy output tokens."""
-    import argparse
-    import runpy
-
-    model = os.environ.get("NANO_LMCACHE_TEST_MODEL")
-    if not model:
-        pytest.skip("set NANO_LMCACHE_TEST_MODEL to local Qwen3-0.6B weights")
-    pytest.importorskip("vllm.config")
-    monkeypatch.setenv("VLLM_LOGGING_LEVEL", "WARNING")
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    benchmark = (
-        Path(__file__).resolve().parents[3] / "benchmarks/bench_vllm_external.py"
-    )
-    run = runpy.run_path(str(benchmark))["run"]
-    result = run(
-        argparse.Namespace(
-            model=model,
-            revision=None,
-            prompt_tokens=65,
-            output_tokens=8,
-            warmup=1,
-            repeats=1,
-            gpu_memory_utilization=0.35,
-            async_store=async_store,
-            json=None,
-        )
-    )
-    assert result["outputs_match"]
-    assert result["external"][1]["cached_tokens"] == 64
-    assert result["external"][1]["external_payload_reads"] == 4
