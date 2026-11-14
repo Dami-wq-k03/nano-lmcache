@@ -120,9 +120,16 @@ Done (experimental data-plane foundation, report A01–A03):
 - [x] GPU and Qwen3-0.6B measurements recorded in
       [`docs/gpu-experiment-report.md`](docs/gpu-experiment-report.md)
 
-The data-plane package is additive and experimental. Custom GPU kernels,
-connector v2 external loading, direct NVMe, P2P/PD transport, and network
-backends remain open work.
+The data-plane package is additive and experimental. CUDA/Triton gather/scatter,
+INT8 GPU codecs, mapped-host export and two-GPU transport have correctness
+coverage on RTX 4090 hardware. Blockwise FP8/INT4 and K8V4/K4V4 remain research
+references. Packed disk reads, optional Linux io_uring, host prefetch and
+cost-aware policies are available as separate experimental components.
+
+The vLLM external-load adapter has CPU/CUDA tests; real vLLM external-hit
+inference remains unvalidated. A unified serving scheduler, end-to-end async
+GPU store, cold-NVMe performance, PD serving, GDS and NIXL/RDMA remain open.
+See the report for measured wins AND regressions; custom kernels are opt-in.
 
 
 ## How to claim a task
@@ -201,9 +208,10 @@ open an issue to discuss it.
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priority:** fused GPU gather/scatter and a separately pinned vLLM 0.33
-external-load environment. N6 (faster disk reads), P2P/PD transport, and
-network backends remain performance follow-ups. The implemented baseline and
+**Next priority:** validate external-hit generation in a pinned vLLM 0.33
+GPU environment, then integrate asynchronous GPU export with serving and measure
+TTFT/TPOT regressions. N6 has packed-read/prefetch components but still needs
+cold-NVMe and serving measurements. PD and NIXL/RDMA remain follow-ups. The implemented baseline and
 measurements are in [the GPU/data-plane report](docs/gpu-experiment-report.md).
 The M11 policy comparison is in
 [the eviction report](docs/eviction-performance.md).

@@ -4,9 +4,116 @@ This report records the first implementation and measurements from the research
 roadmap. Results are measurements of this checkout and this machine, not
 portable performance guarantees.
 
-## Scope
+## Current checkout validation (2026-11-14)
 
-The following roadmap pieces are now implemented and tested:
+Local checks: full suite **748 passed, 75 skipped**; CPU tensor group
+**208 passed, 3 skipped**; Ruff and strict mypy pass. `uv lock --check` and
+wheel/sdist builds pass. Optional engine and CUDA tests skip locally.
+
+This section supersedes the implementation-status claims in the historical
+first-pass measurements below. The earlier model/restart numbers have not been
+rerun as part of this validation.
+
+| Component | Evidence and remaining gate |
+| --- | --- |
+| Page ABI, replicas, cost model, policies, prefetch | CPU tests; policy latency is modelled, not serving latency |
+| CUDA/Triton gather/scatter and INT8 | GPU correctness and matched benchmark; explicit opt-in |
+| Mapped-host pack/quantize | GPU correctness and A/B against pack/quantize plus DMA; no universal speedup |
+| Pinned pool and async transfers | Producer-stream ordering and 10k pool reuse test; bounded pool and double-release checks |
+| Two-GPU remap/restore | Both directions pass correctness tests; no dedicated peer-bandwidth acceptance claim |
+| Packed disk, host prefetch, io_uring | CPU corruption/recovery/concurrency tests; io_uring is optional and requires Linux permissions; no cold-NVMe result |
+| vLLM V4 | Shared-store load adapter tested on CPU and CUDA; real vLLM 0.33 external-hit generation remains open |
+| Async store | Background tier writes only; GPU gather/export remains on the request path; no TPOT <5% claim |
+
+The closeout also fixes write-behind shutdown after backend errors, serializes
+submission against shutdown, preserves an explicitly supplied empty remote
+backend (and its capacity), and ensures engine cleanup runs after close errors.
+
+New remote validation on PyTorch 2.6.0+cu124 / Triton 3.2.0:
+
+```text
+Single visible GPU:
+  tests/tensor/test_kernels_codecs.py tests/tensor/test_mapped_host.py
+  tests/tensor/test_transfer.py tests/tensor/test_peer_pool.py
+  tests/unit/test_vllm_kv_load.py tests/unit/test_coalesced_disk.py
+  99 passed, 2 skipped (two-GPU cases)
+Two visible GPUs:
+  tests/tensor/test_peer_pool.py
+  4 passed
+```
+
+The separate native-reader check completed **10 passed, 1 skipped** on Linux.
+The C library compiled, but the host rejected `io_uring_setup` with EPERM;
+registered reads and short-read handling therefore remain unverified on hardware.
+The new test runs those checks automatically where kernel permissions allow.
+
+The CUDA extension requires a CUDA toolkit, C++ compiler and Ninja on PATH.
+Triton kernels additionally require a compatible Triton installation. Install
+these in the optional CUDA environment; the core installation stays dependency
+free. For the tested torch 2.6 environment, Triton was 3.2.0. For example,
+activate that environment, install `ninja` if absent, and expose `$CUDA_HOME/bin`.
+The first extension call compiles the packaged `page_kernel.cu`; compilation is
+excluded from the timed samples. Wheel and sdist builds were checked to retain
+the native `.cu` and `.c` sources.
+
+### Matched kernel and fusion measurements
+
+Raw results, commands, environment, source digest, p50/p95/p99, and host-call
+latency are retained in [kernel JSON](measurements/rtx4090-kernels.json) and
+[fusion JSON](measurements/rtx4090-fusion.json). The source marker is `ac20685`;
+the SHA256 identifies the transferred snapshot. Later closeout changes affect
+remote backend selection, tests and docs, not the GPU implementations.
+
+Reproduce from the repository root in the CUDA environment:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python benchmarks/bench_gpu_kernels.py \
+  --pages 16 256 --tokens 16 64 --warmup 5 --repeats 30 \
+  --json /tmp/kernels.json
+CUDA_VISIBLE_DEVICES=1 python benchmarks/bench_gpu_fusion.py \
+  --warmup 5 --repeats 30 --json /tmp/fusion.json
+CUDA_VISIBLE_DEVICES=0,1 python -m pytest -q tests/tensor/test_peer_pool.py
+```
+
+All comparisons below are CUDA-event medians in milliseconds with five warmups
+and 30 samples. Page data has shape `[pages, 2, 2, 4, tokens, 64]`, FP16, and
+random physical ordering. Destination buffers are preallocated. Event intervals
+include host submission gaps; these are adapter-path timings, not isolated
+kernel execution times. The Python loop also copies page IDs to the host.
+The other GPU was not isolated; clocks were not fixed. Repeated data can reside
+in L2, so effective read+write GB/s must not be interpreted as HBM bandwidth.
+
+| Operation | Python loop | Batched torch | Triton | CUDA |
+| --- | ---: | ---: | ---: | ---: |
+| Gather, 256 pages x 64 tokens | 2.4988 | 0.0820 | 0.0655 | 0.0297 |
+| Scatter, 256 pages x 64 tokens | 2.5154 | 0.0427 | 0.0658 | 0.0297 |
+| Gather, 16 pages x 64 tokens | 0.1808 | 0.0145 | 0.0612 | 0.0204 |
+
+CUDA improves the larger gather/scatter cases, but small gathers favor torch.
+Triton has substantial host overhead in this environment. FP16 INT8 encode
+improves from 0.1157 ms (torch) to 0.0681 ms (Triton), while decode regresses
+from 0.0343 to 0.0594 ms. These results do not justify replacing every torch
+operation with a custom kernel.
+
+| Export operation | Torch + DMA | CUDA/Triton + DMA | Mapped-host CUDA |
+| --- | ---: | ---: | ---: |
+| Pack, 256 pages / 8 MiB | 0.3500 | 0.3402 | 0.3592 |
+| INT8, 16 tokens | 0.1889 | 0.1330 | 0.0814 |
+| INT8, 64 tokens | 0.3012 | 0.2487 | 0.8913 |
+| INT8, 256 tokens | 1.2941 | 0.7350 | 3.6726 |
+
+Mapped-host INT8 wins for the 16-token case but loses badly at longer token
+lengths. It writes over PCIe from GPU threads rather than using a DMA engine;
+it remains an experimental option. FP8/INT4 quality is covered by synthetic
+error bounds only, not a model-task quality gate.
+
+The 32 MiB copy + 4096-square GEMM microbenchmark reports 2.4559 ms serial
+versus 1.6061 ms overlapping, with standalone copy/GEMM at 1.3718/0.8799 ms.
+This demonstrates overlap in this microbenchmark, not a serving TPOT result.
+
+## Historical first-pass scope
+
+The first pass implemented and tested the following pieces:
 
 - A01--A04 foundation: `KVLayout`, `KVPageRef`, generation-aware logical page
   directory, and a dependency-free reference page store.
@@ -27,8 +134,8 @@ The following roadmap pieces are now implemented and tested:
 - O01: existing trace schema plus transfer lifecycle events and nano-vLLM trace
   rendering.
 
-The vLLM V4 external-load path, custom GPU kernels, NVMe direct I/O, P2P/PD
-transport, GDS, RDMA/NIXL, and CacheBlend remain explicitly open. They need a
+At that first-pass snapshot, the vLLM V4 external-load path, custom GPU kernels,
+NVMe direct I/O, P2P/PD transport, GDS, RDMA/NIXL, and CacheBlend were open. They need a
 separate vLLM 0.33 environment, custom hardware, or a larger implementation
 than this first incremental milestone.
 
@@ -271,13 +378,13 @@ plane/RTT result, not a GPU or network bandwidth result. The server's CPU test
 also verifies two independent clients, prefix-safe parent admission, malformed
 failure behavior, and `None` miss semantics.
 
-## Reproduction and limitations
+## Historical first-pass reproduction and limitations
 
 The source snapshot was transferred to an isolated `/tmp/nano-lmcache-gpu-work`
 directory on the GPU host; the private project checkout was not overwritten.
 Model weights and experiment directories remained outside the repository.
 
-Not run in this report:
+Not run in the historical first-pass experiments (see current validation above):
 
 - vLLM 0.33.0 external load/reuse (the GPU host has no vLLM 0.33 environment or
   pytest in the separate nano-vLLM environment).
@@ -290,6 +397,5 @@ Not run in this report:
 - A long-context 8K/32K serving matrix. The supplied Qwen3-0.6B model and
   short educational prompts were used for correctness and restart tests.
 
-The next honest milestone is to keep the ABI/reference tests as gates, then
-implement and compare a fused GPU gather/scatter path and a separately pinned
-vLLM 0.33 environment before reporting connector V4 results.
+The current closeout adds the kernel/fusion comparisons above. A pinned real
+vLLM 0.33 environment is still required before reporting V4 generation results.

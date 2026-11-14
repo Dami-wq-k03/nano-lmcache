@@ -1,5 +1,6 @@
 import pytest
 
+from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.remote import (
     RemoteCacheClient,
     RemoteCacheError,
@@ -52,3 +53,19 @@ def test_get_failure_is_a_miss():
 def test_none_is_reserved_for_misses(server):
     with pytest.raises(ValueError, match="None"):
         client(server).put("key", None)
+
+
+def test_server_preserves_empty_caller_storage_and_its_capacity():
+    backend = MemoryKVCache(max_entries=1)
+    instance = RemoteCacheServer(storage=backend)
+    instance.start()
+    try:
+        assert instance.storage is backend
+        cache = client(instance)
+        cache.put("first", "one")
+        cache.put("second", "two")
+        assert cache.get("first") is None
+        assert cache.get("second") == "two"
+        assert len(backend) == 1
+    finally:
+        instance.close()

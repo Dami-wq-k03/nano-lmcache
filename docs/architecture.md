@@ -91,6 +91,33 @@ differ. The optional tensor adapters consume this ABI without making the core
 package depend on PyTorch; the descriptor package itself intentionally contains
 no GPU code.
 
+### Experimental execution and storage adapters
+
+`tensor/kernels.py` provides opt-in CUDA/Triton gather/scatter;
+`tensor/codecs.py` adds GPU INT8 and reference blockwise FP8/INT4 codecs.
+`tensor/mapped_host.py` writes directly to mapped pinned host memory from GPU
+threads. It can regress latency, so it is not selected automatically.
+`tensor/peer.py` reports whether cross-GPU copies use peer access or explicit
+pinned-host staging. Callers keep inputs immutable until completion and release
+transfer buffers only after the corresponding event.
+
+`storage/remote.py` exposes batch lookup over a local TCP service.
+`storage/async_write.py` queues owned, immutable payloads, rejects submissions
+while closing, drains accepted writes and stops its worker even after a backend
+failure. A pending key's read waits for committed data. The nano-vLLM demo's
+`--async-store` moves tier writes to that worker; GPU export still runs on the
+request path. This is a write-behind prototype, not a complete GPU pipeline.
+
+`storage/coalesced.py` packs payloads into an append-only file with an atomic
+checksummed index. Its capacity counts live payload bytes, not dead file extents;
+there is no compactor yet. `storage/prefetch.py` bounds threaded read batches and
+returns caller-owned futures. `storage/uring.py` is a separate optional Linux
+registered-buffer reader; it raises when unsupported and is not wired into the
+packed backend. None of these paths implies GDS or cold-NVMe throughput.
+
+See [the experiment report](gpu-experiment-report.md) for commands, hardware,
+measured regressions and remaining serving validation.
+
 ### How a chunk key is built
 
 Each key hashes the namespace, the previous chunk's key, and the chunk's

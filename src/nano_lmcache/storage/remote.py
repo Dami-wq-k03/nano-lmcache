@@ -133,7 +133,7 @@ class RemoteCacheServer:
         if max_frame_size <= 0:
             raise ValueError("max_frame_size must be positive")
         self.max_frame_size = max_frame_size
-        self.storage = storage or MemoryKVCache(
+        self.storage = storage if storage is not None else MemoryKVCache(
             max_entries,
             max_bytes=max_bytes,
             size_fn=lambda value: len(value) if isinstance(value, bytes) else 0,

@@ -1,7 +1,7 @@
 
 [English](../architecture.md) | [简体中文](architecture.md)
 
-本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-03。实验报告与更完整的性能推导见对应英文专题。
+本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-14。实验报告与更完整的性能推导见对应英文专题。
 
 # 架构
 
@@ -63,6 +63,27 @@ graph TD
 实验性的 `nano_lmcache.experimental.dataplane` 包在不改变教学 API 的前提下，开始提供下一层抽象。`KVLayout` 描述模型命名空间、模型 revision、tokenizer 指纹、page 大小、dtype、NHD/HND 的 K/V 轴顺序以及 layer 排列，而且不导入 PyTorch。`KVPageRef` 描述一个物理副本，并明确记录 reservation、transfer、ready、failure 和 eviction 状态。
 
 `KVPageDirectory` 负责逻辑页到物理副本的映射。因此，同一个 logical page 可以同时拥有 GPU、pinned CPU、CPU、NVMe 或 remote 副本；目录会选择 ready 的 authoritative 副本，在它被淘汰后回退到其他 ready 副本。所有副本必须匹配 layout、token range 和 generation，但 compression 和物理 page ID 可以不同。可选的 tensor adapter 会消费这个 ABI，同时不让核心包依赖 PyTorch；descriptor 包本身刻意不包含 GPU 代码。
+
+### 实验性执行与存储适配器
+
+`tensor/kernels.py` 提供显式选择的 CUDA/Triton gather/scatter；
+`tensor/codecs.py` 提供 GPU INT8 和参考版 FP8/INT4 分块量化。
+`tensor/mapped_host.py` 由 GPU 线程直接写 mapped pinned 主机内存，
+部分场景会变慢，因此不会自动启用。`tensor/peer.py` 明确区分 peer access
+与 pinned 主机内存中转。传输完成前，调用方必须保持输入不变，等待对应事件后再归还缓冲区。
+
+`storage/remote.py` 提供支持批量查找的本地 TCP 服务。
+`storage/async_write.py` 将自有、不可变的载荷排入后台线程，关闭时拒绝新写入，
+排空已接受的任务，即使后端失败也会退出线程。读取待提交的 key 会等待写入完成。
+nano-vLLM 示例的 `--async-store` 仅将 tier 写入移入后台，GPU 导出仍在请求路径上。
+
+`storage/coalesced.py` 使用追加文件和原子发布的带校验索引。
+容量只计算存活载荷，不包含失效文件片段，目前没有压缩回收工具。
+`storage/prefetch.py` 提供有界线程预取，future 及结果由调用方持有。
+`storage/uring.py` 是独立的可选 Linux 注册缓冲区读取器，不支持时明确报错，
+尚未接入 packed backend。这些实现不代表已经获得 GDS 或冷 NVMe 的吞吐结果。
+
+复现命令、硬件、性能退化与待验证项见[实验报告（英文）](../gpu-experiment-report.md)。
 
 ### 如何生成分块键
 

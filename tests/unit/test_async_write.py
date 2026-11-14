@@ -9,15 +9,65 @@ from nano_lmcache.storage.async_write import (
 from nano_lmcache.storage.memory import MemoryKVCache
 
 
-def test_writes_are_not_visible_until_flush():
+def test_reads_wait_for_accepted_writes():
     backend = MemoryKVCache()
     storage = AsyncWriteBehindStorage(backend, max_pending=4)
     storage.put("root", "value")
-    assert backend.get("root") is None
+    # The worker may already have committed; get must see the accepted write.
     assert storage.get("root") == "value"
     storage.flush()
     assert backend.get("root") == "value"
     storage.close()
+
+
+@pytest.mark.parametrize("flush", [True, False])
+def test_close_stops_worker_after_backend_failure(flush):
+    class FailedStorage(MemoryKVCache):
+        def put(self, key, value, *, parent_key=None):
+            raise OSError("injected disk failure")
+
+    storage = AsyncWriteBehindStorage(FailedStorage())
+    storage.put("root", "value")
+    with pytest.raises(RuntimeError, match="worker failed"):
+        storage.close(flush=flush)
+    assert not storage._worker.is_alive()
+    with pytest.raises(RuntimeError, match="closed"):
+        storage.put("late", "value")
+    storage.close()
+
+
+def test_close_rejects_writes_while_draining():
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowStorage(MemoryKVCache):
+        def put(self, key, value, *, parent_key=None):
+            started.set()
+            assert release.wait(timeout=5)
+            super().put(key, value, parent_key=parent_key)
+
+    storage = AsyncWriteBehindStorage(SlowStorage())
+    storage.put("root", "value")
+    assert started.wait(timeout=5)
+    closing = threading.Event()
+    original_flush = storage.flush
+
+    def flush():
+        closing.set()
+        original_flush()
+
+    storage.flush = flush
+    closer = threading.Thread(target=storage.close)
+    closer.start()
+    try:
+        assert closing.wait(timeout=5)
+        with pytest.raises(RuntimeError, match="closed"):
+            storage.put("late", "value")
+    finally:
+        release.set()
+        closer.join(timeout=5)
+    assert not closer.is_alive()
+    assert storage.backend.get("root") == "value"
 
 
 def test_ordered_parent_writes_and_owned_prepare():
