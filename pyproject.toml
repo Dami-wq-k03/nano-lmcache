@@ -76,6 +76,17 @@ ignore_missing_imports = true
 module = "nano_lmcache.tensor._triton_kernels"
 ignore_errors = true
 
+# CUDA event/stream stubs are incomplete in supported torch releases. Scope
+# this exception to adapters calling them, with or without optional torch.
+[[tool.mypy.overrides]]
+module = [
+    "nano_lmcache.tensor.transfer",
+    "nano_lmcache.tensor.peer",
+    "nano_lmcache.tensor.mapped_host",
+    "nano_lmcache.integrations.vllm.kv_load",
+]
+disable_error_code = ["no-untyped-call"]
+
 [tool.uv]
 conflicts = [
     [{ group = "tensor-test" }, { extra = "torch" }],

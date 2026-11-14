@@ -61,7 +61,7 @@ class BlockQuantizedKV:
 
     @property
     def nbytes(self) -> int:
-        return self.codes.nbytes + self.scales.nbytes
+        return int(self.codes.nbytes + self.scales.nbytes)
 
 
 def quantize_blocks(

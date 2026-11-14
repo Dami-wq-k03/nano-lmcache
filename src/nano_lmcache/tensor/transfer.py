@@ -20,7 +20,7 @@ class TransferHandle:
     @property
     def done(self) -> bool:
         """Whether the queued operation has completed."""
-        return self.event is None or self.event.query()  # type: ignore[no-untyped-call]
+        return self.event is None or bool(self.event.query())
 
     def wait(self) -> torch.Tensor:
         """Wait for this copy only and return its destination tensor."""
@@ -102,7 +102,7 @@ class PinnedBufferPool:
         if buffer.device.type != "cpu" or not buffer.is_pinned():
             raise ValueError("only pinned CPU tensors can be returned")
         pointer = buffer.data_ptr()
-        if self._owned.get(pointer) is not buffer or pointer not in self._in_use:
+        if id(self._owned.get(pointer)) != id(buffer) or pointer not in self._in_use:
             raise ValueError("buffer is not checked out from this pool")
         self._in_use.remove(pointer)
         self._free[(tuple(buffer.shape), buffer.dtype)].append(buffer)
@@ -126,7 +126,7 @@ class AsyncTransferEngine:
             self.device = torch.device("cuda", torch.cuda.current_device())
         if stream is not None and stream.device != self.device:
             raise ValueError("stream must belong to the transfer device")
-        self.stream = stream or torch.cuda.Stream(  # type: ignore[no-untyped-call]
+        self.stream = stream or torch.cuda.Stream(
             device=self.device
         )
         self.pool = pool or PinnedBufferPool()
@@ -142,7 +142,7 @@ class AsyncTransferEngine:
         source.record_stream(self.stream)
         with torch.cuda.stream(self.stream):
             destination.copy_(source, non_blocking=True)
-            event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+            event = torch.cuda.Event()
             event.record(self.stream)
         return TransferHandle(destination, event, (source, destination))
 
@@ -153,7 +153,7 @@ class AsyncTransferEngine:
         destination = torch.empty_like(source, device=self.device)
         with torch.cuda.stream(self.stream):
             destination.copy_(source, non_blocking=True)
-            event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+            event = torch.cuda.Event()
             event.record(self.stream)
         return TransferHandle(destination, event, (source, destination))
 

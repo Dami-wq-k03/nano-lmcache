@@ -89,7 +89,7 @@ class KVLoadAdapter:
         for name, layer in self.layers.items():
             if layer.device.type == "cuda":
                 with torch.cuda.device(layer.device):
-                    event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+                    event = torch.cuda.Event()
                     event.record(torch.cuda.current_stream(layer.device))
                     self.events[name] = event
 

@@ -56,7 +56,7 @@ class PeerTransferEngine:
             torch.cuda.can_device_access_peer(source_device, target_device)
         )
         self._source_engine = AsyncTransferEngine(device=self.source)
-        self._stream = torch.cuda.Stream(device=self.target)  # type: ignore[no-untyped-call]
+        self._stream = torch.cuda.Stream(device=self.target)
         self._pending: list[PeerTransfer] = []
         self._max_pending = max_pending
         self._closed = False
@@ -84,7 +84,7 @@ class PeerTransferEngine:
         direct = mode != "host" and self.peer_available
         host = None
         if direct:
-            producer = torch.cuda.Event()  # type: ignore[no-untyped-call]
+            producer = torch.cuda.Event()
             producer.record(torch.cuda.current_stream(self.source))
             self._stream.wait_event(producer)
             input_tensor = source
@@ -97,7 +97,7 @@ class PeerTransferEngine:
         with torch.cuda.device(self.target), torch.cuda.stream(self._stream):
             destination = torch.empty_like(source, device=self.target)
             destination.copy_(input_tensor, non_blocking=True)
-            event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+            event = torch.cuda.Event()
             event.record(self._stream)
         transfer = PeerTransfer(
             TransferHandle(destination, event, (source, input_tensor, destination)),

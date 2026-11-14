@@ -16,7 +16,7 @@ class QuantizedKV:
 
     @property
     def nbytes(self) -> int:
-        return self.values.nbytes + self.scales.nbytes
+        return int(self.values.nbytes + self.scales.nbytes)
 
 
 def quantize_kv(value: torch.Tensor, *, token_axis: int = -2) -> QuantizedKV:

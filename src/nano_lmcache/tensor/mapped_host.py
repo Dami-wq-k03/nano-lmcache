@@ -35,7 +35,7 @@ def gather_to_host_gpu(
     with torch.cuda.device(pages.device):
         if out.numel():
             _cuda_extension().pack_host(pages, ids, out)
-        event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+        event = torch.cuda.Event()
         event.record(torch.cuda.current_stream(pages.device))
     return TransferHandle(out, event, (pages, ids, out))
 
@@ -80,6 +80,6 @@ def quantize_to_host_gpu(
         raise ValueError("out must be matching pinned INT8 values and FP32 scales")
     with torch.cuda.device(value.device):
         _cuda_extension().quantize_host(value, out.values, out.scales)
-        event = torch.cuda.Event()  # type: ignore[no-untyped-call]
+        event = torch.cuda.Event()
         event.record(torch.cuda.current_stream(value.device))
     return out, TransferHandle(out.values, event, (value, out.values, out.scales))

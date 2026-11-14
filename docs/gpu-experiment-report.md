@@ -62,7 +62,8 @@ Raw results, commands, environment, source digest, p50/p95/p99, and host-call
 latency are retained in [kernel JSON](measurements/rtx4090-kernels.json) and
 [fusion JSON](measurements/rtx4090-fusion.json). The source marker is `ac20685`;
 the SHA256 identifies the transferred snapshot. Later closeout changes affect
-remote backend selection, tests and docs, not the GPU implementations.
+optional-dependency typing, remote backend selection, tests and docs; the
+measured GPU algorithms are unchanged.
 
 Reproduce from the repository root in the CUDA environment:
 
