@@ -241,7 +241,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if getattr(args, "disk_directory", None)
             else None,
         },
-        "scope": "APC disabled; sequential single-request external KV reuse",
+        "scope": (
+            "Sequential external reuse; APC disabled in baseline/external; "
+            "optional separate local APC control"
+        ),
         "baseline": baseline,
         "local_apc": apc,
         "external": connected,
