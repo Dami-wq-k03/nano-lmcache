@@ -1,7 +1,8 @@
-"""Warm host-page-cache comparison: entry files, packed reads, async prefetch.
+"""Host storage comparison: entry files, packed reads, async prefetch.
 
-Run with ``uv run python benchmarks/bench_disk_pages.py``. No cache dropping,
-GPU transfer, io_uring or GDS is measured. Optional SHA256 work between submit
+Use --cache-state cold --directory /path/on/nvme for per-file cache eviction
+advice and Linux physical-read accounting. No GPU, io_uring or GDS is measured.
+Optional SHA256 work between submit
 and wait demonstrates caller/read overlap, not engine integration.
 """
 
@@ -10,8 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import statistics
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -32,23 +35,54 @@ class CountingDiskKVCache(DiskKVCache):
         return super()._read(path)
 
 
+def drop_cached_files(directory: Path) -> None:
+    """Advise clean experiment files out of page cache, without global drops."""
+    if not hasattr(os, "posix_fadvise"):
+        raise RuntimeError("cold reads require Linux POSIX_FADV_DONTNEED")
+    for path in directory.rglob("*"):
+        if path.is_file():
+            with path.open("rb") as handle:
+                os.posix_fadvise(handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+
+
+def process_read_bytes() -> int | None:
+    """Linux task physical read accounting; None on unsupported systems."""
+    try:
+        values = dict(
+            line.split(": ") for line in Path("/proc/self/io").read_text().splitlines()
+        )
+        return int(values["read_bytes"])
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 def measure(
     operation: Callable[[], list[object | None]],
     reader: CountingDiskKVCache | CoalescedDiskKVCache,
     expected: list[object | None],
     repeats: int,
-) -> dict[str, float]:
+    before_read: Callable[[], None] = lambda: None,
+) -> dict[str, object]:
     assert operation() == expected  # explicit warmup, outside measurement
     reader.read_ops = 0
     samples = []
+    physical_bytes = []
     for _ in range(repeats):
+        before_read()
+        before = process_read_bytes()
         start = time.perf_counter()
         result = operation()
         samples.append((time.perf_counter() - start) * 1000)
+        after = process_read_bytes()
+        if before is not None and after is not None:
+            physical_bytes.append(after - before)
         if result != expected:
             raise RuntimeError("disk benchmark returned incorrect pages")
     return {
         "median_ms": statistics.median(samples),
+        "p95_ms": sorted(samples)[int((len(samples) - 1) * 0.95)],
+        "samples_ms": samples,
+        "physical_read_bytes": physical_bytes or None,
         "payload_read_operations_per_lookup": reader.read_ops / repeats,
     }
 
@@ -59,6 +93,13 @@ def main() -> None:
     parser.add_argument("--page-bytes", type=int, default=64 << 10)
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--work-rounds", type=int, default=0)
+    parser.add_argument(
+        "--directory",
+        type=Path,
+        default=None,
+        help="parent filesystem for isolated experiment files",
+    )
+    parser.add_argument("--cache-state", choices=("warm", "cold"), default="warm")
     args = parser.parse_args()
     if min(args.pages, args.page_bytes, args.repeats) <= 0 or args.work_rounds < 0:
         raise SystemExit(
@@ -72,8 +113,15 @@ def main() -> None:
         for _ in range(args.work_rounds):
             hashlib.sha256(payload).digest()
 
-    with tempfile.TemporaryDirectory(prefix="nano-lmcache-disk-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="nano-lmcache-disk-", dir=args.directory
+    ) as directory:
         root = Path(directory)
+
+        def before_read() -> None:
+            if args.cache_state == "cold":
+                drop_cached_files(root)
+
         files = CountingDiskKVCache(root / "files", serializer=BytesSerializer())
         with CoalescedDiskKVCache(root / "packed") as packed:
             for index, key in enumerate(keys):
@@ -108,21 +156,29 @@ def main() -> None:
                     return future.result()
 
                 modes = {
-                    "entry_files": measure(per_file, files, expected, args.repeats),
-                    "packed_per_page": measure(
-                        per_page, packed, expected, args.repeats
+                    "entry_files": measure(
+                        per_file, files, expected, args.repeats, before_read
                     ),
-                    "packed_get_many": measure(batch, packed, expected, args.repeats),
+                    "packed_per_page": measure(
+                        per_page, packed, expected, args.repeats, before_read
+                    ),
+                    "packed_get_many": measure(
+                        batch, packed, expected, args.repeats, before_read
+                    ),
                     "threaded_prefetch": measure(
-                        asynchronous, packed, expected, args.repeats
+                        asynchronous, packed, expected, args.repeats, before_read
                     ),
                 }
             result = {
                 "environment": {
                     "python": platform.python_version(),
                     "platform": platform.platform(),
+                    "command": sys.argv,
                 },
-                "scope": "warm buffered host reads; no GPU, cold-disk, io_uring or GDS",
+                "scope": "buffered host reads; no GPU, io_uring or GDS",
+                "cache_state": args.cache_state,
+                "cold_method": "per-file DONTNEED advice; verify physical_read_bytes",
+                "filesystem_device": os.stat(root).st_dev,
                 "read_counter": "entry-file loads for baseline; pread calls for packed",
                 "pages": args.pages,
                 "page_bytes": args.page_bytes,

@@ -29,7 +29,9 @@ from nano_lmcache.integrations.vllm.kv_load import (
     KVLoadAdapter,
     chunk_keys,
 )
+from nano_lmcache.storage.protocol import CacheStorage
 from nano_lmcache.storage.remote import RemoteCacheClient
+from nano_lmcache.tensor.async_store import AsyncTensorWriteStorage
 from nano_lmcache.tensor.kv_chunks import LayerKV, split_kv
 from nano_lmcache.tensor.serializers import TensorSerializer
 
@@ -130,7 +132,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         assert transfer_config is not None
         remote = transfer_config.kv_connector_extra_config.get("remote_cache")
         self._shared_storage = remote is not None
-        storage = None
+        storage: CacheStorage | None = None
         if remote is not None:
             from vllm.v1.kv_cache_interface import FullAttentionSpec
 
@@ -158,7 +160,21 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
             storage = RemoteCacheClient(
                 remote["host"], remote["port"], serializer=TensorSerializer()
             )
-        self._remote_storage = storage
+        self._remote_storage = (
+            storage if isinstance(storage, RemoteCacheClient) else None
+        )
+        self._async_store: AsyncTensorWriteStorage | None = None
+        if transfer_config.kv_connector_extra_config.get("async_store", False):
+            if storage is None:
+                raise ValueError("async_store requires a shared remote_cache")
+            if role is KVConnectorRole.WORKER:
+                self._async_store = AsyncTensorWriteStorage(
+                    storage,
+                    max_pending=transfer_config.kv_connector_extra_config.get(
+                        "write_queue", 32
+                    ),
+                )
+                storage = self._async_store
         self._nano_lmcache_engine = ChunkedPrefixCache(
             chunk_size=self._block_size, namespace=self._namespace, storage=storage
         )
@@ -298,7 +314,9 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 block_idxs = slots // self._block_size
                 offsets = slots % self._block_size
                 selected = kv_layer[block_idxs, :, offsets]
-                kv_cache = selected.detach().cpu()
+                kv_cache = selected.detach()
+                if self._async_store is None:
+                    kv_cache = kv_cache.cpu()
 
             keys = kv_cache[..., :head_dim].permute(1, 0, 2)
             values = kv_cache[..., head_dim:].permute(1, 0, 2)
@@ -370,6 +388,8 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
     def shutdown(self) -> None:
         _log_call(self, "shutdown")
         self._load_adapter.reset()
+        if self._async_store is not None:
+            self._async_store.close()
         # vLLM 0.33.0's base shutdown() has no type annotations.
         super().shutdown()  # type: ignore[no-untyped-call]
 
@@ -507,7 +527,9 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                 continue
             computed_end = min(len(state.prompt_token_ids), computed + scheduled_tokens)
             save_end = computed_end // chunk_size * chunk_size
-            if save_end == 0:
+            # A partial tail after a cache hit completed no new chunk. Avoid
+            # exporting and serializing the restored prefix a second time.
+            if save_end <= computed // chunk_size * chunk_size:
                 continue
 
             slots = tuple(

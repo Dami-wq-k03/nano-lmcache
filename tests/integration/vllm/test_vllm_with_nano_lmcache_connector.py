@@ -247,7 +247,6 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         generation_config="vllm",
     )
 
-
     def observe_plans(worker):
         from vllm.distributed.kv_transfer import get_kv_transfer_group
 
@@ -395,3 +394,40 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         f"max relative RMS={report['max_relative_rms_error']}; "
         f"details: {report_path}"
     )
+
+
+@pytest.mark.parametrize(
+    "async_store", [False, True], ids=["sync-store", "async-store"]
+)
+def test_shared_external_hits_generate_with_apc_disabled(monkeypatch, async_store):
+    """Real remote payload reads must preserve exact greedy output tokens."""
+    import argparse
+    import runpy
+
+    model = os.environ.get("NANO_LMCACHE_TEST_MODEL")
+    if not model:
+        pytest.skip("set NANO_LMCACHE_TEST_MODEL to local Qwen3-0.6B weights")
+    pytest.importorskip("vllm.config")
+    monkeypatch.setenv("VLLM_LOGGING_LEVEL", "WARNING")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    benchmark = (
+        Path(__file__).resolve().parents[3] / "benchmarks/bench_vllm_external.py"
+    )
+    run = runpy.run_path(str(benchmark))["run"]
+    result = run(
+        argparse.Namespace(
+            model=model,
+            revision=None,
+            prompt_tokens=65,
+            output_tokens=8,
+            warmup=1,
+            repeats=1,
+            gpu_memory_utilization=0.35,
+            async_store=async_store,
+            json=None,
+        )
+    )
+    assert result["outputs_match"]
+    assert result["external"][1]["cached_tokens"] == 64
+    assert result["external"][1]["external_payload_reads"] == 4

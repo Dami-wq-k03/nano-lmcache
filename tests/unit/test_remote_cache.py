@@ -69,3 +69,27 @@ def test_server_preserves_empty_caller_storage_and_its_capacity():
         assert len(backend) == 1
     finally:
         instance.close()
+
+
+def test_server_can_use_persistent_packed_byte_storage(tmp_path):
+    from nano_lmcache.storage.coalesced import CoalescedDiskKVCache
+
+    with CoalescedDiskKVCache(tmp_path) as backend:
+        instance = RemoteCacheServer(storage=backend)
+        instance.start()
+        try:
+            cache = client(instance)
+            cache.put("root", {"value": 42})
+            cache.put("child", {"value": 43}, parent_key="root")
+        finally:
+            instance.close()
+    with CoalescedDiskKVCache(tmp_path) as backend:
+        instance = RemoteCacheServer(storage=backend)
+        instance.start()
+        try:
+            assert client(instance).get_many(["root", "child"]) == [
+                {"value": 42},
+                {"value": 43},
+            ]
+        finally:
+            instance.close()

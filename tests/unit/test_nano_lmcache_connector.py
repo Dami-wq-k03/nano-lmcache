@@ -99,7 +99,7 @@ def make_connector():
     """
 
     def create(
-        role: str | KVConnectorRole, *, remote_cache=None
+        role: str | KVConnectorRole, *, remote_cache=None, async_store=False
     ) -> NanoLMCacheConnector:
         if isinstance(role, str):
             role = KVConnectorRole[role]
@@ -109,7 +109,8 @@ def make_connector():
                 kv_connector="NanoLMCacheConnector",
                 kv_role="kv_both",
                 kv_connector_extra_config=(
-                    {} if remote_cache is None else {"remote_cache": remote_cache}
+                    {"async_store": async_store}
+                    | ({} if remote_cache is None else {"remote_cache": remote_cache})
                 ),
             ),
             cache_config=SimpleNamespace(block_size=4, cache_dtype="auto"),
@@ -584,7 +585,7 @@ def _save_step(*, new=(), cached=(), counts=None, resumed=(), finished=()):
         (list(range(10)), 0, 6, 4),
         (list(range(10)), 4, 6, 8),
         (list(range(8)), 0, 8, 8),
-        (list(range(10)), 8, 5, 8),
+        (list(range(10)), 8, 5, 0),
         (list(range(10)), 10, 1, 0),
         (list(range(10)), 0, 0, 0),
         (list(range(3)), 0, 3, 0),
@@ -771,6 +772,7 @@ def test_shared_worker_loads_pickled_plans_into_new_slots(
             counts={"target": 1},
         )
     metadata = pickle.loads(pickle.dumps(scheduler.build_connector_meta(output)))
+    assert metadata.requests == ()  # restored prefix must not be exported again
     assert len(metadata.loads) == (8 - local_tokens) // 4
     assert metadata.loads[0].slot_mapping == (
         (12, 13, 14, 15) if local_tokens == 0 else (32, 33, 34, 35)
@@ -831,3 +833,46 @@ def test_missing_chunk_reports_blocks_and_does_not_save_failed_forward(
     assert cache.lookup(list(range(12))).matched_tokens == 4
     worker.clear_connector_metadata()
     assert worker.get_block_ids_with_load_errors() == set()
+
+
+def test_async_worker_publishes_owned_chunks_and_drains_on_shutdown(
+    make_connector, shared_server, save_layers
+):
+    worker = make_connector(
+        "WORKER", remote_cache=_endpoint(shared_server), async_store=True
+    )
+    worker.register_kv_caches(save_layers)
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=(ReqMeta("source", (1, 2, 3, 4), (0, 1, 2, 3)),)
+        )
+    )
+    try:
+        for name, value in save_layers.items():
+            worker.save_kv_layer(name, value, SimpleNamespace())
+        assert worker._async_store is not None
+        worker._async_store.flush()
+        result = worker._nano_lmcache_engine.lookup([1, 2, 3, 4])
+        assert result.matched_tokens == 4
+        saved = result.values[0].clone()
+        for value in save_layers.values():
+            value.fill_(-777)
+        assert torch.equal(
+            worker._nano_lmcache_engine.lookup([1, 2, 3, 4]).values[0], saved
+        )
+    finally:
+        worker.shutdown()
+
+
+def test_async_store_requires_shared_backend(make_connector):
+    with pytest.raises(ValueError, match="requires a shared"):
+        make_connector("WORKER", async_store=True)
+
+
+def test_async_scheduler_does_not_create_background_writer(
+    make_connector, shared_server
+):
+    scheduler = make_connector(
+        "SCHEDULER", remote_cache=_endpoint(shared_server), async_store=True
+    )
+    assert scheduler._async_store is None

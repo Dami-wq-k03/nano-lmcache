@@ -15,12 +15,22 @@ import socketserver
 import struct
 import threading
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Protocol
 
 from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.serializers import JsonSerializer, Serializer
 
 _DEFAULT_MAX_FRAME = 64 * 1024 * 1024
+
+
+class ServerStorage(Protocol):
+    """Prefix-safe admission and lookup required by the byte-cache server."""
+
+    def try_put(
+        self, key: str, value: object, *, parent_key: str | None = None
+    ) -> bool: ...
+    def get(self, key: str) -> object | None: ...
+    def __contains__(self, key: object) -> bool: ...
 
 
 class RemoteCacheError(RuntimeError):
@@ -125,7 +135,7 @@ class RemoteCacheServer:
         *,
         host: str = "127.0.0.1",
         port: int = 0,
-        storage: MemoryKVCache | None = None,
+        storage: ServerStorage | None = None,
         max_entries: int | None = None,
         max_bytes: int | None = None,
         max_frame_size: int = _DEFAULT_MAX_FRAME,
@@ -133,10 +143,14 @@ class RemoteCacheServer:
         if max_frame_size <= 0:
             raise ValueError("max_frame_size must be positive")
         self.max_frame_size = max_frame_size
-        self.storage = storage if storage is not None else MemoryKVCache(
-            max_entries,
-            max_bytes=max_bytes,
-            size_fn=lambda value: len(value) if isinstance(value, bytes) else 0,
+        self.storage = (
+            storage
+            if storage is not None
+            else MemoryKVCache(
+                max_entries,
+                max_bytes=max_bytes,
+                size_fn=lambda value: len(value) if isinstance(value, bytes) else 0,
+            )
         )
         self._server = _ThreadingTCPServer((host, port), _RequestHandler)
         self._server.cache_server = self
@@ -198,12 +212,8 @@ class RemoteCacheServer:
             for key in keys:
                 value = self.storage.get(key)
                 if value is not None and not isinstance(value, bytes):
-                    raise RemoteCacheError(
-                        "server storage contains non-byte payload"
-                    )
-                payloads.append(
-                    None if value is None else _encode_payload(value)
-                )
+                    raise RemoteCacheError("server storage contains non-byte payload")
+                payloads.append(None if value is None else _encode_payload(value))
             return {"ok": True, "payloads": payloads}
         raise RemoteCacheProtocolError(f"unknown operation {operation!r}")
 
@@ -237,9 +247,7 @@ class RemoteCacheClient:
         self.timeout = timeout
         self.max_frame_size = max_frame_size
 
-    def put(
-        self, key: str, value: object, *, parent_key: str | None = None
-    ) -> None:
+    def put(self, key: str, value: object, *, parent_key: str | None = None) -> None:
         if value is None:
             raise ValueError("None is reserved for a cache miss")
         payload = self.serializer.dumps(value)
