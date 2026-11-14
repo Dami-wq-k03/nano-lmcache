@@ -187,7 +187,7 @@ open an issue to discuss it.
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
 | V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented; real generation validated |
 | V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Implemented; real external hits validated |
-| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Implemented; real save/generation validated |
+| V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Done |
 | V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Implemented; real external-hit generation validated |
 | V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Benchmark measured; performance gates open |
 | **PD disaggregation** | | | | | |
@@ -982,7 +982,7 @@ generation also requires V4's worker load path.
 
 ### V3: Worker side: save chunks from the paged KV cache
 
-**Status: open** ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)).
+**Status: done** ([#27](https://github.com/Dami-wq-k03/nano-lmcache/issues/27)).
 Prerequisites: V1, G1.
 
 Gather the request's K/V from the per-layer paged cache using its block
