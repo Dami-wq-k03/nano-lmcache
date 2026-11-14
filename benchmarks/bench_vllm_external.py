@@ -64,7 +64,9 @@ def physical_read_bytes() -> int | None:
     return None
 
 
-def generate_case(args: argparse.Namespace, server: ObservedServer | None) -> list:
+def generate_case(
+    args: argparse.Namespace, server: ObservedServer | None, *, local_apc: bool = False
+) -> list:
     from vllm import LLM, SamplingParams
     from vllm.config import KVTransferConfig
 
@@ -96,7 +98,7 @@ def generate_case(args: argparse.Namespace, server: ObservedServer | None) -> li
         enforce_eager=True,
         disable_log_stats=False,
         disable_hybrid_kv_cache_manager=True,
-        enable_prefix_caching=False,
+        enable_prefix_caching=local_apc,
         kv_transfer_config=transfer,
         generation_config="vllm",
     )
@@ -138,8 +140,9 @@ def generate_case(args: argparse.Namespace, server: ObservedServer | None) -> li
             if len(completion.token_ids) != args.output_tokens:
                 raise RuntimeError("generation stopped early")
             expected_hits = (args.prompt_tokens - 1) // 16 * 16
-            if server is not None and phase == "repeat":
-                if reads != expected_hits // 16:
+            if phase == "repeat" and (server is not None or local_apc):
+                expected_reads = expected_hits // 16 if server is not None else 0
+                if reads != expected_reads:
                     raise RuntimeError(f"expected payload reads, got {reads}")
                 if output.num_cached_tokens != expected_hits:
                     raise RuntimeError(
@@ -201,6 +204,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("this benchmark targets vLLM 0.33.0")
     os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
     baseline = generate_case(args, None)
+    apc = (
+        generate_case(args, None, local_apc=True)
+        if getattr(args, "with_apc_control", False)
+        else []
+    )
     with tempfile.TemporaryDirectory(dir=getattr(args, "disk_directory", None)) as temp:
         disk_directory = Path(temp) if getattr(args, "disk_directory", None) else None
         server = ObservedServer(disk_directory)
@@ -214,6 +222,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for reference, cached in zip(baseline, connected, strict=True)
     ):
         raise RuntimeError("external-cache generation differs from the baseline")
+    if apc and any(
+        a["token_ids"] != b["token_ids"] for a, b in zip(baseline, apc, strict=True)
+    ):
+        raise RuntimeError("local APC generation differs from the baseline")
     return {
         "environment": {
             "git_sha": os.environ.get("NANO_LMCACHE_GIT_SHA"),
@@ -231,6 +243,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "scope": "APC disabled; sequential single-request external KV reuse",
         "baseline": baseline,
+        "local_apc": apc,
         "external": connected,
         "baseline_repeat_wall_p50_ms": statistics.median(
             row["wall_ms"] for row in baseline if row["phase"] == "repeat"
@@ -246,6 +259,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--async-store", action="store_true")
+    parser.add_argument("--with-apc-control", action="store_true")
     parser.add_argument(
         "--disk-directory",
         type=Path,
