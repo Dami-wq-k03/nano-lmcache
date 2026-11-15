@@ -1020,6 +1020,52 @@ def test_worker_loads_only_external_span(
         assert torch.equal(layer[9, :, :, :3], chunks[1][layer_index, 0])
 
 
+@pytest.mark.parametrize(
+    ("slots", "error_blocks"),
+    [
+        ((12, 12, 14, 15), {3}),
+        ((12, 13), {3}),
+        ((40, 41, 42, 43), {10}),
+    ],
+)
+def test_invalid_load_plan_marks_blocks_without_scattering(
+    make_remote_connector, slots, error_blocks
+):
+    worker = make_remote_connector("WORKER")
+    layers = _load_worker_layers()
+    before = {name: layer.clone() for name, layer in layers.items()}
+    worker.register_kv_caches(layers)
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=[
+                ReqMeta(
+                    "req",
+                    (0, 1, 2, 3),
+                    slots,
+                    SaveSpec(skip_leading_tokens=4, can_save=False),
+                    LoadSpec(0, 4, True),
+                )
+            ]
+        )
+    )
+
+    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
+
+    assert worker.get_block_ids_with_load_errors() == error_blocks
+    assert worker._failed_loads == {"req"}
+    for name, layer in layers.items():
+        assert torch.equal(layer, before[name])
+
+
+def test_loaded_chunk_must_be_on_cpu():
+    chunk = torch.empty(CHUNK_SHAPE, dtype=torch.float32, device="meta")
+
+    with pytest.raises(ValueError, match="Missing or incompatible KV chunk"):
+        NanoLMCacheConnector._validate_loaded_chunk(
+            chunk, CHUNK_SHAPE, torch.float32
+        )
+
+
 def test_missing_entry_reports_block_and_skips_save(
     make_remote_connector, remote_cache
 ):
