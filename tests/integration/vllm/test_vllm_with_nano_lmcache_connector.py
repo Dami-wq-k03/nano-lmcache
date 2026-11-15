@@ -398,3 +398,133 @@ def test_saved_kv_matches_transformers(hf_kv_reference, monkeypatch, tmp_path, c
         f"max relative RMS={report['max_relative_rms_error']}; "
         f"details: {report_path}"
     )
+
+def test_shared_external_hits_generate_with_apc_disabled(monkeypatch):
+    """A repeated prompt must load remote chunks and match the cold output."""
+    import argparse
+    import runpy
+
+    model = os.environ.get("NANO_LMCACHE_TEST_MODEL")
+    if not model:
+        pytest.skip("set NANO_LMCACHE_TEST_MODEL to local Qwen3-0.6B weights")
+    pytest.importorskip("vllm.config")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+
+    benchmark = (
+        Path(__file__).resolve().parents[3]
+        / "benchmarks/bench_vllm_external.py"
+    )
+    run = runpy.run_path(str(benchmark))["run"]
+    result = run(
+        argparse.Namespace(
+            model=model,
+            revision=None,
+            prompt_tokens=1025,
+            output_tokens=8,
+            warmup=1,
+            repeats=1,
+            store_repeats=1,
+            gpu_memory_utilization=0.35,
+            async_store=False,
+            json=None,
+        )
+    )
+
+    assert result["outputs_match"]
+    assert result["external"][0]["cached_tokens"] == 0
+    assert result["external"][1]["cached_tokens"] == 1024
+    assert result["external"][1]["external_payload_reads"] == 64
+
+
+class _DropFirstGetServer:
+    """Remote cache server that drops one key on the next payload GET."""
+
+    def __init__(self):
+        from nano_lmcache.storage.remote import RemoteCacheServer
+
+        self._server = RemoteCacheServer()
+        self.drop_next_get = False
+        # The real server threads dispatch through the instance attribute.
+        self._server.handle = self.handle
+
+    def start(self):
+        return self._server.start()
+
+    def close(self):
+        self._server.close()
+
+    def handle(self, request):
+        from nano_lmcache.storage.remote import RemoteCacheServer
+
+        if request.get("op") == "get" and self.drop_next_get:
+            self.drop_next_get = False
+            key = request["key"]
+            if key in self._server.storage:
+                self._server.storage.invalidate(key)
+            return {"ok": True, "payload": None}
+        return RemoteCacheServer.handle(self._server, request)
+
+
+def test_external_load_failure_fails_explicitly(monkeypatch):
+    """A key disappearing after lookup must fail the request, not use bad KV."""
+    from vllm import LLM, SamplingParams
+    from vllm.config import KVTransferConfig
+
+    model = os.environ.get("NANO_LMCACHE_TEST_MODEL")
+    if not model:
+        pytest.skip("set NANO_LMCACHE_TEST_MODEL to local Qwen3-0.6B weights")
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
+    monkeypatch.setenv("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+
+    server = _DropFirstGetServer()
+    host, port = server.start()
+    llm = LLM(
+        model=model,
+        dtype="bfloat16",
+        tensor_parallel_size=1,
+        seed=0,
+        max_model_len=768,
+        max_num_seqs=1,
+        block_size=BLOCK_SIZE,
+        gpu_memory_utilization=0.35,
+        enforce_eager=True,
+        disable_hybrid_kv_cache_manager=True,
+        enable_prefix_caching=False,
+        kv_transfer_config=KVTransferConfig(
+            kv_connector="NanoLMCacheConnector",
+            kv_connector_module_path=(
+                "nano_lmcache.integrations.vllm.nano_lmcache_connector"
+            ),
+            kv_role="kv_both",
+            kv_load_failure_policy="fail",
+            kv_connector_extra_config={
+                "remote_cache": {"host": host, "port": port},
+            },
+        ),
+        generation_config="vllm",
+    )
+    try:
+        prompt_ids = llm.get_tokenizer().encode(
+            "The council discussed bus routes and library funding. " * 40
+        )[:257]
+        params = SamplingParams(
+            temperature=0.0, max_tokens=8, seed=0, ignore_eos=True
+        )
+        cold = llm.generate(
+            [{"prompt_token_ids": prompt_ids}], params, use_tqdm=False
+        )[0]
+        assert cold.num_cached_tokens == 0
+        assert cold.outputs[0].token_ids
+
+        server.drop_next_get = True
+        warm = llm.generate(
+            [{"prompt_token_ids": prompt_ids}], params, use_tqdm=False
+        )[0]
+        assert not server.drop_next_get
+        assert warm.outputs[0].finish_reason == "error"
+        assert warm.outputs[0].token_ids == []
+    finally:
+        llm.llm_engine.engine_core.shutdown()
+        server.close()

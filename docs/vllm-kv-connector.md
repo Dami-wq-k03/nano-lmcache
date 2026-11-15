@@ -66,14 +66,15 @@ allocations, and replaces tables when requests resume after preemption. When
 available, the scheduler's current block table takes precedence, including
 copy-on-write replacements. Finished requests release their planning state.
 
-The worker gathers the whole planned prefix again on each prefill step and
-stores chunks after all layers arrive. Incremental writes and external loads
-are separate follow-up work. Scheduler and worker
-in-memory caches remain separate; worker saves do not enable external hits in
-the scheduler. Cache namespaces fingerprint the model path/ID, revision, HF
-configuration, model/KV dtype, quantization, parallel sizes, chunk size and
-layout version. Local paths must identify immutable weights; this is a
-configuration fingerprint, not a weight-content hash.
+The worker gathers only the newly completed token span on each prefill step
+and stores chunks after all layers arrive. With a shared `remote_cache`,
+scheduler-side lookup reports complete external chunks and workers scatter
+them into the request's newly allocated blocks before attention. Without one,
+the scheduler and worker in-memory caches remain separate, so worker saves do
+not enable external hits. Cache namespaces fingerprint the model path/ID,
+revision, HF configuration, model/KV dtype, quantization, parallel sizes,
+chunk size and layout version. Local paths must identify immutable weights;
+this is a configuration fingerprint, not a weight-content hash.
 
 ## V3: scheduler-to-worker and real-model KV validation
 
@@ -121,10 +122,11 @@ An absolute error can exceed `atol` while still passing the combined
 The recorded environment is RTX 4080 / driver 595.99.02, vLLM 0.33.0,
 PyTorch 2.14.0+cu130 and Transformers 5.20.2.
 
-Final validation: **73 connector unit tests passed**, and the complete GPU
-integration file finished **4 passed in 74.98 seconds** (two BF16 generation
-comparisons and two FP32 KV comparisons). Ruff checks also passed for the
-connector and both test modules. The separately recorded
+Final validation: **82 connector unit tests passed**, and the complete GPU
+integration file finished **6 passed in 113.45 seconds** (two BF16 generation
+comparisons, two FP32 KV comparisons, one shared external-hit run, and one
+load-failure run). Ruff checks also passed for the connector and both test
+modules. The separately recorded
 [NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log) covers
 the two FP32 KV comparisons with INFO-level scheduler and worker tracing.
 
@@ -158,9 +160,11 @@ removed. Model-loading output, framework warnings and pytest output are excluded
 The [NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log)
 contains 672 entries emitted by the connector's `_log_call()` helper while
 saving real Qwen3 KV, in both full and chunked prefill. This INFO
-trace run completed **2 passed, 2 deselected in 76.30 seconds**. External
-loading remains unimplemented; scheduler-side external lookup returns zero
-because its storage is separate from the worker's saved CPU chunks.
+trace run completed **2 passed, 2 deselected in 76.30 seconds**. V4 external
+loading is implemented separately: scheduler lookup checks a shared remote
+cache, and workers scatter the matched chunks before attention. The
+[serving validation report](serving-validation-report.md) records real
+external-hit generation and payload-read counts.
 
 | Setting | Recorded value |
 | --- | --- |
@@ -229,8 +233,9 @@ to CPU. The last required layer completes the six all-layer chunks and stores
 them. `wait_for_save()` checks that no layers are missing.
 
 The V2 runner invokes `start_load_kv()` after forward in this no-external-load
-case. It remains a no-op. The earlier sequence diagram illustrates the
-synchronous-load path; it is not the ordering of this save-only trace.
+case, where it remains a no-op. When the scheduler reports external matches,
+`start_load_kv()` scatters those chunks before attention; the earlier sequence
+diagram illustrates that synchronous-load path.
 
 ### NanoLMCacheConnector calls during chunked prefill
 
@@ -254,6 +259,40 @@ The scheduled token counts are 32, 32, 32 and 1. Save plans are emitted at 32,
 1-token step emits no plan, as checked by the real-model test. Each plan
 gathers only the newly completed token span. Later decode steps have no save
 plans, even though vLLM still invokes the layer hooks.
+
+## V4: shared external hits and load failures
+
+With `kv_connector_extra_config={"remote_cache": {"host": ..., "port": ...}}`,
+the scheduler checks chained chunk keys with `contains` and plans a load for
+the complete external prefix, reserving the final prompt token for logits.
+`start_load_kv()` runs before attention for sync loads and scatters each chunk
+into the request's current block table. Loaded chunks are marked as already
+published so V3 does not save them again.
+
+`benchmarks/bench_vllm_external.py` measurements for Qwen3-0.6B BF16, RTX
+4080, TP=1, eager, APC disabled, one warmup and one repeat. Times are ms;
+"recompute" is the same request on an engine without a connector.
+
+| Prompt tokens | Cached tokens / payload GETs | Cold TTFT / wall | Repeat TTFT / wall | Recompute repeat TTFT / wall |
+| ---: | ---: | ---: | ---: | ---: |
+| 65 | 64 / 4 | 86.47 / 157.74 | 90.27 / 159.85 | 16.82 / 65.41 |
+| 257 | 256 / 16 | 244.88 / 318.89 | 297.02 / 370.02 | 17.39 / 67.45 |
+| 1025 | 1024 / 64 | 851.69 / 924.87 | 1017.82 / 1090.83 | 18.96 / 68.89 |
+
+Increasing the prefix makes the compute reduction larger (64 → 256 → 1024
+reused tokens) but does not make the external path faster for this model:
+per-chunk remote payload fetch, deserialization and scatter grow with the
+prefix while a 0.6B model's recompute remains cheap. The issue's
+compute-or-time criterion is met by the compute reduction; the latency
+regression is reported rather than hidden.
+
+If a chunk disappears between lookup and load, `start_load_kv()` records its
+block IDs and request ID, and `get_block_ids_with_load_errors()` reports them
+as `invalid_block_ids`. The end-to-end test uses
+`kv_load_failure_policy="fail"`, so vLLM finishes the request with an error
+instead of consuming uninitialized KV. With `"recompute"` this vLLM version
+can retain tokens sampled from the failed step before rescheduling, so V4
+guarantees the explicit error path rather than claiming safe recomputation.
 
 ## Paged KV cache: blocks, block tables and slot mapping
 
