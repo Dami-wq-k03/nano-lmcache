@@ -83,7 +83,6 @@ module = [
     "nano_lmcache.tensor.transfer",
     "nano_lmcache.tensor.peer",
     "nano_lmcache.tensor.mapped_host",
-    "nano_lmcache.integrations.vllm.kv_load",
 ]
 disable_error_code = ["no-untyped-call"]
 

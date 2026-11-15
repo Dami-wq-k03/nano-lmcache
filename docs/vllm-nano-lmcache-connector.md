@@ -1,16 +1,10 @@
-# vLLM KV connector lifecycle and validation
+# vLLM with nano-lmcache connector
 
 ## vLLM version baseline (vllm==0.33.0)
 
-**Installation:**
 ```bash
-mkdir -p vllm-0.33.0
-cd vllm-0.33.0
-
-uv venv --python 3.11 .venv
-source .venv/bin/activate
-
-uv pip install --python .venv/bin/python "vllm==0.33.0"
+uv sync --locked --group vllm
+uv run python examples/demo_vllm_with_nano_lmcache_connector.py
 ```
 
 **Reason:** Pinning 0.33.0, gives V1–V5 a reproducible baseline for connector development and testing.
@@ -20,8 +14,7 @@ uv pip install --python .venv/bin/python "vllm==0.33.0"
 
 ## Request-processing sequence
 
-This shows a synchronous load step. The scheduler and worker are separate
-roles, and planning, forwarding, and feedback repeat for many steps.
+This shows a synchronous load step. The scheduler and worker are separate roles, and planning, forwarding, and feedback repeat for many steps.
 
 ```mermaid
 sequenceDiagram
@@ -47,345 +40,327 @@ sequenceDiagram
     S->>S: update_connector_output(connector_output)
 ```
 
-## Scheduler-generated save plans
+## NanoLMCacheConnector lifecycle tracing
 
-`build_connector_meta()` now fills `metadata.requests` with `ReqMeta` save
-plans for one full-attention KV cache group. Each plan contains a request ID,
-complete prompt-prefix token IDs, and their physical slots. Slot counts and
-ranges are assumed to be valid upstream.
+This is a concrete example with small prompts so slot numbers stay readable. It
+uses Qwen3-0.6B (28 layers, 8 KV heads, `head_dim = 128`), BF16 KV,
+`block_size = chunk_size = 16`, one full-attention cache group, TP = PP = 1,
+APC off, and a shared `remote_cache`. One stored chunk has shape
+`[28, 2, 8, 16, 128]`; one worker layer has shape
+`[num_blocks, 8, 16, 256]`.
 
-For each prefill step, the saved prefix ends at
-`floor(min(prompt_length, num_computed_tokens + num_scheduled_tokens) / chunk_size)
-* chunk_size`. For example, with ten prompt tokens and chunks of four, a step
-ending at token count six saves four tokens; a later step ending at ten saves
-eight. Plans include locally cached prefix tokens but exclude generated tokens
-and incomplete chunks. Decode-only and empty steps emit no save plans.
+- **Request A (cold):** 48 prompt tokens, block table `[7, 2, 9]`. The
+  external cache is empty. vLLM schedules all 48 tokens in one prefill step.
+- **Request B (warm):** 48 prompt tokens. Tokens 0–31 are identical to A's;
+  tokens 32–47 differ. Its block table is `[5, 8, 12]`, so the same logical
+  KV occupies different physical blocks.
+- After A, the external cache holds A's chunks 0–2. B can load chunks 0–1
+  (32 tokens) and must compute and publish chunk 2.
 
-The connector keeps prompt IDs and block tables across steps, appends new
-allocations, and replaces tables when requests resume after preemption. When
-available, the scheduler's current block table takes precedence, including
-copy-on-write replacements. Finished requests release their planning state.
+Every hook also emits one `_log_call()` line with the process ID, role, call
+number, step, request IDs, method name, and arguments. The flows below omit
+that logging line.
 
-The worker gathers only the newly completed token span on each prefill step
-and stores chunks after all layers arrive. With a shared `remote_cache`,
-scheduler-side lookup reports complete external chunks and workers scatter
-them into the request's newly allocated blocks before attention. Without one,
-the scheduler and worker in-memory caches remain separate, so worker saves do
-not enable external hits. Cache namespaces fingerprint the model path/ID,
-revision, HF configuration, model/KV dtype, quantization, parallel sizes,
-chunk size and layout version. Local paths must identify immutable weights;
-this is a configuration fingerprint, not a weight-content hash.
+The hook order for B is:
 
-## V3: scheduler-to-worker and real-model KV validation
+1. scheduler `get_num_new_matched_tokens` returns `(32, False)`;
+2. scheduler `update_state_after_alloc` turns the match into a load plan;
+3. scheduler `build_connector_meta` emits a `ReqMeta` with load=32 and
+   save-skip=32;
+4. worker `bind_connector_metadata` installs that metadata;
+5. worker `start_load_kv` scatters chunks 0–1;
+6. worker `wait_for_layer_load` waits for each layer's copy;
+7. attention computes tokens 32–47;
+8. worker `save_kv_layer` collects chunk 2 layer by layer;
+9. worker `wait_for_save` verifies all 28 layers arrived;
+10. worker `get_transfer_results`, `get_finished`, and
+    `get_block_ids_with_load_errors` return their per-step results;
+11. worker `clear_connector_metadata` clears the step;
+12. scheduler `update_connector_output` consumes the worker feedback;
+13. scheduler `request_finished` drops the request state;
+14. worker `shutdown` releases connector state when the engine exits.
 
-The connector unit test `test_scheduler_plans_reach_worker_across_prefill_steps`
-uses real vLLM scheduler data classes and serializes the generated metadata
-before binding it to the worker. Logical blocks reside at physical IDs
-`[7, 2, 9]`. Four forwards advance the computed token count through
-`3, 6, 8, 10`; the cache must contain `0, 4, 8, 8` tokens respectively. Only
-the two steps that complete a new chunk emit a save plan.
-Uncomputed slots contain NaNs, and source buffers are overwritten immediately
-after each save callback. Exact tensor comparisons verify token order, K/V
-separation, all-layer assembly, complete-chunk boundaries and copy ownership.
+### __init__ (scheduler and worker)
 
-The real-model test lives in
-[`test_vllm_with_nano_lmcache_connector.py`](../tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py)
-alongside the existing BF16 generation comparison. It runs the actual vLLM
-scheduler and GPU worker, then uses a local worker RPC to export chunks from
-the worker's `ChunkedPrefixCache`. It does not populate that cache with the HF
-reference or synthetic tensors. The RPC observer records incoming plans
-without changing their contents. Pickle-based RPC serialization is enabled
-only for these trusted local test functions.
+1. Store the transfer role, `block_size`, `chunk_size = block_size`, and a
+   namespace fingerprint over the model path/revision, HF config, dtype,
+   quantization, KV dtype, TP/PP sizes, chunk size, and layout version.
+2. `_validate_scope()` rejects more than one KV cache group, non-full
+   attention, and speculative decoding.
+3. If `remote_cache` is configured, validate the shared-load scope (TP = PP =
+   1, unquantized text-only KV, one plain full-attention group with equal K/V
+   head sizes, no sliding window, no attention chunking, causal attention),
+   then parse `host`/`port` and create
+   `RemoteCacheClient(..., serializer=TensorSerializer())`. Both roles point
+   at the same server.
+4. Create the role cache: the scheduler owns `_lookup_cache`; the worker owns
+   `_save_cache`. Both are `ChunkedPrefixCache` instances using the shared
+   storage. Without `remote_cache`, each process gets a private in-memory
+   cache, so worker saves are invisible to scheduler lookups.
+5. Initialize scheduler state (`_request_trackers`, `_load_specs`) or worker
+   state (`_layer_names`, `_kv_caches`, `_pending_save_layers`,
+   `_load_errors`, `_failed_loads`, `_load_events`, `_load_started`). The
+   constructor performs no CUDA work.
 
-Both frameworks load the same cached Qwen3-0.6B snapshot,
-`c1899de289a04d12100db370d81485cdf75e47ca`, and receive the same 97 token IDs
-with positions 0–96. Raw KV acceptance uses **FP32**: vLLM uses `TRITON_ATTN`
-with `TRITON_F32_DEFAULT=ieee` and TF32 disabled; Transformers uses eager
-attention with highest FP32 matmul precision. Execution is eager, single GPU,
-TP=1, APC off, one sequence and a single full-attention cache group.
+In the example, both processes derive the same namespace, and each creates a
+client for the shared server.
 
-Each run saves six `[28, 2, 8, 16, 128]` chunks covering 96 tokens; the final
-token is excluded. The full-prefill budget is 512 tokens and emits one
-96-token plan. A 32-token budget emits plans at 32, 64 and 96 prefix tokens,
-each skipping the chunks already published (`skip_leading_tokens` 0, 32 and
-64). Decode steps emit none. Every element of every layer's K and V is compared
-using `atol=1e-3, rtol=1e-3`, plus a per-layer/KV relative RMS limit of `1e-3`.
-Negative controls require token-shifted and K/V-swapped chunks to fail.
+### Scheduler: get_num_new_matched_tokens
 
-| FP32 mode | Layer/KV comparisons | Maximum absolute error | Maximum relative RMS |
-| --- | ---: | ---: | ---: |
-| Full prefill | 336 | 0.001202 | 0.00001217 |
-| Chunked prefill | 336 | 0.001683 | 0.00001531 |
+1. Drop any stale `_load_specs[request_id]` from an earlier scheduling
+   attempt.
+2. If the request has no prompt token IDs, report zero matches.
+3. Without shared storage, call `_lookup_cache.lookup(token_ids)`, cap the
+   match at `(len(token_ids) - 1) // 16 * 16`, and subtract
+   `num_computed_tokens` to obtain the additional tokens.
+4. With shared storage, reject an unaligned local prefix
+   (`num_computed_tokens % 16 != 0`).
+5. Otherwise build chained chunk keys for every complete chunk in
+   `token_ids[:-1]`, stop at the first key absent from storage, and count the
+   matching chunks. Cap the result at `(len(token_ids) - 1) // 16 * 16` and
+   subtract `num_computed_tokens`.
+6. If the additional count is positive, remember
+   `LoadSpec(vllm_cached_tokens=num_computed_tokens,
+   external_cached_tokens=matched_end)`. Return
+   `(additional_matched_tokens, False)`; `False` means a synchronous load.
 
-An absolute error can exceed `atol` while still passing the combined
-`abs(actual - reference) <= atol + rtol * abs(reference)` criterion.
-The recorded environment is RTX 4080 / driver 595.99.02, vLLM 0.33.0,
-PyTorch 2.14.0+cu130 and Transformers 5.20.2.
+For A the cache is empty, so the method returns `(0, False)`. Even with a
+nonempty cache it inspects only chunks 0–1, because `token_ids[:-1]` has 47
+tokens and the final prompt token is reserved for logits.
 
-Final validation: **82 connector unit tests passed**, and the complete GPU
-integration file finished **6 passed in 113.45 seconds** (two BF16 generation
-comparisons, two FP32 KV comparisons, one shared external-hit run, and one
-load-failure run). Ruff checks also passed for the connector and both test
-modules. The separately recorded
-[NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log) covers
-the two FP32 KV comparisons with INFO-level scheduler and worker tracing.
+For B the first 32 tokens are present. The method builds keys for chunks 0–1
+of B's 47-token prefix, both `contains` checks succeed, and it returns
+`(32, False)` with `LoadSpec(0, 32)`. vLLM therefore marks 32 tokens as
+computed and schedules only the remaining 16 tokens.
 
-The initial BF16 raw-KV comparison did **not** meet its proposed bounds:
-maximum relative RMS was about 0.286 (full) and 0.357 (chunked). The same
-extraction path passes in FP32, which is consistent with accumulated
-cross-framework numerical differences. This validates FP32 KV extraction;
-it does not establish BF16 raw-KV equivalence or V4 external-cache reuse.
-The original BF16 generation regression remains separate.
+### Scheduler: update_state_after_alloc
 
-Run from the repository root, with the pinned model already cached:
+1. vLLM passes the request, the blocks it allocated, and
+   `num_external_tokens`.
+2. If no `LoadSpec` was stored, this is a cold request; return without
+   enabling a load.
+3. If `num_external_tokens <= 0`, set `can_load = False`.
+4. Compute `expected = external_cached_tokens - vllm_cached_tokens`, take
+   `allocated = min(num_external_tokens, expected)`, and round down to a
+   complete chunk. If it is zero, set `can_load = False`.
+5. Set `external_cached_tokens = vllm_cached_tokens + allocated` and
+   `can_load = True`.
 
-```bash
-.venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
-CUDA_VISIBLE_DEVICES=0 \
-  NANO_LMCACHE_V3_REPORT_DIR=/tmp/nano-lmcache-v3-results \
-  .venv/bin/python -m pytest -q -s \
-  tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py
-```
+For B, vLLM allocates blocks `[5, 8, 12]` and reports 32 external tokens.
+`expected` and `allocated` are both 32, so the load covers tokens 0–31.
+Request A has no `LoadSpec`, so this hook returns immediately.
 
-Add `-k saved_kv` to run only the two KV comparisons. JSON reports include
-the exact input IDs, positions, plans, layer order, namespace, shapes,
-tolerances and per-layer errors. Reports are generated under the selected
-`/tmp` directory; tensor exports stay in pytest's temporary directory.
-`docs/validation/` retains only `NanoLMCacheConnector` method calls from the
-V3 run, with the logger's process, timestamp and source-location prefixes
-removed. Model-loading output, framework warnings and pytest output are excluded.
+### Scheduler: build_connector_meta
 
-## NanoLMCacheConnector lifecycle tracing (V3)
+1. Remove trackers and load specs for finished or preempted requests.
+2. Create a `RequestTracker` for each new request, initialized with its full
+   prompt, first-group block table, and current computed-token count. For
+   cached requests, update the computed count and append new blocks; replace
+   the table when the request resumed.
+3. For every scheduled request, prefer the scheduler's current block state
+   when supplied, then pop its `LoadSpec`.
+4. If a load is possible, raise `tracker.num_saved_tokens` to at least the
+   external hit rounded down to a chunk, so the worker does not republish
+   loaded chunks.
+5. Build `ReqMeta` from the tracker: `load_end` is the external hit;
+   `compute_end` is `min(prompt_len, num_computed + num_scheduled)`;
+   `save_end` is `compute_end` rounded down to a chunk; `skip` is
+   `num_saved_tokens` rounded down; `can_save` requires uncomputed prompt
+   tokens and `save_end > skip`. The span ends at
+   `max(save_end if can_save else 0, load_end)`, slots are derived from the
+   block table, and the load spec is attached when `load_end > 0`. When
+   `can_save` is true the tracker's `num_saved_tokens` advances to
+   `save_end`.
+6. Increment the step number, record the scheduled request IDs, log, and
+   return `NanoLMCacheConnectorMetadata`.
 
-The [NanoLMCacheConnector call log](validation/vllm-v3-qwen3-request.log)
-contains 672 entries emitted by the connector's `_log_call()` helper while
-saving real Qwen3 KV, in both full and chunked prefill. This INFO
-trace run completed **2 passed, 2 deselected in 76.30 seconds**. V4 external
-loading is implemented separately: scheduler lookup checks a shared remote
-cache, and workers scatter the matched chunks before attention. The
-[serving validation report](serving-validation-report.md) records real
-external-hit generation and payload-read counts.
+For A, the tracker is `(48 tokens, blocks [7, 2, 9], computed 0)`. The plan
+has `skip=0`, `save_end=48`, slots for all 48 tokens
+(`112–127, 32–47, 144–159`), and no load.
 
-| Setting | Recorded value |
-| --- | --- |
-| Model revision | `c1899de289a04d12100db370d81485cdf75e47ca` |
-| GPU / driver | NVIDIA GeForce RTX 4080 / 595.99.02 |
-| Python / vLLM | 3.11.18 / 0.33.0 |
-| PyTorch / Transformers | 2.14.0+cu130 / 5.20.2 |
-| Execution | One GPU, TP=1, V2 model runner, Triton attention, eager |
-| Model / KV dtype | FP32; block size 16; one full-attention cache group |
-| Input | 97 prompt tokens, positions 0–96; no chat template |
-| Prefill token budget | 512 for full prefill; 32 for chunked prefill |
-| Capacity | Context 512, one sequence, GPU memory utilization 0.5 |
-| Generation | Temperature 0, max tokens 3, seed 0, `ignore_eos=True` |
-| Connector | `NanoLMCacheConnector`, `kv_both`; APC off; hybrid KV manager disabled |
+For B, the tracker starts at 32 computed tokens with blocks `[5, 8, 12]` and
+16 scheduled tokens. The load spec sets `num_saved_tokens=32`; the plan has
+`load_end=32`, `save_end=48`, `skip=32`, `can_save=True`, and spans all 48
+tokens (`80–95, 128–143, 192–207`). The worker must load the first 32 slots
+and save only the last 16.
 
-To reproduce the call log, run from the repository root:
+### Worker: register_kv_caches
 
-```bash
-set -o pipefail
-CUDA_VISIBLE_DEVICES=0 VLLM_LOGGING_LEVEL=INFO \
-  NANO_LMCACHE_V3_REPORT_DIR=/tmp/nano-lmcache-v3-call-reports \
-  .venv/bin/python -m pytest -q -s \
-  tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py \
-  -k saved_kv --tb=short 2>&1 | tee /tmp/nano-lmcache-v3-calls.log
+1. vLLM calls this once during worker initialization with a mapping from
+   layer name to the layer's paged KV tensor.
+2. Reject a later call that changes the layer set.
+3. Sort layer names naturally (layer 2 before layer 10) and keep the ordered
+   mapping used for chunk assembly.
+4. With shared storage, validate that every tensor is four-dimensional,
+   matches the first tensor's shape and dtype, has `block_size` in the token
+   axis and an even last dimension. This is the
+   `[num_blocks, num_kv_heads, block_size, 2 * head_dim]` layout.
 
-rg --only-matching \
-  'nano_lmcache pid=[0-9]+ role=(SCHEDULER|WORKER) call=.* method=[A-Za-z_]+ args=.*' \
-  /tmp/nano-lmcache-v3-calls.log > /tmp/nano-lmcache-connector-calls.log
-```
+In the example, 28 tensors of shape `[num_blocks, 8, 16, 256]` are registered;
+the expected stored chunk shape is `[28, 2, 8, 16, 128]`.
 
-The tests load cached weights offline, use `spawn`, and compare the worker's
-saved chunks with Transformers. The final `rg` command extracts only
-`NanoLMCacheConnector` calls in the same format as the retained log. Each entry
-keeps the connector PID, role, call number, step, request IDs, method and arguments.
-The excerpts below are exact lines from that filtered log in their original
-order; repeated per-layer entries are omitted. The complete connector log
-includes registration of all 28 layers, decode steps, feedback and shutdown.
+### Worker: bind_connector_metadata
 
-### NanoLMCacheConnector calls during full prefill
+1. Reset per-step load state: synchronize every CUDA event left from the
+   previous step, then clear events, load errors, failed requests, and the
+   `load_started` flag.
+2. Clear pending per-layer save buffers.
+3. Remember the metadata for tracing, emit the log line, and delegate to the
+   base class.
 
-```text
-nano_lmcache pid=267636 role=WORKER call=1 step=None request_ids=() method=__init__ args={'num_blocks': 1607}
-nano_lmcache pid=267636 role=SCHEDULER call=1 step=None request_ids=() method=__init__ args={'num_blocks': 1607}
-nano_lmcache pid=267636 role=SCHEDULER call=2 step=None request_ids=() method=get_num_new_matched_tokens args={'request_id': '0-b179a60e', 'prompt_tokens': 97, 'num_computed_tokens': 0, 'external_prefix_tokens': 0, 'matched_end': 0, 'additional_matched_tokens': 0, 'chunk_size': 16, 'block_size': 16, 'reason': 'lookup', 'result': (0, False)}
-nano_lmcache pid=267636 role=SCHEDULER call=3 step=None request_ids=() method=update_state_after_alloc args={'request_id': '0-b179a60e', 'block_ids': ([1, 2, 3, 4, 5, 6, 7],), 'num_external_tokens': 0}
-nano_lmcache pid=267636 role=SCHEDULER call=4 step=1 request_ids=('0-b179a60e',) method=build_connector_meta args={'num_scheduled_tokens': {'0-b179a60e': 97}}
-nano_lmcache pid=267636 role=WORKER call=4 step=1 request_ids=('0-b179a60e',) method=bind_connector_metadata args={'metadata_type': 'NanoLMCacheConnectorMetadata'}
-nano_lmcache pid=267636 role=WORKER call=5 step=1 request_ids=('0-b179a60e',) method=wait_for_layer_load args={'layer_name': 'model.layers.0.self_attn.attn'}
-nano_lmcache pid=267636 role=WORKER call=6 step=1 request_ids=('0-b179a60e',) method=save_kv_layer args={'layer_name': 'model.layers.0.self_attn.attn', 'shape': (1607, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=267636 role=WORKER call=60 step=1 request_ids=('0-b179a60e',) method=save_kv_layer args={'layer_name': 'model.layers.27.self_attn.attn', 'shape': (1607, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=267636 role=WORKER call=61 step=1 request_ids=('0-b179a60e',) method=finish_forward args={}
-nano_lmcache pid=267636 role=WORKER call=62 step=1 request_ids=('0-b179a60e',) method=start_load_kv args={'context_type': 'ForwardContext', 'attn_metadata_type': 'NoneType', 'kwargs_keys': ['num_tokens', 'request_ids', 'request_state_indices', 'scheduler_output']}
-nano_lmcache pid=267636 role=WORKER call=63 step=1 request_ids=('0-b179a60e',) method=wait_for_save args={}
-nano_lmcache pid=267636 role=WORKER call=64 step=1 request_ids=('0-b179a60e',) method=get_transfer_results args={'finished_req_ids': []}
-nano_lmcache pid=267636 role=WORKER call=65 step=1 request_ids=('0-b179a60e',) method=get_finished args={'finished_req_ids': []}
-nano_lmcache pid=267636 role=WORKER call=66 step=1 request_ids=('0-b179a60e',) method=get_block_ids_with_load_errors args={}
-nano_lmcache pid=267636 role=WORKER call=68 step=1 request_ids=('0-b179a60e',) method=clear_connector_metadata args={}
-nano_lmcache pid=267636 role=SCHEDULER call=10 step=None request_ids=() method=request_finished args={'request_id': '0-b179a60e', 'block_ids': [1, 2, 3, 4, 5, 6, 7]}
-nano_lmcache pid=267636 role=WORKER call=221 step=None request_ids=() method=shutdown args={}
-nano_lmcache pid=267636 role=SCHEDULER call=13 step=None request_ids=() method=shutdown args={}
-```
+For B this installs the one-request metadata produced by
+`build_connector_meta`; all load state starts empty.
 
-The scheduler schedules 97 tokens and sends a plan for the first 96. Each
-`save_kv_layer()` gathers that layer's K/V from the plan's slots and copies it
-to CPU. The last required layer completes the six all-layer chunks and stores
-them. `wait_for_save()` checks that no layers are missing.
+### Worker: start_load_kv
 
-The V2 runner invokes `start_load_kv()` after forward in this no-external-load
-case, where it remains a no-op. When the scheduler reports external matches,
-`start_load_kv()` scatters those chunks before attention; the earlier sequence
-diagram illustrates that synchronous-load path.
+1. Select requests whose `load_spec` exists and has `can_load=True`. If none
+   exist, return immediately (request A). On a no-load step, vLLM's V2
+   runner may place this call after forward, which is harmless because there
+   is nothing to scatter.
+2. Require registered KV layers and compute the expected chunk shape from the
+   first layer: `[num_layers, 2, num_kv_heads, chunk_size, head_dim]`.
+3. For each load request, validate that both cached counts are chunk-aligned
+   and that the external count does not exceed the recorded token IDs. On
+   failure, mark the request and all its slots as failed and continue.
+4. Compute chained keys for `token_ids[:external_cached_tokens]`. Iterate
+   chunk indices from `vllm_cached_tokens // 16` to
+   `external_cached_tokens // 16`.
+5. Fetch each chunk from shared storage, validate shape, dtype, and
+   finiteness, then scatter it into all layers: concatenate the stored K and
+   V halves, permute to `[tokens, heads, 2 * head_dim]`, and assign
+   `layer[slot // block_size, :, slot % block_size]`.
+6. After all requests, set `load_started = True` and record one CUDA event per
+   layer on its current stream.
 
-### NanoLMCacheConnector calls during chunked prefill
+For B, chunk indices 0 and 1 are fetched and written to slots 80–95 (block 5)
+and 128–143 (block 8) in every one of the 28 layers. Request A has no load
+requests, so the method returns before touching the cache.
 
-```text
-nano_lmcache pid=268059 role=SCHEDULER call=4 step=1 request_ids=('0-83cf75d9',) method=build_connector_meta args={'num_scheduled_tokens': {'0-83cf75d9': 32}}
-nano_lmcache pid=268059 role=WORKER call=6 step=1 request_ids=('0-83cf75d9',) method=save_kv_layer args={'layer_name': 'model.layers.0.self_attn.attn', 'shape': (1614, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=268059 role=WORKER call=63 step=1 request_ids=('0-83cf75d9',) method=wait_for_save args={}
-nano_lmcache pid=268059 role=SCHEDULER call=5 step=2 request_ids=('0-83cf75d9',) method=build_connector_meta args={'num_scheduled_tokens': {'0-83cf75d9': 32}}
-nano_lmcache pid=268059 role=WORKER call=72 step=2 request_ids=('0-83cf75d9',) method=save_kv_layer args={'layer_name': 'model.layers.0.self_attn.attn', 'shape': (1614, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=268059 role=WORKER call=129 step=2 request_ids=('0-83cf75d9',) method=wait_for_save args={}
-nano_lmcache pid=268059 role=SCHEDULER call=7 step=3 request_ids=('0-83cf75d9',) method=build_connector_meta args={'num_scheduled_tokens': {'0-83cf75d9': 32}}
-nano_lmcache pid=268059 role=WORKER call=138 step=3 request_ids=('0-83cf75d9',) method=save_kv_layer args={'layer_name': 'model.layers.0.self_attn.attn', 'shape': (1614, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=268059 role=WORKER call=195 step=3 request_ids=('0-83cf75d9',) method=wait_for_save args={}
-nano_lmcache pid=268059 role=SCHEDULER call=9 step=4 request_ids=('0-83cf75d9',) method=build_connector_meta args={'num_scheduled_tokens': {'0-83cf75d9': 1}}
-nano_lmcache pid=268059 role=WORKER call=204 step=4 request_ids=('0-83cf75d9',) method=save_kv_layer args={'layer_name': 'model.layers.0.self_attn.attn', 'shape': (1614, 8, 16, 256), 'dtype': 'torch.float32', 'device': 'cuda:0', 'attn_metadata_type': 'TritonAttentionMetadata', 'kwargs_keys': []}
-nano_lmcache pid=268059 role=WORKER call=261 step=4 request_ids=('0-83cf75d9',) method=wait_for_save args={}
-```
+### Worker: wait_for_layer_load
 
-The scheduled token counts are 32, 32, 32 and 1. Save plans are emitted at 32,
-64 and 96 prefix tokens with `skip_leading_tokens` 0, 32 and 64; the final
-1-token step emits no plan, as checked by the real-model test. Each plan
-gathers only the newly completed token span. Later decode steps have no save
-plans, even though vLLM still invokes the layer hooks.
+1. Check whether the metadata contains any loadable request. If it does and
+   `start_load_kv` has not run, raise an error; attention must not consume a
+   layer before the scatter is issued.
+2. If a CUDA event was recorded for this layer, make the layer's current
+   stream wait on it.
 
-## V4: shared external hits and load failures
+For B, each layer waits for the event recorded after its scatter. For A no
+events exist, so the hook is a no-op.
 
-With `kv_connector_extra_config={"remote_cache": {"host": ..., "port": ...}}`,
-the scheduler checks chained chunk keys with `contains` and plans a load for
-the complete external prefix, reserving the final prompt token for logits.
-`start_load_kv()` runs before attention for sync loads and scatters each chunk
-into the request's current block table. Loaded chunks are marked as already
-published so V3 does not save them again.
+### Worker: save_kv_layer
 
-`benchmarks/bench_vllm_external.py` measurements for Qwen3-0.6B BF16, RTX
-4080, TP=1, eager, APC disabled, one warmup and one repeat. Times are ms;
-"recompute" is the same request on an engine without a connector.
+1. Return immediately for a `kv_consumer` role.
+2. If the metadata has no requests, return; decode-only steps and steps that
+   complete no new chunk have nothing to save.
+3. Validate that the layer name was registered.
+4. For each request with `can_save=True`, set `start = skip_leading_tokens`
+   and `end = floor(len(token_ids) / 16) * 16`. Skip if `start >= end` or
+   `start` is not chunk-aligned. Skip the whole request if it had a load
+   failure or if `[start:end]` touches a block reported as invalid.
+5. Gather `kv_layer[slots // 16, :, slots % 16]` for that span, copy it to
+   CPU, split K and V, permute each to `[heads, tokens, head_dim]`, and keep
+   them in `_pending_save_layers[request_id][layer_name]`.
+6. When all registered layer names are present, order the layers, call
+   `split_kv()` to form chunks, and call
+   `save_cache.store(token_ids[:end], chunks, start_chunk=start // 16,
+   request_id=...)`.
 
-| Prompt tokens | Cached tokens / payload GETs | Cold TTFT / wall | Repeat TTFT / wall | Recompute repeat TTFT / wall |
-| ---: | ---: | ---: | ---: | ---: |
-| 65 | 64 / 4 | 86.47 / 157.74 | 90.27 / 159.85 | 16.82 / 65.41 |
-| 257 | 256 / 16 | 244.88 / 318.89 | 297.02 / 370.02 | 17.39 / 67.45 |
-| 1025 | 1024 / 64 | 851.69 / 924.87 | 1017.82 / 1090.83 | 18.96 / 68.89 |
+For A, `start=0` and `end=48`; after all 28 layers arrive, three chunks are
+stored. For B, `start=32` and `end=48`; only chunk 2 is gathered from block 12
+and stored at index 2. The two loaded chunks are not saved again.
 
-Increasing the prefix makes the compute reduction larger (64 → 256 → 1024
-reused tokens) but does not make the external path faster for this model:
-per-chunk remote payload fetch, deserialization and scatter grow with the
-prefix while a 0.6B model's recompute remains cheap. The issue's
-compute-or-time criterion is met by the compute reduction; the latency
-regression is reported rather than hidden.
+### Worker: wait_for_save
 
-If a chunk disappears between lookup and load, `start_load_kv()` records its
-block IDs and request ID, and `get_block_ids_with_load_errors()` reports them
-as `invalid_block_ids`. The end-to-end test uses
-`kv_load_failure_policy="fail"`, so vLLM finishes the request with an error
-instead of consuming uninitialized KV. With `"recompute"` this vLLM version
-can retain tokens sampled from the failed step before rescheduling, so V4
-guarantees the explicit error path rather than claiming safe recomputation.
+1. For every request in `_pending_save_layers`, compute the missing layer
+   names against the registered set.
+2. Raise an error if any layer is missing; otherwise the save is complete.
 
-For the V5 three-setup comparison (no cache, APC, and external KV across an
-engine and cache-server restart), see
-[examples/demo_vllm_with_nano_lmcache_connector.py](../examples/demo_vllm_with_nano_lmcache_connector.py).
+In the example all 28 layers arrive for both requests. If vLLM skipped a layer
+hook, this check fails before the step can finish silently with partial KV.
 
-## Paged KV cache: blocks, block tables and slot mapping
+### Worker: get_finished
 
-For ordinary unquantized full attention on one GPU, with one cache group,
-equal K/V head dimensions and no kernel-block splitting:
+1. Log the finished request IDs.
+2. Delegate to the base implementation. This connector has no asynchronous
+   sends or receives, so the result is empty.
 
-- **Block:** stores KV for `block_size` token positions. A request's logical
-  blocks can occupy nonconsecutive physical blocks in GPU memory.
-- **Block table:** maps each logical block to its physical block ID,
-  allowing attention to locate the request's cached context.
-- **Slot mapping:** identifies where each scheduled token's KV should be
-  written within the physical blocks.
+Both A and B finish with no pending transfers.
 
-For a token at `token_position` in the request:
+### Worker: get_transfer_results
 
-```text
-physical_block_id = block_table[token_position // block_size]
-slot = physical_block_id * block_size + token_position % block_size
-```
+1. Log the finished request IDs.
+2. Delegate to the base implementation, which calls `get_finished()` and
+   builds an empty transfer-result snapshot.
 
-For example, `block_size = 16` and `block_table = [7, 2, 9]` place tokens 0–15 in
-block 7 and tokens 16–31 in block 2. Token 18 therefore uses slot
-`2 * 16 + 2 = 34`.
+The connector does not track asynchronous transfer results.
 
-For this scope, the standardized per-layer KV view used by
-[ExampleConnector](https://github.com/vllm-project/vllm/blob/v0.33.0/vllm/distributed/kv_transfer/kv_connector/v1/example_connector.py)
-and [FlashAttention](https://github.com/vllm-project/vllm/blob/v0.33.0/vllm/v1/attention/backends/flash_attn.py)
-is below. Do not apply this indexing to quantized or hybrid layouts without
-checking their backend-specific representation and strides.
+### Worker: get_block_ids_with_load_errors
 
-```text
-layer.kv_cache: [num_blocks, num_kv_heads, block_size, 2 * head_dim]
-keys:          layer.kv_cache[..., :head_dim]
-values:        layer.kv_cache[..., head_dim:]
-```
+1. Return a copy of `_load_errors`, whose entries are physical block IDs
+   computed from failed slot ranges.
+2. vLLM consumes these IDs through `KVConnectorOutput.invalid_block_ids` and
+   applies `kv_load_failure_policy`.
 
-### Mapping blocks to nano-lmcache chunks
+On the successful A/B path the set is empty. If B's second chunk fetch failed,
+the slots 128–143 would mark block 8 invalid, and the request would either be
+recomputed or failed according to the configured policy.
 
-A vLLM **block** is a unit of GPU KV allocation. A nano-lmcache **chunk**
-stores the keys and values of all layers for `chunk_size` consecutive tokens,
-using this [tensor format](../src/nano_lmcache/tensor/kv_chunks.py):
+### Worker: clear_connector_metadata
 
-```text
-[num_layers, 2, num_kv_heads, chunk_size, head_dim]
-             keys/values
-```
+1. Delegate to the base class to clear the installed metadata.
+2. Drop the tracing reference and pending save buffers.
+3. Reset load state: synchronize events, then clear events, errors, failed
+   requests, and `load_started`.
 
-For a small illustrative example, let `block_size = 4` and `chunk_size = 8`:
+vLLM calls this after collecting feedback for a step, so the next
+`bind_connector_metadata` starts from clean worker state.
 
-| Tokens | vLLM logical block | nano-lmcache chunk |
-| --- | --- | --- |
-| A B C D | block 0 | First half of chunk 0 |
-| E F G H | block 1 | Second half of chunk 0 |
-| I J K L | block 2 | Incomplete next chunk; not stored |
+### Scheduler: update_connector_output
 
-The letters represent tokens; the chunk contains their KV tensors.
-If `block_table = [7, 2, 9]`, saving chunk 0 gathers KV from physical blocks
-7 and 2 in token order, across all layers. Restoring it writes into the new
-request's allocated blocks, which may have different physical IDs.
+1. Log `finished_sending`, `finished_recving`, and `invalid_block_ids` from
+   the aggregated worker output.
+2. Delegate to the base class.
 
-**Start with `chunk_size == block_size`.** An integer multiple also keeps
-chunk boundaries aligned with complete blocks:
+In the example there are no asynchronous sends, and the invalid-block set is
+empty on success.
 
-```text
-chunk_size = blocks_per_chunk * block_size
-```
+### Scheduler: request_finished
 
-Here `blocks_per_chunk` is a positive integer. Larger chunks reduce storage
-entries but make reuse coarser: the last four tokens above form a complete
-block, yet not a complete eight-token chunk. Integer-multiple alignment is
-an adapter design choice, not a `KVConnectorBase_V1` requirement; other
-sizes need partial-block handling or assembly from multiple chunks.
+1. Log the request ID and released block IDs.
+2. Remove the request's `RequestTracker` and any leftover `LoadSpec`.
+3. Delegate to the base class. Chunks already published to the external cache
+   remain available for later requests.
 
-## Automatic prefix caching versus an external KV cache
+When A and B finish, their planning state is dropped; A's chunks remain in the
+cache and are what B reused.
 
-Both reuse previously computed KV to avoid repeating prefix computation.
+### Worker: handle_preemptions
 
-| Aspect | Built-in APC | External KV cache, such as LMCache |
-| --- | --- | --- |
-| Storage | The engine's GPU block pool. | CPU memory, disk or a shared cache service. |
-| Reuse | Reuse resident GPU blocks directly. | Load cached KV into allocated GPU blocks before attention uses it. |
-| Scope and lifetime | Shared within the engine; lost on shutdown. | Can span compatible instances and restarts, depending on the backend. |
-| Cost | Lookup and block management. | Additional transfer and storage I/O; a hit may cost more than recomputation. |
+1. Log the incoming metadata's step and request IDs.
+2. Delegate to the base class. Preemption can run before metadata is bound on
+   the worker; this connector keeps no cross-step per-request worker state, so
+   there is nothing else to clear. The scheduler drops the preempted request's
+   load spec in `build_connector_meta`.
 
-They can work together: reuse local GPU KV first, load any additional
-external prefix, then compute the remaining tokens. Cross-instance reuse
-requires compatible model/KV settings and shared storage or a transfer
-service. Restart reuse requires a surviving cache service or recoverable
-persistent storage; an in-process CPU cache is not persistent.
+The example does not trigger preemption.
 
-See [vLLM's APC design](https://github.com/vllm-project/vllm/blob/v0.33.0/docs/design/prefix_caching.md)
-and [LMCache storage options](https://docs.lmcache.ai/dev/kv_cache/storage_backends/local_storage.html).
+### Worker: finish_forward
+
+1. Log and delegate to the base class. vLLM calls it after the model forward;
+   the connector performs no additional work.
+
+### Worker: get_kv_connector_kv_cache_events
+
+1. Log and return `None`. This connector does not emit a KV cache event
+   stream.
+
+### Worker: shutdown
+
+1. Clear pending save buffers.
+2. Reset load state, synchronizing any remaining CUDA events.
+3. Delegate to the base class. Shared cache entries are not deleted; disk or
+   server contents survive for a later engine.
+
+After B finishes, shutdown releases connector state while the external cache
+still contains A's chunks and B's newly saved chunk 2.
+

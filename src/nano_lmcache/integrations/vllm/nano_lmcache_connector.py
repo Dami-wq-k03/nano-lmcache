@@ -426,11 +426,34 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
     ) -> None:
         if (
             not isinstance(chunk, torch.Tensor)
+            or chunk.device.type != "cpu"
             or tuple(chunk.shape) != expected_shape
             or chunk.dtype != dtype
             or not bool(torch.isfinite(chunk).all())
         ):
             raise ValueError("Missing or incompatible KV chunk")
+
+    def _validate_load_layers(self) -> None:
+        first = self._kv_caches[self._layer_names[0]]
+        for layer in self._kv_caches.values():
+            if (
+                layer.ndim != 4
+                or layer.shape[1:] != first.shape[1:]
+                or layer.shape[2] != self._block_size
+                or layer.shape[-1] % 2
+                or layer.dtype != first.dtype
+            ):
+                raise ValueError("Incompatible paged KV view")
+
+    def _validate_load_targets(self, slot_ids: Sequence[int]) -> None:
+        if len(slot_ids) != self._chunk_size or len(set(slot_ids)) != len(slot_ids):
+            raise ValueError("Load plan must address one complete chunk")
+        for layer in self._kv_caches.values():
+            if any(
+                slot < 0 or slot >= layer.shape[0] * self._block_size
+                for slot in slot_ids
+            ):
+                raise ValueError("Load slots fall outside the paged KV cache")
 
     def _fail_load(self, req_id: str, slot_ids: Sequence[int]) -> None:
         self._failed_loads.add(req_id)
@@ -496,6 +519,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
         assert save_cache is not None
         if not self._layer_names:
             raise RuntimeError("KV cache layers must be registered before loading")
+        self._validate_load_layers()
 
         first_layer = self._kv_caches[self._layer_names[0]]
         head_dim = first_layer.shape[-1] // 2
@@ -531,6 +555,7 @@ class NanoLMCacheConnector(KVConnectorBase_V1):  # type: ignore[misc]
                     slot_ids = request.slot_mapping[token_start:token_end]
 
                     try:
+                        self._validate_load_targets(slot_ids)
                         chunk = save_cache.storage.get(keys[chunk_index])
                         self._validate_loaded_chunk(
                             chunk, expected_shape, first_layer.dtype
