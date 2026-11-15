@@ -80,7 +80,8 @@ Done (pure Python, no GPU dependency):
       FreeInference opaque-block adapter has an initial version (DATA-2),
       with streaming replay, bounded detail, and exact online totals (VIS-11)
 - [x] Source research for the vLLM 0.33.0 connector (V0) and a validated
-      no-op connector (V1); external KV reuse is tracked by V2–V5
+      connector skeleton (V1), scheduler lookup (V2), paged KV export/import
+      (V3–V4), and a restart-reuse demo with TTFT comparisons (V5)
 
 Done (optional torch / GPU layer):
 
@@ -189,7 +190,7 @@ open an issue to discuss it.
 | V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Done |
 | V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Done |
 | V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Done |
-| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Done |
+| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Done; performance follow-up open |
 | **PD disaggregation** | | | | | |
 | PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
 | PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
@@ -209,18 +210,34 @@ open an issue to discuss it.
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priority:** reduce measured external-load overhead and TPOT regression,
-validate broader workloads and integrate asynchronous export into nano-vLLM.
-N6 now has cold/warm NVMe component measurements; PD-3 still requires two
-nano-vLLM engines. See [serving validation](docs/serving-validation-report.md).
-The M11 policy comparison is in
+**Next priorities (reviewed 2026-11-16):**
+
+1. Reduce external-load overhead and decode TPOT regression. Measure transport,
+   serialization, and GPU restoration separately; integrate batched payload
+   reads into serving and compare against recompute and local APC controls.
+   Correct external hits currently do not establish a serving speedup; the
+   measured TPOT regression gate remains unmet.
+2. Integrate bounded asynchronous export into nano-vLLM (N5) and the measured
+   packed/batched disk read path into its engine adapter (N6). Component and
+   vLLM measurements do not complete nano-vLLM integration or its acceptance gates.
+3. Extend validation to longer prefixes, larger models and concurrent requests,
+   recording output agreement, TTFT, TPOT, publication waits and cold/warm state.
+4. Continue PD-2 tracing and PD-3 two-engine nano-vLLM handoff; PD-4 overlap
+   depends on PD-3. The two-GPU HF prototype is evidence for transport and
+   correctness, not completion of an engine-level handoff.
+
+See [serving validation](docs/serving-validation-report.md) for measured wins,
+regressions, and remaining gates. The M11 policy comparison is in
 [the eviction report](docs/eviction-performance.md).
 The initial guided learning path (DOC-1) is available in
 [English](docs/tutorial/README.md) and [Chinese](docs/zh-CN/tutorial.md).
-Check the corresponding GitHub issue before starting a task. V1 is assigned to
-`WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
-`Claimed` records an assignment, not a completed implementation; check the
-linked issue for current ownership and progress.
+Documentation contributions should identify a specific missing explanation,
+exercise or troubleshooting step in [#63](https://github.com/Dami-wq-k03/nano-lmcache/issues/63),
+rather than recreate the existing tutorial. Translation synchronization is
+tracked in [#56](https://github.com/Dami-wq-k03/nano-lmcache/issues/56).
+Check the corresponding GitHub issue for current ownership before starting.
+Completed baselines may have open follow-ups; an open umbrella issue does not
+mean every part of its original proposal is still unimplemented.
 
 **Dependencies:**
 
@@ -366,7 +383,8 @@ its whole ancestor chain stored) still holds, with tests proving it.
 **Status: done** (`storage/disk.py`, `examples/demo_disk_cache.py`).
 Byte-based disk capacity is also done (M9). M10 supports threads sharing
 one storage instance; separate objects/processes still must not write the
-same directory. A shared cache service remains open (M12).
+same directory. A shared cache service baseline is implemented; remote hardening remains
+open (M12).
 
 Implement a `DiskKVCache` that satisfies the `CacheStorage` protocol,
 with one file per key.
@@ -568,6 +586,13 @@ What you learn: separating mechanism from policy, and measuring a policy on a
 realistic workload.
 
 ### M12: Shared cache server for several processes
+
+**Status: baseline implemented; follow-up open**
+([#52](https://github.com/Dami-wq-k03/nano-lmcache/issues/52)).
+`storage/remote.py` provides the length-prefixed JSON server/client and
+`get_many`; `benchmarks/bench_remote_cache.py` compares individual and batched
+reads. Remaining work includes serving-path batch integration and remote
+failure/admission hardening. The specification below records the original task.
 
 `MemoryKVCache` lives inside one process, and `DiskKVCache` allows only
 one writer per directory. LMCache shares KV between engine instances
@@ -865,7 +890,7 @@ be reused.
 
 ### N4: Correctness, reuse across restarts, TTFT benchmarks
 
-**Status: done.** Real-engine tests (`tests/integration/test_nanovllm_engine.py`)
+**Status: done.** Real-engine tests (`tests/integration/nanovllm/test_nanovllm_engine.py`)
 compare L2 restores against a no-cache baseline for a batch sharing a
 prefix, chunked prefill, capacity-limited L2, and a disk-backed L2 across a
 restart; preemption is covered by the scheduler-level tests. The benchmark
@@ -895,6 +920,12 @@ starts to pay off.
 
 ### N5: Store blocks off the request's critical path
 
+**Status: prototype implemented; nano-vLLM integration and acceptance open.**
+The bounded asynchronous tensor writer and real-vLLM measurements are in
+[serving validation](docs/serving-validation-report.md). Integrating it into
+nano-vLLM must preserve GPU block ownership, bounded queues, publication and
+shutdown semantics, then satisfy the original TTFT/correctness criteria below.
+
 Version 1 stores inside `hash_blocks`, so a cold request with a disk-backed
 L2 waits about 300 ms per block for serialization, writing, and `fsync`
 (`docs/nanovllm-benchmark.md`).
@@ -910,6 +941,12 @@ first token is within 10% of the no-cache time; every block still ends up
 stored exactly once; the N4 correctness tests still pass.
 
 ### N6: Faster disk tier reads
+
+**Status: packed/batched and prefetch baselines measured; engine integration open.**
+[Serving validation](docs/serving-validation-report.md) records cold/warm NVMe
+component results and cold-disk external generation. The serving path still
+fetches individual payloads; connect batched reads to the engine path and
+remeasure before claiming an end-to-end latency improvement.
 
 Reading a 28 MiB block from `DiskKVCache` costs about 17 ms from the page
 cache (10 ms copying the file into Python bytes, 7 ms in `torch.load`) and
@@ -928,7 +965,7 @@ before and after; all disk backend tests still pass.
 
 ## vLLM connector research
 
-**V0: done.** [Research notes](docs/vllm-kv-connector.md) pin the
+**V0: done.** [Research notes](docs/vllm-nano-lmcache-connector.md) pin the
 implementation target to vLLM 0.33.0 and review its scheduler/worker hooks,
 block tables and slot mapping, block-to-chunk conversion, APC versus external
 storage, and ExampleConnector's limitations against that release's source.
@@ -943,9 +980,9 @@ Start with one GPU, dense full attention, unquantized KV, and
 
 ### V1: Minimal connector skeleton
 
-**Status: implemented and validated; not yet merged.** Claimed by
-`WHoutstanding` in [#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25).
-The [validation record](docs/vllm-kv-connector.md#real-request-validation-2026-11-08)
+**Status: done** ([#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25),
+merged in [PR #75](https://github.com/Dami-wq-k03/nano-lmcache/pull/75)).
+The [validation record](docs/vllm-nano-lmcache-connector.md#real-request-validation-2026-11-08)
 includes Qwen3-0.6B token-ID comparisons, local APC hit counts and real
 scheduler/worker logs from vLLM 0.33.0 on an RTX 4080.
 
@@ -966,7 +1003,8 @@ Acceptance criteria:
 
 ### V2: Scheduler side: report matched tokens
 
-**Status: open** ([#26](https://github.com/Dami-wq-k03/nano-lmcache/issues/26)).
+**Status: done** ([#26](https://github.com/Dami-wq-k03/nano-lmcache/issues/26),
+merged in [PR #77](https://github.com/Dami-wq-k03/nano-lmcache/pull/77)).
 Prerequisite: V1.
 
 Use `ChunkedPrefixCache.lookup` to answer
@@ -998,7 +1036,8 @@ chunks, so an incorrect slot mapping cannot pass unnoticed.
 
 ### V4: Worker side: load cached chunks back to the GPU
 
-**Status: open** ([#28](https://github.com/Dami-wq-k03/nano-lmcache/issues/28)).
+**Status: done** ([#28](https://github.com/Dami-wq-k03/nano-lmcache/issues/28),
+merged in [PR #89](https://github.com/Dami-wq-k03/nano-lmcache/pull/89)).
 Prerequisites: V2, V3.
 
 Restore V2's external hits into the blocks allocated for the new request,
@@ -1016,9 +1055,15 @@ Acceptance criteria:
 
 ### V5: End-to-end demo and TTFT comparison
 
-**Status: implemented and validated**
-([#29](https://github.com/Dami-wq-k03/nano-lmcache/issues/29)). Prerequisite:
-V4. The [demo](examples/demo_vllm_with_nano_lmcache_connector.py) and
+**Status: done; performance follow-up open**
+([#29](https://github.com/Dami-wq-k03/nano-lmcache/issues/29),
+merged in [PR #90](https://github.com/Dami-wq-k03/nano-lmcache/pull/90)).
+The restart-reuse demo compares recomputation, local APC and persistent external
+KV. Functional completion does not imply a speedup; track remaining latency and
+TPOT work under the priorities above.
+Prerequisite: V4.
+
+The [demo](examples/demo_vllm_with_nano_lmcache_connector.py) and
 measurements use a 1024-token document, three questions, and a disk-backed
 external cache that survives an engine and server restart. All setups produce
 identical greedy outputs; APC and external both reuse 1024 tokens after
