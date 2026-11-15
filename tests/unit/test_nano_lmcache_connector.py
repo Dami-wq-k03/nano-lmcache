@@ -33,15 +33,23 @@ from vllm.v1.core.sched.output import (
     NewRequestData,
     SchedulerOutput,
 )
-from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.kv_cache_interface import (
+    FullAttentionSpec,
+    KVCacheConfig,
+    KVCacheGroupSpec,
+)
 
+from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
 from nano_lmcache.integrations.vllm.nano_lmcache_connector import (
+    LoadSpec,
     NanoLMCacheConnector,
     NanoLMCacheConnectorMetadata,
     ReqMeta,
     SaveSpec,
     _cache_namespace,
 )
+from nano_lmcache.storage.remote import RemoteCacheClient, RemoteCacheServer
+from nano_lmcache.tensor.serializers import TensorSerializer
 
 
 def _test_model_config():
@@ -120,6 +128,101 @@ def make_connector():
         return NanoLMCacheConnector(config, role, cache_config)
 
     return create
+
+
+@pytest.fixture
+def remote_cache():
+    server = RemoteCacheServer()
+    host, port = server.start()
+    try:
+        yield SimpleNamespace(
+            server=server,
+            config={"host": host, "port": port},
+        )
+    finally:
+        server.close()
+
+
+def _shared_kv_cache_config(block_size: int = 4) -> KVCacheConfig:
+    spec = FullAttentionSpec(
+        block_size=block_size,
+        num_kv_heads=2,
+        head_size=3,
+        dtype=torch.float32,
+    )
+    return KVCacheConfig(
+        num_blocks=10,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(
+                layer_names=["model.layers.0.self_attn"],
+                kv_cache_spec=spec,
+            )
+        ],
+    )
+
+
+@pytest.fixture
+def make_remote_connector(remote_cache):
+    """Create scheduler/worker connectors sharing one RemoteCacheServer."""
+
+    def create(role: str | KVConnectorRole) -> NanoLMCacheConnector:
+        if isinstance(role, str):
+            role = KVConnectorRole[role]
+
+        config = SimpleNamespace(
+            kv_transfer_config=KVTransferConfig(
+                kv_connector="NanoLMCacheConnector",
+                kv_role="kv_both",
+                kv_load_failure_policy="recompute",
+                kv_connector_extra_config={
+                    "remote_cache": remote_cache.config,
+                },
+            ),
+            cache_config=SimpleNamespace(block_size=4, cache_dtype="auto"),
+            model_config=_test_model_config(),
+            parallel_config=SimpleNamespace(
+                tensor_parallel_size=1, pipeline_parallel_size=1
+            ),
+        )
+        return NanoLMCacheConnector(
+            config, role, _shared_kv_cache_config(block_size=4)
+        )
+
+    return create
+
+
+def _shared_writer(connector, remote_cache) -> ChunkedPrefixCache:
+    return ChunkedPrefixCache(
+        chunk_size=connector._chunk_size,
+        namespace=connector._namespace,
+        storage=RemoteCacheClient(
+            remote_cache.config["host"],
+            remote_cache.config["port"],
+            serializer=TensorSerializer(),
+        ),
+    )
+
+
+CHUNK_SHAPE = (2, 2, 2, 4, 3)
+
+
+def _make_chunks(num_chunks: int, offset: int = 0) -> list[torch.Tensor]:
+    return [
+        torch.arange(2 * 2 * 2 * 4 * 3, dtype=torch.float32).reshape(
+            CHUNK_SHAPE
+        )
+        + offset
+        + index * 1000
+        for index in range(num_chunks)
+    ]
+
+
+def _load_worker_layers() -> dict[str, torch.Tensor]:
+    return {
+        "model.layers.1.self_attn": torch.full((10, 2, 4, 6), -1.0),
+        "model.layers.0.self_attn": torch.full((10, 2, 4, 6), -1.0),
+    }
 
 
 @pytest.fixture
@@ -768,3 +871,209 @@ def test_scheduler_releases_finished_save_state(scheduler, via_callback):
         )
     )
     assert metadata.requests == [ReqMeta("req", (20, 21, 22, 23), (36, 37, 38, 39))]
+
+def test_scheduler_reports_shared_hit_and_reserves_last_token(
+    make_remote_connector, remote_cache, request_stub
+):
+    scheduler = make_remote_connector("SCHEDULER")
+    writer = _shared_writer(scheduler, remote_cache)
+    writer.store(list(range(12)), _make_chunks(3))
+    request_stub.prompt_token_ids = list(range(12))
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (8, False)
+    spec = scheduler._load_specs["req-1"]
+    assert spec.vllm_cached_tokens == 0
+    assert spec.external_cached_tokens == 8
+    assert not spec.can_load
+
+
+@pytest.mark.parametrize(
+    ("allocated", "expected_end", "can_load"),
+    [(8, 8, True), (4, 4, True), (0, 8, False)],
+)
+def test_update_state_after_alloc_marks_load_ready(
+    make_remote_connector,
+    remote_cache,
+    request_stub,
+    allocated,
+    expected_end,
+    can_load,
+):
+    scheduler = make_remote_connector("SCHEDULER")
+    writer = _shared_writer(scheduler, remote_cache)
+    writer.store(list(range(8)), _make_chunks(2))
+    request_stub.prompt_token_ids = list(range(9))
+
+    assert scheduler.get_num_new_matched_tokens(request_stub, 0) == (8, False)
+    blocks = KVCacheBlocks(blocks=([KVCacheBlock(3), KVCacheBlock(9)],))
+    scheduler.update_state_after_alloc(request_stub, blocks, allocated)
+
+    spec = scheduler._load_specs["req-1"]
+    assert spec.external_cached_tokens == expected_end
+    assert spec.can_load is can_load
+
+
+def test_build_connector_meta_emits_load_only_plan(
+    make_remote_connector, remote_cache
+):
+    scheduler = make_remote_connector("SCHEDULER")
+    writer = _shared_writer(scheduler, remote_cache)
+    writer.store(list(range(8)), _make_chunks(2))
+
+    request = SimpleNamespace(
+        request_id="req",
+        prompt_token_ids=list(range(9)),
+        num_computed_tokens=0,
+    )
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (8, False)
+    blocks = KVCacheBlocks(
+        blocks=([KVCacheBlock(3), KVCacheBlock(9), KVCacheBlock(1)],)
+    )
+    scheduler.update_state_after_alloc(request, blocks, 8)
+
+    output = _save_step(
+        new=[_new_save_request("req", list(range(9)), [3, 9, 1], computed=8)],
+        counts={"req": 1},
+    )
+    metadata = scheduler.build_connector_meta(output)
+
+    assert metadata.requests == [
+        ReqMeta(
+            "req",
+            tuple(range(8)),
+            (12, 13, 14, 15, 36, 37, 38, 39),
+            SaveSpec(skip_leading_tokens=8, can_save=False),
+            LoadSpec(0, 8, True),
+        )
+    ]
+    assert scheduler._request_trackers["req"].num_saved_tokens == 8
+    assert pickle.loads(pickle.dumps(metadata)) == metadata
+
+
+def test_worker_loads_chunks_into_new_blocks(
+    make_remote_connector, remote_cache
+):
+    worker = make_remote_connector("WORKER")
+    layers = _load_worker_layers()
+    worker.register_kv_caches(layers)
+
+    writer = _shared_writer(worker, remote_cache)
+    chunks = _make_chunks(2)
+    writer.store(list(range(8)), chunks)
+
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=[
+                ReqMeta(
+                    "req",
+                    tuple(range(8)),
+                    (12, 13, 14, 15, 36, 37, 38, 39),
+                    SaveSpec(skip_leading_tokens=8, can_save=False),
+                    LoadSpec(0, 8, True),
+                )
+            ]
+        )
+    )
+    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
+    for name in worker._layer_names:
+        worker.wait_for_layer_load(name)
+
+    assert worker.get_block_ids_with_load_errors() == set()
+    for layer_index, name in enumerate(worker._layer_names):
+        layer = layers[name]
+        assert torch.equal(layer[3, :, :, :3], chunks[0][layer_index, 0])
+        assert torch.equal(layer[3, :, :, 3:], chunks[0][layer_index, 1])
+        assert torch.equal(layer[9, :, :, :3], chunks[1][layer_index, 0])
+        assert torch.all(layer[0] == -1)
+
+
+def test_worker_loads_only_external_span(
+    make_remote_connector, remote_cache
+):
+    worker = make_remote_connector("WORKER")
+    layers = _load_worker_layers()
+    worker.register_kv_caches(layers)
+
+    writer = _shared_writer(worker, remote_cache)
+    chunks = _make_chunks(2)
+    writer.store(list(range(8)), chunks)
+
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=[
+                ReqMeta(
+                    "req",
+                    tuple(range(8)),
+                    (12, 13, 14, 15, 36, 37, 38, 39),
+                    SaveSpec(skip_leading_tokens=8, can_save=False),
+                    LoadSpec(4, 8, True),
+                )
+            ]
+        )
+    )
+    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
+
+    assert worker.get_block_ids_with_load_errors() == set()
+    for layer_index, name in enumerate(worker._layer_names):
+        layer = layers[name]
+        assert torch.all(layer[3] == -1)
+        assert torch.equal(layer[9, :, :, :3], chunks[1][layer_index, 0])
+
+
+def test_missing_entry_reports_block_and_skips_save(
+    make_remote_connector, remote_cache
+):
+    worker = make_remote_connector("WORKER")
+    layers = _load_worker_layers()
+    worker.register_kv_caches(layers)
+
+    writer = _shared_writer(worker, remote_cache)
+    chunks = _make_chunks(2)
+    writer.store(list(range(8)), chunks)
+    keys = writer.lookup(list(range(8))).keys
+    remote_cache.server.storage.invalidate(keys[1])
+
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=[
+                ReqMeta(
+                    "req",
+                    tuple(range(8)),
+                    (12, 13, 14, 15, 36, 37, 38, 39),
+                    SaveSpec(),
+                    LoadSpec(0, 8, True),
+                )
+            ]
+        )
+    )
+    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
+
+    assert worker.get_block_ids_with_load_errors() == {9}
+    assert worker._failed_loads == {"req"}
+    for name, layer in layers.items():
+        worker.save_kv_layer(name, layer, SimpleNamespace())
+    assert worker._pending_save_layers == {}
+
+    worker.clear_connector_metadata()
+    assert worker.get_block_ids_with_load_errors() == set()
+
+
+def test_wait_for_layer_load_requires_start(make_remote_connector):
+    worker = make_remote_connector("WORKER")
+    worker.register_kv_caches(_load_worker_layers())
+    worker.bind_connector_metadata(
+        NanoLMCacheConnectorMetadata(
+            requests=[
+                ReqMeta(
+                    "req",
+                    (0, 1, 2, 3),
+                    (12, 13, 14, 15),
+                    SaveSpec(skip_leading_tokens=4, can_save=False),
+                    LoadSpec(0, 4, True),
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="start_load_kv"):
+        worker.wait_for_layer_load(worker._layer_names[0])
