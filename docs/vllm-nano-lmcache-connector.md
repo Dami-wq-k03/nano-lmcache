@@ -294,6 +294,10 @@ instead of consuming uninitialized KV. With `"recompute"` this vLLM version
 can retain tokens sampled from the failed step before rescheduling, so V4
 guarantees the explicit error path rather than claiming safe recomputation.
 
+For the V5 three-setup comparison (no cache, APC, and external KV across an
+engine and cache-server restart), see
+[examples/demo_vllm_with_nano_lmcache_connector.py](../examples/demo_vllm_with_nano_lmcache_connector.py).
+
 ## Paged KV cache: blocks, block tables and slot mapping
 
 For ordinary unquantized full attention on one GPU, with one cache group,
