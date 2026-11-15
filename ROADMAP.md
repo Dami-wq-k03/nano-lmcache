@@ -185,11 +185,11 @@ open an issue to discuss it.
 | N6 | Faster disk tier reads | Medium | Optional | N4 | Packed/prefetch NVMe baseline measured; engine integration open |
 | **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
-| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Implemented; real generation validated |
-| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Implemented; real external hits validated |
+| V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Done |
+| V2 | Scheduler side: report matched tokens | Hard | Yes | V1 | Done |
 | V3 | Worker side: save chunks from the paged KV cache | Hard | Yes | V1, G1 | Done |
-| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Implemented; real external-hit generation validated |
-| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Benchmark measured; performance gates open |
+| V4 | Worker side: load cached chunks back to the GPU | Hard | Yes | V2, V3 | Done |
+| V5 | End-to-end demo and TTFT comparison | Medium | Yes | V4 | Done |
 | **PD disaggregation** | | | | | |
 | PD-1 | Teaching version: toy model, KV handoff, transports, timeline | Medium | No | – | Done |
 | PD-2 | Trace events for prefill, transfer, and decode | Medium | No | PD-1, VIS-4–6 | Open |
@@ -1016,8 +1016,14 @@ Acceptance criteria:
 
 ### V5: End-to-end demo and TTFT comparison
 
-**Status: open** ([#29](https://github.com/Dami-wq-k03/nano-lmcache/issues/29)).
-Prerequisite: V4.
+**Status: implemented and validated**
+([#29](https://github.com/Dami-wq-k03/nano-lmcache/issues/29)). Prerequisite:
+V4. The [demo](examples/demo_vllm_with_nano_lmcache_connector.py) and
+measurements use a 1024-token document, three questions, and a disk-backed
+external cache that survives an engine and server restart. All setups produce
+identical greedy outputs; APC and external both reuse 1024 tokens after
+warmup. For Qwen3-0.6B the external warm path is slower than recomputation, so
+the performance gate remains open; the measurements record the slowdown.
 
 Add a vLLM example with several requests sharing a long prefix, such as a
 document followed by different questions. Compare no prefix caching,
