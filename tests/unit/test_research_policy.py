@@ -64,7 +64,7 @@ def test_invalid_admission_inputs(kwargs):
 def test_cost_policy_retains_expensive_old_leaf_unlike_lru():
     values = {"a": CacheValue(100, 10, 0), "b": CacheValue(100, 1, 0)}
     cache = MemoryKVCache(
-        max_entries=2, eviction_policy=lambda: CostAwareEvictionPolicy(values.get)
+        max_entries=2, eviction_policy=CostAwareEvictionPolicy(values.get)
     )
     control = MemoryKVCache(max_entries=2)
     for backend in (cache, control):
@@ -79,50 +79,41 @@ def test_cost_policy_retains_expensive_old_leaf_unlike_lru():
 def test_cost_density_frequency_and_dynamic_callback():
     values = {"a": CacheValue(100, 10, 0), "b": CacheValue(10, 2, 0)}
     policy = CostAwareEvictionPolicy(values.get)
-    policy.on_insert("a", is_leaf=True)
-    policy.on_insert("b", is_leaf=True)
-    assert policy.choose_victim(None) == "a"  # 0.1/byte versus 0.2/byte
-    policy.on_touch("a", is_leaf=True)
-    policy.on_touch("a", is_leaf=True)
-    assert policy.choose_victim(None) == "b"  # frequency 3 * 0.1 > 0.2
+    assert policy("a", 1, 1) < policy("b", 1, 2)  # 0.1/byte versus 0.2/byte
+    assert policy("a", 3, 3) > policy("b", 1, 2)  # 3 * 0.1 > 0.2
     values["b"] = CacheValue(10, 100, 0)
-    assert policy.choose_victim(None) == "a"  # fresh metadata, no stale ranking
-    policy.on_write("a", is_leaf=True)
-    assert policy.frequency_of("a") == 3  # overwrite is not another hit
+    assert policy("a", 3, 3) < policy("b", 1, 2)  # Callback reads fresh costs.
 
 
 def test_unknown_and_nonbeneficial_values_use_lru_ties():
     values = {"slow": CacheValue(1, 1, 2)}
-    policy = CostAwareEvictionPolicy(values.get)
-    policy.on_insert("unknown", is_leaf=True)
-    policy.on_insert("slow", is_leaf=True)
-    assert policy.choose_victim(None) == "unknown"
-    policy.on_touch("unknown", is_leaf=True)
-    assert policy.choose_victim(None) == "slow"
-    policy.on_remove("slow")
-    assert policy.choose_victim(None) == "unknown"
-    with pytest.raises(KeyError):
-        policy.frequency_of("slow")
+    cache = MemoryKVCache(
+        max_entries=2, eviction_policy=CostAwareEvictionPolicy(values.get)
+    )
+    cache.put("unknown", 1)
+    cache.put("slow", 2)
+    cache.get("unknown")
+    cache.put("new", 3)
+    assert set(cache.keys()) == {"unknown", "new"}
 
 
 def test_leaf_eligibility_protection_and_exposure_do_not_duplicate_tree():
-    policy = CostAwareEvictionPolicy(lambda key: None)
-    policy.on_insert("internal", is_leaf=False)
-    policy.on_insert("leaf", is_leaf=True)
-    assert policy.choose_victim(None) == "leaf"
-    assert policy.choose_victim("leaf") is None
-    policy.on_touch("internal", is_leaf=False)
-    policy.on_leaf_status_change("internal", is_leaf=True)
-    assert policy.frequency_of("internal") == 2
-    assert policy.choose_victim("leaf") == "internal"
-    policy.on_leaf_status_change("internal", is_leaf=False)
-    assert policy.choose_victim("leaf") is None
+    index = PrefixIndex(
+        max_entries=2, eviction_policy=CostAwareEvictionPolicy(lambda key: None)
+    )
+    index.admit("internal", None)
+    index.admit("leaf", "internal")
+    index.touch("internal")
+    assert not index.admit("child", "leaf").admitted  # Only leaf is protected.
+    assert index.admit("other", None).evicted == ("leaf",)
+    assert index.frequency_of("internal") == 2
+    assert index.admit("next", None).evicted == ("internal",)
 
 
 def test_protected_chain_rejection_and_internal_frequency_survive():
     values = {key: CacheValue(1, 1, 0) for key in "abcx"}
     index = PrefixIndex(
-        max_entries=3, eviction_policy=lambda: CostAwareEvictionPolicy(values.get)
+        max_entries=3, eviction_policy=CostAwareEvictionPolicy(values.get)
     )
     index.admit("a", None)
     index.admit("b", "a")
@@ -136,34 +127,34 @@ def test_protected_chain_rejection_and_internal_frequency_survive():
 
 
 def test_restore_access_has_no_fake_frequency_and_deterministic_key_ties():
-    policy = CostAwareEvictionPolicy(lambda key: CacheValue(1, 1, 0))
-    policy.on_restore("b", is_leaf=True)
-    policy.on_restore("a", is_leaf=True)
-    policy.on_restore_access("a", 10)
-    policy.on_restore_access("b", 10)
-    assert policy.frequency_of("a") == policy.frequency_of("b") == 1
-    assert policy.choose_victim(None) == "a"
-    assert policy.choose_victim("a") == "b"
+    index = PrefixIndex(
+        max_entries=2,
+        eviction_policy=CostAwareEvictionPolicy(lambda key: CacheValue(1, 1, 0)),
+    )
+    index.restore("b", None)
+    index.restore("a", None)
+    index.restore_access("a", 10)
+    index.restore_access("b", 10)
+    assert index.frequency_of("a") == index.frequency_of("b") == 1
+    assert index.admit("c", None).evicted == ("a",)
 
 
 def test_disk_policy_recovery_reuses_existing_mechanics(tmp_path):
     values = {key: CacheValue(1, 1, 0) for key in "abc"}
 
-    def factory():
-        return CostAwareEvictionPolicy(values.get)
-
-    first = DiskKVCache(tmp_path, max_entries=2, eviction_policy=factory)
+    policy = CostAwareEvictionPolicy(values.get)
+    first = DiskKVCache(tmp_path, max_entries=2, eviction_policy=policy)
     first.put("a", "a")
     first.put("b", "b")
     first.get("a")
     first.get("a")
-    reopened = DiskKVCache(tmp_path, max_entries=2, eviction_policy=factory)
+    reopened = DiskKVCache(tmp_path, max_entries=2, eviction_policy=policy)
     assert reopened.frequency_of("a") == 1
     reopened.put("c", "c")
     assert set(reopened.keys()) == {"a", "c"}
 
 
-def test_delegate_heap_remains_bounded_and_policy_instances_are_independent():
+def test_shared_scorer_keeps_access_state_independent():
     policy = CostAwareEvictionPolicy(lambda key: CacheValue(1, 1, 0))
     first = MemoryKVCache(max_entries=2, eviction_policy=policy)
     second = MemoryKVCache(max_entries=2, eviction_policy=policy)
@@ -174,7 +165,7 @@ def test_delegate_heap_remains_bounded_and_policy_instances_are_independent():
         first.get("a")
     assert first.frequency_of("a") == 1001
     assert second.frequency_of("a") == 1
-    assert first._index.policy.heap_size <= 64
+    assert len(first._index._entries) == len(first) == 2
     first.put("c", "c")
     assert set(first.keys()) == {"a", "c"}
     assert set(second.keys()) == {"a", "b"}
@@ -187,7 +178,7 @@ def test_random_operations_keep_prefix_and_byte_invariants():
         max_entries=5,
         max_bytes=15,
         size_fn=lambda value: value.nbytes,
-        eviction_policy=lambda: CostAwareEvictionPolicy(values.get),
+        eviction_policy=CostAwareEvictionPolicy(values.get),
     )
     rng = random.Random(17)
     for _ in range(500):

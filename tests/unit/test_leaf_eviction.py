@@ -1,7 +1,6 @@
-"""Preserve exact LRU semantics while avoiding a scan of internal nodes."""
+"""Prefix-safe leaf selection preserves exact LRU semantics."""
 
 import random
-from collections import OrderedDict
 
 import pytest
 
@@ -78,27 +77,16 @@ def test_restore_and_replayed_recency_preserve_leaf_order():
     assert index.admit("v", None).evicted == ("a",)
 
 
-def test_deep_chain_victim_selection_does_not_scan_all_entries():
-    class CountedOrder(OrderedDict):
-        inspected = 0
-
-        def __iter__(self):
-            for key in super().__iter__():
-                self.inspected += 1
-                yield key
-
+def test_deep_chain_evicts_only_the_leaf_without_recursion():
     index = PrefixLRUIndex(max_entries=2048)
     parent = None
     for depth in range(2048):
         key = str(depth)
         index.admit(key, parent)
         parent = key
-    order = CountedOrder(index._parents)
-    index._parents = order
 
     assert index.admit("new", None).evicted == ("2047",)
-    # Count inspected entries instead of asserting a noisy wall-clock limit.
-    assert order.inspected < 32
+    assert index.parent_of("2046") == "2045"
 
 
 def test_repeated_leaf_hits_keep_candidate_memory_bounded():
@@ -108,11 +96,12 @@ def test_repeated_leaf_hits_keep_candidate_memory_bounded():
     for _ in range(10000):
         index.touch("a")
 
-    assert len(index._leaf_heap) <= 64
+    assert len(index._entries) == 4
+    assert index.frequency_of("a") == 10_001
     assert index.admit("e", None).evicted == ("b",)
 
 
-def test_heap_compaction_keeps_newly_exposed_parent_in_original_order():
+def test_repeated_hits_keep_newly_exposed_parent_in_original_order():
     index = PrefixLRUIndex(max_entries=4)
     index.admit("a", None)
     index.admit("b", "a")

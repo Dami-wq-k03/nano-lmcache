@@ -25,38 +25,30 @@ whole ancestor chain is in that tier), so their union does as well.
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
 from nano_lmcache.storage.protocol import CacheStorage
 
 
-@runtime_checkable
 class SlowTier(CacheStorage, Protocol):
-    """A tier that can report each entry's parent, so hits can be promoted."""
+    """Prefix-safe backend with explicit admission and parent metadata."""
 
-    def __contains__(self, key: object) -> bool: ...
-
-    def parent_of(self, key: str) -> str | None: ...
-
-
-@runtime_checkable
-class FastTier(CacheStorage, Protocol):
-    """A tier that can be checked for membership without counting a use."""
-
-    def __contains__(self, key: object) -> bool: ...
-
-
-@runtime_checkable
-class _AdmissionAwareTier(Protocol):
     def try_put(
         self, key: str, value: object, *, parent_key: str | None = None
     ) -> bool: ...
 
+    def __contains__(self, key: object) -> bool: ...
 
-@runtime_checkable
-class _AdmissionAwareFastTier(FastTier, _AdmissionAwareTier, Protocol):
+    def keys(self) -> Iterator[str]: ...
+
+    def parent_of(self, key: str) -> str | None: ...
+
+
+class FastTier(SlowTier, Protocol):
+    """The fast copy must also support invalidating a stale subtree."""
+
     def invalidate(self, key: str) -> None: ...
 
 
@@ -132,12 +124,7 @@ class TieredStorage:
     def keys(self) -> Iterator[str]:
         """Yield the union of keys present in either tier."""
         with self._lock:
-            keys: set[str] = set()
-            for tier in (self._fast, self._slow):
-                iterator = getattr(tier, "keys", None)
-                if iterator is not None:
-                    keys.update(iterator())
-            return iter(keys)
+            return iter(set(self._fast.keys()) | set(self._slow.keys()))
 
     def put(
         self,
@@ -149,21 +136,13 @@ class TieredStorage:
         with self._lock:
             # Slow tier first: if it raises (for example, a payload it cannot
             # serialize), the fast tier is left untouched.
-            if isinstance(self._slow, _AdmissionAwareTier):
-                present = key in self._slow
-                admitted = self._slow.try_put(key, value, parent_key=parent_key)
-                # A rejected overwrite must not leave the two tiers disagreeing.
-                if present and not admitted:
-                    return
-            else:
-                self._slow.put(key, value, parent_key=parent_key)
-            if isinstance(self._fast, _AdmissionAwareFastTier):
-                if not self._fast.try_put(key, value, parent_key=parent_key):
-                    # The slow tier has the current value. A rejected overwrite
-                    # must not leave an older fast copy (or orphan its children).
-                    self._fast.invalidate(key)
-            else:
-                self._fast.put(key, value, parent_key=parent_key)
+            present = key in self._slow
+            admitted = self._slow.try_put(key, value, parent_key=parent_key)
+            if present and not admitted:
+                return  # Keep both old copies when the slow overwrite is rejected.
+            if not self._fast.try_put(key, value, parent_key=parent_key):
+                # Slow has the new value; never serve an older fast copy.
+                self._fast.invalidate(key)
 
     def get(self, key: str) -> object | None:
         with self._lock:
@@ -181,8 +160,7 @@ class TieredStorage:
 
             self._tier_stats.slow_hits += 1
             self._record("tier_hit", result="slow", metadata={"tier": "slow"})
-            self._fast.put(key, value, parent_key=self._slow.parent_of(key))
-            if key in self._fast:
+            if self._fast.try_put(key, value, parent_key=self._slow.parent_of(key)):
                 self._tier_stats.promotions += 1
                 self._record(
                     "promotion",

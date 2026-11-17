@@ -96,9 +96,16 @@ uv run pytest tests/unit/test_bounded_memory.py tests/unit/test_leaf_eviction.py
 
 阅读[容量与淘汰](architecture.md#容量与淘汰)、
 [`storage/eviction.py`](../../src/nano_lmcache/storage/eviction.py)和
-[性能报告（英文）](../eviction-performance.md)。随机叶节点测试将堆实现与原始 LRU 策略逐步对照。
+[性能报告（英文）](../eviction-performance.md)。当前实现直接扫描叶节点，随机测试将接纳、淘汰
+和最近使用顺序与独立参考模型逐步对照，不再维护候选堆。
 
 ## 4. 持久化与提升分块
+
+Storage 先沿这条小路径阅读：`protocol.py` → `memory.py` → `eviction.py`
+（配合 `eviction_policies.py` 中的简单评分）→ `disk.py` → `tiered.py`。
+核心只讲四件事：**存取、保留完整前缀、持久化、命中后提升**。
+`remote.py`、`async_write.py`、`coalesced.py`、`prefetch.py`、`uring.py`
+是独立的进阶实验，不是理解基础缓存的前置知识，可以先跳过网络、并发和批量 I/O 的实现。
 
 第一次使用新目录，第二次复用同一目录：
 

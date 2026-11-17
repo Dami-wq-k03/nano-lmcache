@@ -1,6 +1,53 @@
 # Prefix-safe eviction performance and policy comparison (M2/M11)
 
-## Design decision
+## Current teaching implementation
+
+The storage simplification deliberately replaces the heap with an O(n) leaf
+scan. One index owns each key's parent, size, frequency, and last-access tick;
+LRU and LFU are stateless score functions. There are no lifecycle callbacks,
+policy factories, stale records, heap compaction, or duplicated leaf state.
+A custom scorer is passed directly, e.g. `CostAwareEvictionPolicy(values.get)`.
+The old callback/factory extension API is not retained.
+
+The prefix-safety and victim-order rules are unchanged: only unprotected leaves
+are scored; becoming a leaf is not an access; overwrites do not add frequency;
+rejected admission evicts nothing. Each hit is O(1), each victim search O(n),
+and a write removing k leaves can cost O(k·n). Metadata remains O(n), with one
+record per key even after repeated hits. This favors learning over throughput
+for large, eviction-heavy caches.
+
+**Tables in the historical sections record the earlier heap version, not
+performance claims for the current scan.** In particular, the new scan
+collects parent keys on every victim search; it is not the exact original
+scan implementation in the historical “before” column.
+
+## Simplification check (2026-11-17)
+
+Paired local runs compared baseline `d6c2f59` with the simplified scan, using
+Apple arm64, Python 3.11, and the best of three sequential `run_churn` repeats.
+These include key construction and prefix-cache storage, not just victim search:
+
+| Prompts × chunks | Capacity | Heap baseline (ms) | Simple scan (ms) | Entries kept (both) |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 × 8 | 64 | 90.423 | 136.732 | 64 |
+| 64 × 1,024 | 8,192 | 1,543.950 | 25,685.508 | 8,192 |
+
+This is a readability change, **not a speedup**. In this run, short-chain churn
+was about 1.5× slower and deep-chain churn about 16.6× slower. Large-cache
+throughput is deliberately not an acceptance target for this teaching version.
+Both runs retained the same number of entries; randomized tests check ordering
+and prefix safety, not timing. Reproduce the comparison in each revision with:
+
+```bash
+uv run python - <<'PY'
+from benchmarks.bench_prefix_cache import format_churn, run_churn
+
+for prompts, depth, capacity in [(2000, 8, 64), (64, 1024, 8192)]:
+    print(format_churn(run_churn(prompts, depth, capacity, 3)))
+PY
+```
+
+## Historical heap design decision (M2)
 
 The original `PrefixLRUIndex._find_victim` scans all entries in recency
 order until it finds an unprotected leaf. This is O(n) per eviction in
@@ -205,17 +252,18 @@ wall-clock thresholds. To try another trade-off, change `--policy-capacity`,
 than assuming LFU is better.
 
 
-`tests/unit/test_leaf_eviction.py` covers original access times on newly
-exposed leaves, internal-node hits, protected candidates, failed
-admissions, stale records, key reuse, recovery-style recency replay, and
-bounded candidate memory after repeated reads. Randomized sequences
-compare every admission, eviction, parent relation, recency order, and
-counter against an independent implementation of the original scan
-policy (12 scenarios, 600 operations each).
+## Current correctness coverage
 
-A deep-chain test counts entry iteration rather than asserting noisy
-timing thresholds. The existing bounded-memory, disk-recovery, and
-backend-contract tests remain unchanged.
+`tests/unit/test_leaf_eviction.py` covers original access times on newly
+exposed leaves, internal-node hits, protected candidates, rejected admissions,
+key reuse, recovery-style recency replay, and bounded metadata after repeated
+reads. Randomized sequences compare each admission, eviction, parent relation,
+recency order, and counter against an independent reference model.
+
+The deep-chain test checks leaf-only removal without recursion; it no longer
+requires avoiding an entry scan. Existing bounded-memory, disk-recovery,
+byte-capacity, thread-safety, and backend-contract tests still enforce the
+storage behavior rather than the discarded heap implementation.
 
 `tests/unit/test_benchmarks.py` runs the fixed deep-chain workload and
 checks that its 65536 inserted chunks exceed capacity while exactly 8192

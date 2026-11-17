@@ -153,17 +153,14 @@ def run_with_prefix_cache(
 
     device = next(model.parameters()).device
     if reused_tokens > 0:
-        # Payloads are opaque to the cache; here we know they are chunk tensors.
-        reused = join_kv(cast(Sequence[torch.Tensor], match.values))
-        # A backend may hand chunks back on another device (a disk tier
-        # returns CPU tensors), so move them to the model; `.to` is free
-        # when they are already there.
+        # Tiers can return a mix of CPU and GPU chunks. Align BEFORE joining.
+        chunks = [
+            chunk.to(device) for chunk in cast(Sequence[torch.Tensor], match.values)
+        ]
+        reused = join_kv(chunks)
         past = layers_to_cache(
             [
-                (
-                    key[:, :reused_tokens].to(device),
-                    value[:, :reused_tokens].to(device),
-                )
+                (key[:, :reused_tokens], value[:, :reused_tokens])
                 for key, value in reused
             ],
             model.config,

@@ -112,9 +112,18 @@ budget with its entry budget: payload size can force several leaf evictions.
 Read [capacity and eviction](../architecture.md#capacity-and-eviction),
 [`storage/eviction.py`](../../src/nano_lmcache/storage/eviction.py), and the
 [performance report](../eviction-performance.md). The randomized leaf tests
-compare heap-based selection against the original LRU policy.
+compare admission and eviction against an independent reference model. The
+current selector is a readable O(n) leaf scan, not the earlier heap experiment.
 
 ## 4. Persist and promote chunks
+
+Keep the storage reading path small: `protocol.py` → `memory.py` →
+`eviction.py` (with the tiny scores in `eviction_policies.py`) → `disk.py` →
+`tiered.py`. The core lesson is just **store, keep whole prefixes, persist,
+promote**. `remote.py`, `async_write.py`, `coalesced.py`, `prefetch.py`, and
+`uring.py` are independent advanced experiments, not prerequisites for this
+path. Their networking, concurrency, and bulk-I/O machinery need not be read
+before using the basic cache.
 
 Use a new directory for the first command, then reuse that directory:
 

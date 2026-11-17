@@ -51,7 +51,7 @@ flowchart LR
 | **真实引擎首 Token 延迟**：Qwen3-0.6B、RTX 4090、8,224-token Prompt，复用 8,192 tokens | GPU L1 为空时，从固定页 CPU 内存 L2 恢复，TTFT **125.0 → 52.4 ms**；五轮中位数。 | [TTFT 报告（英文）](docs/nanovllm-benchmark.md) |
 | **进程重启恢复**：Qwen3-0.6B、RTX 4090 | 新 nano-vLLM 进程在空 L1 下从磁盘恢复 **5 个 KV 块**；两道问题在冷启动与重启后生成的答案一致。 | [GPU 验证记录（英文）](docs/gpu-validation.md) |
 | **INT8 存储**：合成 FP16/BF16 KV 块、Apple M4 CPU | **原始字节数 / INT8 序列化字节数 ≈ 1.60×**，已计入 FP32 缩放因子开销。压缩有损，需主动启用。 | [压缩报告（英文）](docs/quantized-kv.md) |
-| **前缀安全淘汰**：链深 1,024 块、容量 8,192、Apple arm64 | 用堆选择 LRU 叶节点，保持原淘汰策略，将整轮频繁插入/淘汰耗时从 **788 ms 降到 208 ms**。 | [淘汰报告（英文）](docs/eviction-performance.md) |
+| **历史堆优化实验**：链深 1,024 块、容量 8,192、Apple arm64 | 早期堆实现曾将整轮淘汰耗时从 **788 ms 降到 208 ms**。当前教学实现为保持易读，改用 O(n) 叶节点扫描；这不是当前版本的耗时。 | [淘汰取舍（英文）](docs/eviction-performance.md) |
 
 同一 TTFT 实验中，磁盘 L2 在所有测试长度下都比重算更慢；短链淘汰负载也会付出额外的维护开销。
 报告同时记录了收益与成本，方便判断什么场景值得使用缓存。

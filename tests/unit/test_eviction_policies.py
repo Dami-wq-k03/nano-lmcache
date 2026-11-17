@@ -130,14 +130,15 @@ def test_lfu_rejects_an_impossible_chain_without_eviction() -> None:
     assert set(cache.keys()) == {"root", "child"}
 
 
-def test_policy_heap_compaction_bounds_repeated_lfu_hits() -> None:
+def test_repeated_lfu_hits_update_one_record_per_key() -> None:
     cache = MemoryKVCache(max_entries=4, eviction_policy="lfu")
     for key in "abcd":
         cache.put(key, key)
     for _ in range(10_000):
         assert cache.get("a") == "a"
 
-    assert cache._index.policy.heap_size <= 64
+    assert len(cache._index._entries) == len(cache) == 4
+    assert cache.frequency_of("a") == 10_001
     cache.put("e", "e")
     assert "b" not in cache
 
@@ -162,7 +163,7 @@ def test_disk_recovery_resets_lfu_frequency_but_restores_recency(
     assert "a" in reopened
 
 
-def test_policy_instances_are_not_shared_between_caches() -> None:
+def test_access_state_is_not_shared_between_caches() -> None:
     policy = LFUEvictionPolicy()
     first = MemoryKVCache(max_entries=2, eviction_policy=policy)
     second = MemoryKVCache(max_entries=2, eviction_policy=policy)
@@ -171,7 +172,7 @@ def test_policy_instances_are_not_shared_between_caches() -> None:
     first.get("a")
     second.put("a", 1)
 
-    assert first._index.policy is not second._index.policy
+    assert not vars(policy)  # Sharing a stateless scorer cannot share access records.
     assert first._index.frequency_of("a") == 2
     assert second._index.frequency_of("a") == 1
 
@@ -328,3 +329,50 @@ def test_random_insert_touch_evict_reinsert_invalidate_preserves_invariants(
 def test_lru_and_lfu_policy_classes_have_distinct_names() -> None:
     assert LRUEvictionPolicy().name == "lru"
     assert LFUEvictionPolicy().name == "lfu"
+
+
+@pytest.mark.parametrize("policy", ["lru", "lfu"])
+def test_overwrite_refreshes_recency_without_counting_a_hit(policy: str) -> None:
+    cache = MemoryKVCache(max_entries=2, eviction_policy=policy)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("a", 3)
+    assert cache.frequency_of("a") == 1
+    cache.put("c", 4)
+    assert set(cache.keys()) == {"a", "c"}
+
+
+def test_custom_scorer_only_sees_unprotected_leaves() -> None:
+    class Scorer:
+        name = "checked-lru"
+
+        def __call__(self, key, frequency, last_access):
+            assert key == "other"  # root is internal, child is protected.
+            assert frequency == 1
+            return (last_access,)
+
+    index = PrefixLRUIndex(max_entries=3, eviction_policy=Scorer())
+    index.admit("root", None)
+    index.admit("child", "root")
+    index.admit("other", None)
+    assert index.admit("new", "child").evicted == ("other",)
+
+
+def test_invalidation_removes_access_state_before_reinsertion() -> None:
+    index = PrefixLRUIndex(eviction_policy="lfu")
+    index.admit("a", None, size_bytes=2)
+    index.admit("b", "a", size_bytes=3)
+    index.touch("b")
+    assert index.invalidate("a") == ("b", "a")
+    assert index.nbytes == len(index) == 0
+    with pytest.raises(KeyError):
+        index.frequency_of("b")
+    index.admit("b", None, size_bytes=1)
+    assert index.frequency_of("b") == 1
+    assert index.nbytes == 1
+
+
+@pytest.mark.parametrize("bad", ["unknown", "", "fifo"])
+def test_unknown_policy_is_rejected(bad: str) -> None:
+    with pytest.raises(ValueError, match="unknown eviction_policy"):
+        MemoryKVCache(eviction_policy=bad)

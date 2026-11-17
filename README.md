@@ -55,7 +55,7 @@ specified below. Each report includes the setup and reproduction commands.
 | **Real-engine TTFT** — Qwen3-0.6B, RTX 4090, 8,224-token prompt, 8,192 reused tokens | **125.0 → 52.4 ms** with pinned CPU-memory L2 and empty GPU L1; median of five rounds. | [TTFT report](docs/nanovllm-benchmark.md) |
 | **Restart recovery** — Qwen3-0.6B, RTX 4090 | A fresh nano-vLLM process restored **five KV blocks from disk** with empty L1; both questions produced identical answers across cold and restarted processes. | [GPU validation record](docs/gpu-validation.md) |
 | **INT8 storage** — synthetic FP16/BF16 KV chunk, Apple M4 CPU | **Raw bytes / INT8 serialized bytes ≈ 1.60×**, including FP32 scale overhead. Compression is lossy and opt-in. | [Compression report](docs/quantized-kv.md) |
-| **Prefix-safe eviction** — 1,024-chunk chains, capacity 8,192, Apple arm64 | Heap-based leaf selection reduced total churn time **788 → 208 ms**, preserving the original LRU policy. | [Eviction report](docs/eviction-performance.md) |
+| **Historical heap experiment** — 1,024-chunk chains, capacity 8,192, Apple arm64 | The earlier heap reduced churn **788 → 208 ms**. Current teaching code deliberately uses an O(n) leaf scan instead; these are not current timings. | [Eviction trade-off](docs/eviction-performance.md) |
 | **LRU versus LFU policies** — 5,000 shared-prefix requests, capacity 48 | In the fixed 2026 seed run, LFU reached **56.16% / 85.21%** hit rate on uniform / Zipf versus LRU's **52.70% / 80.68%**, with fewer evictions in both cases. | [Policy comparison](docs/eviction-performance.md#policy-comparison-experiment) |
 
 The same TTFT experiment found disk L2 slower than recomputation at every

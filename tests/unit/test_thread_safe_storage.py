@@ -226,7 +226,7 @@ def test_tiered_get_waits_for_a_slow_hit_promotion(monkeypatch, tmp_path):
     fast.invalidate("a")
 
     original_fast_get = fast.get
-    original_fast_put = fast.put
+    original_fast_put = fast.try_put
     promotion_started = threading.Event()
     allow_promotion = threading.Event()
     second_get_started = threading.Event()
@@ -239,18 +239,18 @@ def test_tiered_get_waits_for_a_slow_hit_promotion(monkeypatch, tmp_path):
 
     def blocked_fast_put(
         key: str, value: object, *, parent_key: str | None = None
-    ) -> None:
+    ) -> bool:
         if key == "a":
             promotion_started.set()
             assert allow_promotion.wait(timeout=2)
-        original_fast_put(key, value, parent_key=parent_key)
+        return original_fast_put(key, value, parent_key=parent_key)
 
     def get_fast_entry() -> object | None:
         second_get_started.set()
         return storage.get("b")
 
     monkeypatch.setattr(fast, "get", signaling_fast_get)
-    monkeypatch.setattr(fast, "put", blocked_fast_put)
+    monkeypatch.setattr(fast, "try_put", blocked_fast_put)
     with ThreadPoolExecutor(max_workers=2) as executor:
         promotion_future = executor.submit(storage.get, "a")
         assert promotion_started.wait(timeout=2)
