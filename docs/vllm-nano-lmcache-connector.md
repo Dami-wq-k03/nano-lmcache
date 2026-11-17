@@ -33,14 +33,13 @@ sequenceDiagram
         W->>W: save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
     end
     W->>W: wait_for_save()
-    W->>W: get_transfer_results(finished_req_ids)
-    W->>W: get_block_ids_with_load_errors()
-    W->>W: clear_connector_metadata()
+    W->>W: get_finished(finished_req_ids)
+    W->>W: get_kv_connector_kv_cache_events()
     W-->>S: aggregated connector output
     S->>S: update_connector_output(connector_output)
 ```
 
-## NanoLMCacheConnector lifecycle tracing
+## NanoLMCacheConnector hook flow
 
 This is a concrete example with small prompts so slot numbers stay readable. It
 uses Qwen3-0.6B (28 layers, 8 KV heads, `head_dim = 128`), BF16 KV,
@@ -57,10 +56,6 @@ APC off, and a shared `remote_cache`. One stored chunk has shape
 - After A, the external cache holds A's chunks 0–2. B can load chunks 0–1
   (32 tokens) and must compute and publish chunk 2.
 
-Every hook also emits one `_log_call()` line with the process ID, role, call
-number, step, request IDs, method name, and arguments. The flows below omit
-that logging line.
-
 The hook order for B is:
 
 1. scheduler `get_num_new_matched_tokens` returns `(32, False)`;
@@ -69,38 +64,31 @@ The hook order for B is:
    save-skip=32;
 4. worker `bind_connector_metadata` installs that metadata;
 5. worker `start_load_kv` scatters chunks 0–1;
-6. worker `wait_for_layer_load` waits for each layer's copy;
+6. worker `wait_for_layer_load` checks that `start_load_kv` ran;
 7. attention computes tokens 32–47;
 8. worker `save_kv_layer` collects chunk 2 layer by layer;
 9. worker `wait_for_save` verifies all 28 layers arrived;
-10. worker `get_transfer_results`, `get_finished`, and
-    `get_block_ids_with_load_errors` return their per-step results;
-11. worker `clear_connector_metadata` clears the step;
-12. scheduler `update_connector_output` consumes the worker feedback;
-13. scheduler `request_finished` drops the request state;
-14. worker `shutdown` releases connector state when the engine exits.
+10. worker `get_finished` and `get_kv_connector_kv_cache_events` return their
+    per-step results (both empty);
+11. scheduler `update_connector_output` consumes the worker feedback;
+12. scheduler `request_finished` drops the request state;
+13. worker `shutdown` releases connector state when the engine exits.
 
 ### __init__ (scheduler and worker)
 
 1. Store the transfer role, `block_size`, `chunk_size = block_size`, and a
    namespace fingerprint over the model path/revision, HF config, dtype,
    quantization, KV dtype, TP/PP sizes, chunk size, and layout version.
-2. `_validate_scope()` rejects more than one KV cache group, non-full
-   attention, and speculative decoding.
-3. If `remote_cache` is configured, validate the shared-load scope (TP = PP =
-   1, unquantized text-only KV, one plain full-attention group with equal K/V
-   head sizes, no sliding window, no attention chunking, causal attention),
-   then parse `host`/`port` and create
+2. If `remote_cache` is configured, parse `host`/`port` and create
    `RemoteCacheClient(..., serializer=TensorSerializer())`. Both roles point
    at the same server.
-4. Create the role cache: the scheduler owns `_lookup_cache`; the worker owns
+3. Create the role cache: the scheduler owns `_lookup_cache`; the worker owns
    `_save_cache`. Both are `ChunkedPrefixCache` instances using the shared
    storage. Without `remote_cache`, each process gets a private in-memory
    cache, so worker saves are invisible to scheduler lookups.
-5. Initialize scheduler state (`_request_trackers`, `_load_specs`) or worker
+4. Initialize scheduler state (`_request_trackers`, `_load_specs`) or worker
    state (`_layer_names`, `_kv_caches`, `_pending_save_layers`,
-   `_load_errors`, `_failed_loads`, `_load_events`, `_load_started`). The
-   constructor performs no CUDA work.
+   `_load_started`). The constructor performs no CUDA work.
 
 In the example, both processes derive the same namespace, and each creates a
 client for the shared server.
@@ -171,8 +159,8 @@ Request A has no `LoadSpec`, so this hook returns immediately.
    block table, and the load spec is attached when `load_end > 0`. When
    `can_save` is true the tracker's `num_saved_tokens` advances to
    `save_end`.
-6. Increment the step number, record the scheduled request IDs, log, and
-   return `NanoLMCacheConnectorMetadata`.
+6. Increment the step number, record the scheduled request IDs, and return
+   `NanoLMCacheConnectorMetadata`.
 
 For A, the tracker is `(48 tokens, blocks [7, 2, 9], computed 0)`. The plan
 has `skip=0`, `save_end=48`, slots for all 48 tokens
@@ -201,12 +189,9 @@ the expected stored chunk shape is `[28, 2, 8, 16, 128]`.
 
 ### Worker: bind_connector_metadata
 
-1. Reset per-step load state: synchronize every CUDA event left from the
-   previous step, then clear events, load errors, failed requests, and the
-   `load_started` flag.
+1. Reset the per-step `load_started` flag.
 2. Clear pending per-layer save buffers.
-3. Remember the metadata for tracing, emit the log line, and delegate to the
-   base class.
+3. Delegate to the base class.
 
 For B this installs the one-request metadata produced by
 `build_connector_meta`; all load state starts empty.
@@ -217,20 +202,15 @@ For B this installs the one-request metadata produced by
    exist, return immediately (request A). On a no-load step, vLLM's V2
    runner may place this call after forward, which is harmless because there
    is nothing to scatter.
-2. Require registered KV layers and compute the expected chunk shape from the
-   first layer: `[num_layers, 2, num_kv_heads, chunk_size, head_dim]`.
-3. For each load request, validate that both cached counts are chunk-aligned
-   and that the external count does not exceed the recorded token IDs. On
-   failure, mark the request and all its slots as failed and continue.
-4. Compute chained keys for `token_ids[:external_cached_tokens]`. Iterate
+2. Require registered KV layers.
+3. Compute chained keys for `token_ids[:external_cached_tokens]`. Iterate
    chunk indices from `vllm_cached_tokens // 16` to
    `external_cached_tokens // 16`.
-5. Fetch each chunk from shared storage, validate shape, dtype, and
-   finiteness, then scatter it into all layers: concatenate the stored K and
-   V halves, permute to `[tokens, heads, 2 * head_dim]`, and assign
+4. For each chunk, fetch it from shared storage, then scatter it into all
+   layers: concatenate the stored K and V halves, permute to
+   `[tokens, heads, 2 * head_dim]`, and assign
    `layer[slot // block_size, :, slot % block_size]`.
-6. After all requests, set `load_started = True` and record one CUDA event per
-   layer on its current stream.
+5. After all requests, set `load_started = True`.
 
 For B, chunk indices 0 and 1 are fetched and written to slots 80–95 (block 5)
 and 128–143 (block 8) in every one of the 28 layers. Request A has no load
@@ -241,11 +221,8 @@ requests, so the method returns before touching the cache.
 1. Check whether the metadata contains any loadable request. If it does and
    `start_load_kv` has not run, raise an error; attention must not consume a
    layer before the scatter is issued.
-2. If a CUDA event was recorded for this layer, make the layer's current
-   stream wait on it.
 
-For B, each layer waits for the event recorded after its scatter. For A no
-events exist, so the hook is a no-op.
+For A no loads exist, so the hook is a no-op.
 
 ### Worker: save_kv_layer
 
@@ -255,8 +232,7 @@ events exist, so the hook is a no-op.
 3. Validate that the layer name was registered.
 4. For each request with `can_save=True`, set `start = skip_leading_tokens`
    and `end = floor(len(token_ids) / 16) * 16`. Skip if `start >= end` or
-   `start` is not chunk-aligned. Skip the whole request if it had a load
-   failure or if `[start:end]` touches a block reported as invalid.
+   `start` is not chunk-aligned.
 5. Gather `kv_layer[slots // 16, :, slots % 16]` for that span, copy it to
    CPU, split K and V, permute each to `[heads, tokens, head_dim]`, and keep
    them in `_pending_save_layers[request_id][layer_name]`.
@@ -280,84 +256,40 @@ hook, this check fails before the step can finish silently with partial KV.
 
 ### Worker: get_finished
 
-1. Log the finished request IDs.
-2. Delegate to the base implementation. This connector has no asynchronous
+1. Delegate to the base implementation. This connector has no asynchronous
    sends or receives, so the result is empty.
 
 Both A and B finish with no pending transfers.
 
-### Worker: get_transfer_results
-
-1. Log the finished request IDs.
-2. Delegate to the base implementation, which calls `get_finished()` and
-   builds an empty transfer-result snapshot.
-
-The connector does not track asynchronous transfer results.
-
 ### Worker: get_block_ids_with_load_errors
 
-1. Return a copy of `_load_errors`, whose entries are physical block IDs
-   computed from failed slot ranges.
-2. vLLM consumes these IDs through `KVConnectorOutput.invalid_block_ids` and
-   applies `kv_load_failure_policy`.
-
-On the successful A/B path the set is empty. If B's second chunk fetch failed,
-the slots 128–143 would mark block 8 invalid, and the request would either be
-recomputed or failed according to the configured policy.
-
-### Worker: clear_connector_metadata
-
-1. Delegate to the base class to clear the installed metadata.
-2. Drop the tracing reference and pending save buffers.
-3. Reset load state: synchronize events, then clear events, errors, failed
-   requests, and `load_started`.
-
-vLLM calls this after collecting feedback for a step, so the next
-`bind_connector_metadata` starts from clean worker state.
+Not overridden. The base implementation returns an empty set: the connector
+assumes every external load succeeds and does not track load failures.
 
 ### Scheduler: update_connector_output
 
-1. Log `finished_sending`, `finished_recving`, and `invalid_block_ids` from
-   the aggregated worker output.
-2. Delegate to the base class.
+1. Delegate to the base class.
 
 In the example there are no asynchronous sends, and the invalid-block set is
 empty on success.
 
 ### Scheduler: request_finished
 
-1. Log the request ID and released block IDs.
-2. Remove the request's `RequestTracker` and any leftover `LoadSpec`.
-3. Delegate to the base class. Chunks already published to the external cache
+1. Remove the request's `RequestTracker` and any leftover `LoadSpec`.
+2. Delegate to the base class. Chunks already published to the external cache
    remain available for later requests.
 
 When A and B finish, their planning state is dropped; A's chunks remain in the
 cache and are what B reused.
 
-### Worker: handle_preemptions
-
-1. Log the incoming metadata's step and request IDs.
-2. Delegate to the base class. Preemption can run before metadata is bound on
-   the worker; this connector keeps no cross-step per-request worker state, so
-   there is nothing else to clear. The scheduler drops the preempted request's
-   load spec in `build_connector_meta`.
-
-The example does not trigger preemption.
-
-### Worker: finish_forward
-
-1. Log and delegate to the base class. vLLM calls it after the model forward;
-   the connector performs no additional work.
-
 ### Worker: get_kv_connector_kv_cache_events
 
-1. Log and return `None`. This connector does not emit a KV cache event
-   stream.
+Returns `None`. This connector does not emit a KV cache event stream.
 
 ### Worker: shutdown
 
 1. Clear pending save buffers.
-2. Reset load state, synchronizing any remaining CUDA events.
+2. Reset the `load_started` flag.
 3. Delegate to the base class. Shared cache entries are not deleted; disk or
    server contents survive for a later engine.
 
