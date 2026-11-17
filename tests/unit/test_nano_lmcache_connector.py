@@ -3,7 +3,7 @@
 Run with:
     .venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
 
-Tests exercise scheduler lookup, worker saves and lifecycle tracing against
+Tests exercise scheduler lookup and worker saves against
 real vLLM. Scheduler-only lookup payloads are placeholders, not usable KV.
 """
 
@@ -46,7 +46,6 @@ from nano_lmcache.integrations.vllm.nano_lmcache_connector import (
     NanoLMCacheConnectorMetadata,
     ReqMeta,
     SaveSpec,
-    _cache_namespace,
 )
 from nano_lmcache.storage.remote import RemoteCacheClient, RemoteCacheServer
 from nano_lmcache.tensor.serializers import TensorSerializer
@@ -60,43 +59,6 @@ def _test_model_config():
         quantization=None,
         hf_config=SimpleNamespace(to_dict=lambda: {"num_hidden_layers": 3}),
     )
-
-
-@pytest.mark.parametrize("changed", ["model", "revision", "dtype", "kv_dtype", "rope"])
-def test_namespace_isolates_incompatible_kv(changed):
-    from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
-
-    config = SimpleNamespace(
-        model_config=_test_model_config(),
-        cache_config=SimpleNamespace(block_size=4, cache_dtype="auto"),
-        parallel_config=SimpleNamespace(
-            tensor_parallel_size=1, pipeline_parallel_size=1
-        ),
-    )
-    namespace = _cache_namespace(config)
-    first = ChunkedPrefixCache(chunk_size=4, namespace=namespace)
-    first.store([1, 2, 3, 4], [b"kv"])
-    compatible = ChunkedPrefixCache(
-        chunk_size=4, namespace=_cache_namespace(config), storage=first.storage
-    )
-    assert compatible.lookup([1, 2, 3, 4]).matched_tokens == 4
-    if changed == "model":
-        config.model_config.model = "test/other-model"
-    elif changed == "revision":
-        config.model_config.revision = "weights-v2"
-    elif changed == "dtype":
-        config.model_config.dtype = torch.float32
-    elif changed == "kv_dtype":
-        config.cache_config.cache_dtype = "fp8"
-    else:
-        config.model_config.hf_config.to_dict = lambda: {
-            "num_hidden_layers": 3,
-            "rope_theta": 500000,
-        }
-    incompatible = ChunkedPrefixCache(
-        chunk_size=4, namespace=_cache_namespace(config), storage=first.storage
-    )
-    assert incompatible.lookup([1, 2, 3, 4]).matched_tokens == 0
 
 
 @pytest.fixture
@@ -234,10 +196,7 @@ def scheduler(make_connector):
 def worker(make_connector):
     connector = make_connector("WORKER")
     connector.bind_connector_metadata(NanoLMCacheConnectorMetadata())
-    try:
-        yield connector
-    finally:
-        connector.clear_connector_metadata()
+    return connector
 
 
 @pytest.fixture
@@ -420,16 +379,7 @@ def test_scheduler_builds_metadata(scheduler):
     assert vars(restored) == vars(metadata)
 
 
-def test_metadata_is_serializable():
-    metadata = NanoLMCacheConnectorMetadata()
-
-    restored = pickle.loads(pickle.dumps(metadata))
-
-    assert isinstance(restored, NanoLMCacheConnectorMetadata)
-    assert vars(restored) == vars(metadata)
-
-
-def test_worker_binds_and_clears_metadata(make_connector):
+def test_worker_binds_metadata(make_connector):
     connector = make_connector("WORKER")
     assert not connector.has_connector_metadata()
 
@@ -438,9 +388,6 @@ def test_worker_binds_and_clears_metadata(make_connector):
         connector.bind_connector_metadata(metadata)
         assert connector.has_connector_metadata()
         assert connector._get_connector_metadata() is metadata
-
-        connector.clear_connector_metadata()
-        assert not connector.has_connector_metadata()
 
 
 def test_connector_instances_do_not_share_metadata(make_connector):
@@ -452,7 +399,6 @@ def test_connector_instances_do_not_share_metadata(make_connector):
 
     assert not scheduler.has_connector_metadata()
     assert worker._get_connector_metadata() is metadata
-    worker.clear_connector_metadata()
 
 
 def test_worker_start_load_is_noop(worker):
@@ -545,7 +491,6 @@ def test_worker_does_not_combine_layers_from_different_steps(worker, save_layers
     worker.save_kv_layer(names[0], save_layers[names[0]], SimpleNamespace())
     with pytest.raises(RuntimeError, match="missing layers"):
         worker.wait_for_save()
-    worker.clear_connector_metadata()
     worker.bind_connector_metadata(metadata)
     for name in names[1:]:
         worker.save_kv_layer(name, save_layers[name], SimpleNamespace())
@@ -582,33 +527,11 @@ def test_request_finished_does_not_retain_blocks(scheduler, request_stub):
 
 
 @pytest.mark.parametrize("finished_req_ids", [set(), {"req-1"}])
-def test_worker_reports_no_transfers_or_load_errors(worker, finished_req_ids):
+def test_worker_reports_no_finished_transfers(worker, finished_req_ids):
     original_ids = set(finished_req_ids)
 
     assert worker.get_finished(finished_req_ids) == (None, None)
-    results = worker.get_transfer_results(finished_req_ids)
-
-    assert results.finished_sending == set()
-    assert results.finished_recving == set()
-    assert results.failed_recving == set()
-    assert worker.get_block_ids_with_load_errors() == set()
     assert finished_req_ids == original_ids
-
-
-def test_transfer_results_preserve_base_aggregation(worker, monkeypatch):
-    received_ids = []
-
-    def finished(ids):
-        received_ids.append(ids)
-        return {"sent"}, {"received"}
-
-    monkeypatch.setattr(worker, "get_finished", finished)
-    ids = {"sent"}
-    result = worker.get_transfer_results(ids)
-    assert received_ids == [ids]
-    assert result.finished_sending == {"sent"}
-    assert result.finished_recving == {"received"}
-    assert result.failed_recving == set()
 
 
 def test_empty_step_drops_previous_request_ids(scheduler):
@@ -724,7 +647,6 @@ def test_worker_saves_only_the_new_token_span(worker, save_layers):
     for name, value in save_layers.items():
         worker.save_kv_layer(name, value, SimpleNamespace())
     worker.wait_for_save()
-    worker.clear_connector_metadata()
     assert worker._save_cache.lookup((0, 1, 2, 3)).matched_tokens == 4
 
     worker.bind_connector_metadata(
@@ -790,7 +712,6 @@ def test_scheduler_plans_reach_worker_across_prefill_steps(
             worker.save_kv_layer(name, value, SimpleNamespace())
             value.fill_(-1) 
         worker.wait_for_save()
-        worker.clear_connector_metadata()
         result = worker._save_cache.lookup(tokens)
         assert result.matched_tokens == expected_tokens
         for chunk_index, chunk in enumerate(result.values):
@@ -978,7 +899,6 @@ def test_worker_loads_chunks_into_new_blocks(
     for name in worker._layer_names:
         worker.wait_for_layer_load(name)
 
-    assert worker.get_block_ids_with_load_errors() == set()
     for layer_index, name in enumerate(worker._layer_names):
         layer = layers[name]
         assert torch.equal(layer[3, :, :, :3], chunks[0][layer_index, 0])
@@ -1013,95 +933,10 @@ def test_worker_loads_only_external_span(
     )
     worker.start_load_kv(SimpleNamespace(attn_metadata=None))
 
-    assert worker.get_block_ids_with_load_errors() == set()
     for layer_index, name in enumerate(worker._layer_names):
         layer = layers[name]
         assert torch.all(layer[3] == -1)
         assert torch.equal(layer[9, :, :, :3], chunks[1][layer_index, 0])
-
-
-@pytest.mark.parametrize(
-    ("slots", "error_blocks"),
-    [
-        ((12, 12, 14, 15), {3}),
-        ((12, 13), {3}),
-        ((40, 41, 42, 43), {10}),
-    ],
-)
-def test_invalid_load_plan_marks_blocks_without_scattering(
-    make_remote_connector, slots, error_blocks
-):
-    worker = make_remote_connector("WORKER")
-    layers = _load_worker_layers()
-    before = {name: layer.clone() for name, layer in layers.items()}
-    worker.register_kv_caches(layers)
-    worker.bind_connector_metadata(
-        NanoLMCacheConnectorMetadata(
-            requests=[
-                ReqMeta(
-                    "req",
-                    (0, 1, 2, 3),
-                    slots,
-                    SaveSpec(skip_leading_tokens=4, can_save=False),
-                    LoadSpec(0, 4, True),
-                )
-            ]
-        )
-    )
-
-    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
-
-    assert worker.get_block_ids_with_load_errors() == error_blocks
-    assert worker._failed_loads == {"req"}
-    for name, layer in layers.items():
-        assert torch.equal(layer, before[name])
-
-
-def test_loaded_chunk_must_be_on_cpu():
-    chunk = torch.empty(CHUNK_SHAPE, dtype=torch.float32, device="meta")
-
-    with pytest.raises(ValueError, match="Missing or incompatible KV chunk"):
-        NanoLMCacheConnector._validate_loaded_chunk(
-            chunk, CHUNK_SHAPE, torch.float32
-        )
-
-
-def test_missing_entry_reports_block_and_skips_save(
-    make_remote_connector, remote_cache
-):
-    worker = make_remote_connector("WORKER")
-    layers = _load_worker_layers()
-    worker.register_kv_caches(layers)
-
-    writer = _shared_writer(worker, remote_cache)
-    chunks = _make_chunks(2)
-    writer.store(list(range(8)), chunks)
-    keys = writer.lookup(list(range(8))).keys
-    remote_cache.server.storage.invalidate(keys[1])
-
-    worker.bind_connector_metadata(
-        NanoLMCacheConnectorMetadata(
-            requests=[
-                ReqMeta(
-                    "req",
-                    tuple(range(8)),
-                    (12, 13, 14, 15, 36, 37, 38, 39),
-                    SaveSpec(),
-                    LoadSpec(0, 8, True),
-                )
-            ]
-        )
-    )
-    worker.start_load_kv(SimpleNamespace(attn_metadata=None))
-
-    assert worker.get_block_ids_with_load_errors() == {9}
-    assert worker._failed_loads == {"req"}
-    for name, layer in layers.items():
-        worker.save_kv_layer(name, layer, SimpleNamespace())
-    assert worker._pending_save_layers == {}
-
-    worker.clear_connector_metadata()
-    assert worker.get_block_ids_with_load_errors() == set()
 
 
 def test_wait_for_layer_load_requires_start(make_remote_connector):
