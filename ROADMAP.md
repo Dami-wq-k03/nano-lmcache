@@ -54,16 +54,16 @@ Done (pure Python, no GPU dependency):
       survives restarts (`storage/disk.py`, M4)
 - [x] Write-through tiered storage `TieredStorage`, memory in front of
       disk (`storage/tiered.py`, M5)
-- [x] O(log n) leaf-heap eviction with the exact same LRU order (M2) and
-      byte-based capacity for the memory backend (M3)
+- [x] Exact LRU leaf eviction; M2's heap experiment is documented, but the
+      teaching implementation uses a linear scan. Byte-based memory capacity (M3).
 - [x] Store only missing suffix chunks in the HuggingFace runner and prefix
       cache demo (`start_chunk` in `core/prefix_cache.py`, M6)
 - [x] Disk checksums and subtree recovery (M7), a read-only cache inspector
       (`inspect.py`, M8), and byte-based disk capacity (M9)
 - [x] Thread-safe access to shared memory, disk, and tiered storage instances
       and synchronized lookup metrics (M10; no shared-directory multi-process writes)
-- [x] Pluggable prefix-safe eviction policies: heap-based LRU (default) and
-      LFU with bounded lazy candidates, shared by memory, disk, and CPU offload
+- [x] Pluggable prefix-safe eviction scores: LRU (default) and LFU, with
+      access state owned by the shared index, not by policy objects
       (`storage/eviction_policies.py`, M11)
 - [x] Length-prefixed JSON shared cache server with batch lookup and bounded
       write-behind storage (`storage/remote.py`, `storage/async_write.py`, M12
@@ -332,8 +332,11 @@ alone can hide problems.
 
 ### M2: Make eviction cheaper than a linear scan
 
-**Status: done** (leaf heap in `storage/eviction.py`,
-`docs/eviction-performance.md`).
+**Status: experiment completed; heap optimization retired for teaching simplicity.**
+The current `storage/eviction.py` uses an O(n) leaf scan with the same prefix
+safety and LRU/LFU ordering. The historical measurements remain in
+`docs/eviction-performance.md`; large eviction-heavy caches trade speed for
+readability. The specification below records the original M2 experiment.
 
 `PrefixLRUIndex._find_victim` (shared by the memory, disk, and CPU
 offload backends) scans from the oldest entry looking for the
@@ -560,12 +563,12 @@ assumed.
 
 ### M11: Pluggable eviction policies
 
-**Status: done.** `storage/eviction.py` now owns prefix-tree mechanics while
-`storage/eviction_policies.py` provides independent heap-backed LRU (the
-backward-compatible default) and LFU policies. Memory, disk, and CPU-offload
-backends accept the same policy configuration. LFU keeps frequency for
-internal nodes, uses recency and stable key tie-breakers, and resets recovered
-frequencies to 1 without changing the disk format.
+**Status: done.** `storage/eviction.py` owns prefix relationships and access
+records; `storage/eviction_policies.py` supplies stateless LRU (the default)
+and LFU scores. Memory, disk, and CPU-offload backends share the configuration.
+Policies no longer need factories, copied state, or lifecycle callbacks.
+LFU keeps frequency for internal nodes, uses recency and stable key tie-breakers,
+and resets recovered frequencies to 1 without changing the disk format.
 
 The reproducible comparison workload in `benchmarks/bench_prefix_cache.py`
 contains uniform and Zipf/skewed shared-system/user requests. The report in

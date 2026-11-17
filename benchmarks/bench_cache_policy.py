@@ -66,10 +66,7 @@ def simulate(
         if mode not in ("cost-aware", "cost-aware+admission"):
             raise ValueError("unknown policy mode")
 
-        def cost_policy() -> CostAwareEvictionPolicy:
-            return CostAwareEvictionPolicy(values.get)
-
-        policy = cost_policy
+        policy = CostAwareEvictionPolicy(values.get)
     storage = MemoryKVCache(
         max_bytes=capacity_bytes,
         size_fn=lambda value: cast(CacheValue, value).nbytes,

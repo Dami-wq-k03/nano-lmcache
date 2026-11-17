@@ -37,7 +37,7 @@ results are measurements under those conditions, not universal speedup claims.
 
 | Report | Question |
 | --- | --- |
-| [Eviction performance](eviction-performance.md) | How does a leaf heap preserve LRU order while reducing victim-selection cost? |
+| [Eviction performance](eviction-performance.md) | Why use a simple leaf scan now, and what did the earlier heap and policy experiments measure? |
 | [INT8 KV compression](quantized-kv.md) | How much space does quantization save, and what errors and latency does it add? |
 | [nano-vLLM TTFT](nanovllm-benchmark.md) | When do memory/disk loads cost less than recomputing the prefix? |
 | [GPU/data-plane experiments](gpu-experiment-report.md) | What do pinned/asynchronous copies, page operations, INT8, restart recovery, and write-behind measure on the development GPU? |

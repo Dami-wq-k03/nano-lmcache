@@ -403,30 +403,18 @@ its ancestors cannot fit, the old payload and all other entries remain
 unchanged. A successful overwrite refreshes recency; shrinking frees
 bytes for later writes.
 
-The default LRU victim selector uses a min-heap of
-`(last_access_tick, key)` leaf candidates in bounded indexes (either
-`max_entries` or `max_bytes` set). A new entry enters as a leaf; a hit or
-overwrite records a new tick. Old records are discarded lazily when a key is
-gone, has children, or has a newer tick. After a last child is evicted, its
-parent enters the heap using its **original last access tick**, so becoming a
-leaf does not change LRU order. LFU uses the same candidate lifecycle but its
-priority is `(frequency, last_access_tick, key)` and its internal-node
-frequencies are retained.
+Each key has one metadata record: parent, size, frequency, and last-access tick.
+On eviction, the index collects all parent keys, then scans keys not in that
+set (leaves), excluding the protected incoming parent or overwritten key.
+The lowest policy score wins; the key breaks ties deterministically. A parent
+that becomes a leaf keeps its original access record, not a fresh timestamp.
 
-Lazy records are periodically compacted once the heap exceeds both 64
-records and twice the number of stored entries. This keeps auxiliary memory
-O(n) and candidate maintenance O(log n) amortized. Individual operations can
-still discard many stale records or rebuild the heap. The 64-record floor
-avoids frequent rebuilds for tiny caches; above 2n records, at least n are
-stale or duplicate because at most n records are needed for current leaves.
-The O(n) rebuild costs O(1) per preceding addition when amortized, but the
-operation that triggers it can experience a latency spike.
-
-Unbounded LRU indexes do not maintain candidate ticks because they never
-select a victim. LFU still records frequencies so its state is available for
-diagnostics, although no heap is needed until a bounded index is created.
-The [performance report](eviction-performance.md) compares LRU and LFU on
-uniform and skewed shared-prefix workloads.
+This is deliberately O(n) per victim, or O(k·n) for a write evicting k entries.
+Hits and metadata updates are O(1), and metadata occupies O(n) space. There is
+no candidate heap, stale-record cleanup, generation counter, or compaction.
+Large caches under heavy eviction can be slower; readability is the priority
+here. The [performance report](eviction-performance.md) preserves the earlier
+heap experiment as historical evidence, not timings for the current code.
 
 Together these keep the invariant that every stored entry has its whole
 ancestor chain stored, so eviction never strands memory. Callers pass the
@@ -454,54 +442,27 @@ the lost suffix, which the metrics count as misses.
 
 ### Pluggable eviction policies
 
-Prefix safety and eviction order are deliberately separate layers:
+Prefix safety and eviction order are separate, without a policy framework:
 
-- `PrefixIndex` (`storage/eviction.py`) owns parent/child links, leaf status,
-  protected incoming chains, admission/rejection, entry limits, and byte
-  accounting. It never sees payload objects.
-- `EvictionPolicy` (`storage/eviction_policies.py`) owns access metadata and
-  ranks only the keys that the index reports as leaves. It does not maintain a
-  second prefix tree. When a child disappears, the index marks the parent as a
-  candidate and the policy reuses that node's existing access state.
+- `PrefixIndex` (`storage/eviction.py`) owns parent links, access records,
+  admission, capacity, and byte accounting. It never sees payloads.
+- `EvictionPolicy` (`storage/eviction_policies.py`) is a stateless scorer with a
+  `name` and `__call__(key, frequency, last_access) -> tuple[float, ...]`.
+  The index supplies access metadata and only scores eligible leaves.
 
-The memory, disk, and CPU-offload backends accept `eviction_policy="lru"` or
-`eviction_policy="lfu"`; the default is `"lru"`. A policy object or factory is
-copied/constructed per index, so two cache instances do not share mutable
-access state. In a `TieredStorage`, configure each tier independently; each
-tier must preserve a complete chain of its own.
+Memory, disk, and CPU-offload backends accept `eviction_policy="lru"` (default)
+or `"lfu"`. A custom scorer such as `CostAwareEvictionPolicy(values.get)` is
+passed directly, not through a factory. The old lifecycle callback/factory API
+is intentionally removed. Scorers need no copied state; even when shared by two
+caches, each cache's frequencies and access ticks remain independent.
 
-#### LRU
+LRU scores by last-access tick. LFU scores by frequency, then last-access tick.
+New keys start at frequency 1. A real hit increments frequency; a successful
+overwrite only refreshes recency. Internal nodes retain both values, so losing
+a child does not reset the parent's history. The final tie-breaker is the key.
 
-`LRUEvictionPolicy` preserves the original behavior. A bounded index keeps a
-min-heap of `(last_access_tick, key)` leaf candidates. Hits and overwrites add a
-new lazy record; internal-node hits update their tick without making them
-eligible. Removing the last child exposes the parent using its previous tick,
-not a fresh access. A protected incoming parent is skipped for that admission
-and returned to the heap. Stale records are discarded lazily, and the heap is
-rebuilt above 64 records and twice the number of stored entries. Candidate
-operations are O(log n) amortized, with an occasional O(n) compaction.
-
-#### LFU
-
-`LFUEvictionPolicy` initializes every stored key at frequency 1. A real
-`get`/`touch` increments frequency and refreshes the last-access tick. A
-successful overwrite refreshes recency but is not counted as a cache hit. A
-leaf is ranked by `(frequency, last_access_tick, key)`, so lower frequency wins,
-then the older access, then stable lexicographic key order. Frequency state is
-kept for internal nodes too: if `A -> B -> C` loses `C`, `B` becomes a leaf
-with its accumulated frequency rather than being reset.
-
-LFU uses the same lazy min-heap and compaction thresholds as LRU. The prefix
-index still decides which keys are legal victims, so LFU cannot remove an
-internal node or an incoming protected ancestor. Heap records remain O(n)
-bounded; normal updates are O(log n) amortized and an occasional compaction is
-O(n).
-
-Disk recovery does not persist a new frequency field or change the entry-file
-format. Reopening a disk cache restores each key at LFU frequency 1 and uses
-file mtime only as the last-access tie-breaker; replaying mtime never calls
-`touch` and therefore never manufactures LFU hits. LRU continues to recover
-its exact recency order. This reset is intentional and should be considered
+Disk recovery keeps the same entry-file format. Frequencies restart at 1;
+file mtimes restore recency without replaying fake hits. This reset matters
 when comparing a fresh process with a warm one.
 
 
@@ -656,9 +617,11 @@ the way LMCache keeps hot chunks in memory and the long tail on disk.
   descendants. If the fast tier rejects an overwrite, `TieredStorage`
   invalidates that subtree so reads use the updated slow copy. Removed
   entries count as evictions; unrelated entries retain their recency.
-  Standalone `put` still preserves the old payload on rejection. Custom
-  fast tiers that can reject overwrites should implement these methods.
-  `DiskKVCache.try_put` also reports admission: rejected slow-tier overwrites
+  Standalone `put` still preserves the old payload on rejection.
+  Both tiers must expose `try_put`, membership, `keys`, and `parent_of`; the
+  fast tier must also expose `invalidate`. There is no runtime capability
+  probing or fallback for put-only tiers. `DiskKVCache.try_put` also reports
+  admission: rejected slow-tier overwrites
   leave the fast copy unchanged. Rejected new entries may still fit fast memory.
 - **Invariant**: each tier keeps whole chains on its own, so their union
   does too. A randomized test checks this after every step.

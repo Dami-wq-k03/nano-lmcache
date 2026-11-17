@@ -1,6 +1,6 @@
 """Small policy research baselines, not workload-independent optimizers.
 
-Victim ranking reuses LFU access/leaf state; PrefixIndex still owns the tree.
+Victim ranking is a score function; PrefixIndex owns access state and the tree.
 Reuse distance is an exact reference analyzer, not a scalable trace processor.
 Prefetch feedback describes completed windows, never still-in-flight bytes.
 """
@@ -10,8 +10,6 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
-
-from nano_lmcache.storage.eviction_policies import LFUEvictionPolicy
 
 
 def _nonnegative(*values: float) -> None:
@@ -50,62 +48,23 @@ def admission_score(
 
 
 class CostAwareEvictionPolicy:
-    """Evict the lowest LFU-frequency * saved-ms/byte eligible leaf.
+    """Score a leaf by frequency * saved-ms/byte, with recency as a tie-breaker.
 
-    Metadata is queried at selection, so known costs can change without stale
-    priorities. Unknown/non-beneficial values have score zero, with LRU/key
-    ties. Selection scans leaves; there is no extra heap or prefix tree.
-    Use a factory (lambda: CostAwareEvictionPolicy(values.get)) when injecting
-    into storage, to keep a live callback rather than a deep-copied template.
+    Costs are queried at selection so metadata can change without stale scores.
+    Pass this object directly as eviction_policy; access state stays in the index.
     """
 
     name = "cost-aware"
 
     def __init__(self, value_of: Callable[[str], CacheValue | None]) -> None:
         self._value_of = value_of
-        self._access = LFUEvictionPolicy()
 
-    def on_insert(self, key: str, *, is_leaf: bool) -> None:
-        self._access.on_insert(key, is_leaf=is_leaf)
-
-    def on_touch(self, key: str, *, is_leaf: bool) -> None:
-        self._access.on_touch(key, is_leaf=is_leaf)
-
-    def on_write(self, key: str, *, is_leaf: bool) -> None:
-        self._access.on_write(key, is_leaf=is_leaf)
-
-    def on_remove(self, key: str) -> None:
-        self._access.on_remove(key)
-
-    def on_leaf_status_change(self, key: str, *, is_leaf: bool) -> None:
-        self._access.on_leaf_status_change(key, is_leaf=is_leaf)
-
-    def on_restore(self, key: str, *, is_leaf: bool) -> None:
-        self._access.on_restore(key, is_leaf=is_leaf)
-
-    def on_restore_access(self, key: str, access_tick: int) -> None:
-        self._access.on_restore_access(key, access_tick)
-
-    def frequency_of(self, key: str) -> int:
-        return self._access.frequency_of(key)
-
-    @property
-    def heap_size(self) -> int:
-        return self._access.heap_size
-
-    def choose_victim(self, protected: str | None) -> str | None:
-        recency = self._access.last_access
-
-        def rank(key: str) -> tuple[float, int, str]:
-            value = self._value_of(key)
-            score = max(0.0, admission_score(value)) if value is not None else 0.0
-            return (score * self.frequency_of(key), recency[key], key)
-
-        return min(
-            (key for key in self._access._leaf_keys if key != protected),
-            key=rank,
-            default=None,
-        )
+    def __call__(
+        self, key: str, frequency: int, last_access: int
+    ) -> tuple[float, ...]:
+        value = self._value_of(key)
+        score = max(0.0, admission_score(value)) if value is not None else 0.0
+        return (score * frequency, last_access)
 
 
 def reuse_distances(keys: Iterable[Hashable]) -> list[int | None]:

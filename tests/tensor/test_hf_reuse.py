@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import patch
 
 import pytest
@@ -110,6 +111,35 @@ def test_reuse_saves_computation(model, cache):
 
     assert result.computed_tokens < len(shared) + 3
     assert result.matched_tokens == 12
+
+
+@pytest.mark.gpu
+def test_bounded_offload_and_disk_chunks_can_be_joined(model, tmp_path):
+    from nano_lmcache.storage.disk import DiskKVCache
+    from nano_lmcache.storage.tiered import TieredStorage
+    from nano_lmcache.tensor.offload import CPUOffloadKVCache
+    from nano_lmcache.tensor.serializers import TensorSerializer
+
+    gpu_model = copy.deepcopy(model).cuda()
+    fast = CPUOffloadKVCache(device="cuda", max_entries=1)
+    slow = DiskKVCache(tmp_path, serializer=TensorSerializer())
+    storage = TieredStorage(fast=fast, slow=slow)
+    cache = ChunkedPrefixCache(
+        chunk_size=CHUNK_SIZE, namespace=namespace_for(gpu_model), storage=storage
+    )
+    shared = list(range(1, 9))
+    run_with_prefix_cache(gpu_model, cache, shared + [50])
+    # The first chunk comes from GPU offload, the second from CPU disk.
+    for _ in range(2):
+        result = run_with_prefix_cache(gpu_model, cache, shared + [90, 91])
+        with torch.no_grad():
+            expected = gpu_model(torch.tensor([shared + [90, 91]], device="cuda"))
+        assert result.matched_tokens == 8
+        torch.testing.assert_close(
+            result.logits, expected.logits[:, 8:], atol=1e-4, rtol=1e-4
+        )
+    assert len(fast) == 1 and len(slow) == 2
+    assert storage.tier_stats.slow_hits == 2
 
 
 def test_identical_prompt_still_recomputes_the_last_token(model, cache):
