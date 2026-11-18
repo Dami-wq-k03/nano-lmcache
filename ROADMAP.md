@@ -945,11 +945,14 @@ stored exactly once; the N4 correctness tests still pass.
 
 ### N6: Faster disk tier reads
 
-**Status: packed/batched and prefetch baselines measured; engine integration open.**
-[Serving validation](docs/serving-validation-report.md) records cold/warm NVMe
-component results and cold-disk external generation. The serving path still
-fetches individual payloads; connect batched reads to the engine path and
-remeasure before claiming an end-to-end latency improvement.
+**Status: packed/batched reads are connected to nano-vLLM; real-engine
+remeasurement remains open.** [Serving validation](docs/serving-validation-report.md)
+records cold/warm NVMe component results and the earlier cold-disk external
+run. Batch-capable storage now supplies a requested external span through one
+`get_many()` call, while simple backends retain scalar fallback. The remote
+server also preserves a packed backend's batch operation instead of expanding
+it back into individual reads. Remeasure this path in the real engine before
+claiming an end-to-end latency improvement.
 
 Reading a 28 MiB block from `DiskKVCache` costs about 17 ms from the page
 cache (10 ms copying the file into Python bytes, 7 ms in `torch.load`) and

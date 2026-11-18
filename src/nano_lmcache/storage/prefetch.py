@@ -5,14 +5,8 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Protocol, runtime_checkable
 
-from nano_lmcache.storage.protocol import CacheStorage
-
-
-@runtime_checkable
-class _BatchReader(Protocol):
-    def get_many(self, keys: Sequence[str]) -> list[object | None]: ...
+from nano_lmcache.storage.protocol import BatchReadableStorage, CacheStorage
 
 
 class AsyncPrefetchStorage:
@@ -94,7 +88,7 @@ class AsyncPrefetchStorage:
             self._pending.discard(future)
 
     def _load(self, keys: Sequence[str]) -> list[object | None]:
-        if isinstance(self.backend, _BatchReader):
+        if isinstance(self.backend, BatchReadableStorage):
             return self.backend.get_many(keys)
         return [self.backend.get(key) for key in keys]
 

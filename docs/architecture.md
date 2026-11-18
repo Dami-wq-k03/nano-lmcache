@@ -101,7 +101,12 @@ threads. It can regress latency, so it is not selected automatically.
 pinned-host staging. Callers keep inputs immutable until completion and release
 transfer buffers only after the corresponding event.
 
-`storage/remote.py` exposes batch lookup over a local TCP service.
+`storage/remote.py` exposes batch lookup over a local TCP service. The optional
+`BatchReadableStorage` capability keeps the minimal storage contract small while
+letting the remote server preserve a packed backend's coalesced `get_many()` and
+letting nano-vLLM restore an external span with one batch call. Remote batch
+responses stream over bounded frames without splitting an individual payload.
+Backends without that capability retain scalar reads.
 `storage/async_write.py` queues owned, immutable payloads, rejects submissions
 while closing, drains accepted writes and stops its worker even after a backend
 failure. A pending key's read waits for committed data. The nano-vLLM demo's
