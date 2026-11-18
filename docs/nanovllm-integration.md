@@ -187,7 +187,11 @@ backend does.
 `count_hits` and `fetch` never go past `max_reusable_blocks`, the
 last-block limit of rule 1. Blocks L2 holds always form a prefix of the
 prompt, because storage is prefix-safe, so `missing_blocks` is simply
-"everything from the first missing block on".
+"everything from the first missing block on". If storage implements the
+optional `BatchReadableStorage` capability, `fetch` reads its requested external
+span with one `get_many()` operation; ordinary storage retains the scalar
+fallback. Either path stops restoring at the first miss, including a miss caused
+by an unreachable remote server.
 
 ## The integration
 

@@ -37,7 +37,7 @@ from nano_lmcache.core.chunking import chunk_tokens, make_chunk_key
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout
 from nano_lmcache.observability.context import current_request_id
 from nano_lmcache.observability.recorder import TraceRecorder
-from nano_lmcache.storage.protocol import CacheStorage
+from nano_lmcache.storage.protocol import BatchReadableStorage, CacheStorage
 
 
 @runtime_checkable
@@ -186,11 +186,22 @@ class NanoVLLMExternalCache:
                 "is always computed)"
             )
 
+        if num_blocks == 0:
+            return []
+
         keys = self.block_keys(token_ids, start_block + num_blocks)
+        requested_keys = keys[start_block : start_block + num_blocks]
+        if isinstance(self._storage, BatchReadableStorage):
+            stored = self._storage.get_many(requested_keys)
+            if len(stored) != len(requested_keys):
+                raise ValueError("get_many must return one result per requested key")
+        else:
+            stored = [self._storage.get(key) for key in requested_keys]
+
         payloads: list[torch.Tensor] = []
-        for index in range(start_block, start_block + num_blocks):
-            key = keys[index]
-            payload = self._storage.get(key)
+        for index, (key, payload) in enumerate(
+            zip(requested_keys, stored, strict=True), start=start_block
+        ):
             if payload is None:
                 self.record_event(
                     "l2_restore", chunk_index=index, key=key, result="miss"

@@ -19,6 +19,7 @@ from nano_lmcache.integrations.nanovllm.kv_blocks import (  # noqa: E402
     import_block,
 )
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout  # noqa: E402
+from nano_lmcache.storage.coalesced import CoalescedDiskKVCache  # noqa: E402
 from nano_lmcache.storage.disk import DiskKVCache  # noqa: E402
 from nano_lmcache.storage.memory import MemoryKVCache  # noqa: E402
 from nano_lmcache.storage.tiered import TieredStorage  # noqa: E402
@@ -77,6 +78,17 @@ class RecordingStorage(MemoryKVCache):
     def put(self, key, value, *, parent_key=None):
         self.puts.append(key)
         super().put(key, value, parent_key=parent_key)
+
+
+class RecordingBatchStorage(RecordingStorage):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.get_many_calls = []
+
+    def get_many(self, keys):
+        snapshot = tuple(keys)
+        self.get_many_calls.append(snapshot)
+        return [MemoryKVCache.get(self, key) for key in snapshot]
 
 
 @pytest.fixture
@@ -211,6 +223,62 @@ def test_fetch_from_a_start_block_skips_the_l1_hits():
 
     assert len(payloads) == 2
     assert storage.gets == list(cache.block_keys(prompt)[2:4])
+
+
+def test_fetch_uses_one_batch_read_for_the_external_span():
+    storage = RecordingBatchStorage()
+    cache = NanoVLLMExternalCache(LAYOUT, storage)
+    prompt = tokens(4, extra=1)
+    save(cache, prompt, make_kv_cache(), [0, 1, 2, 3], 4)
+
+    payloads = cache.fetch(prompt, 1, 3)
+
+    assert len(payloads) == 3
+    assert storage.get_many_calls == [cache.block_keys(prompt)[1:4]]
+    assert storage.gets == []
+
+
+def test_fetch_coalesces_packed_disk_reads(tmp_path):
+    with CoalescedDiskKVCache(
+        tmp_path, serializer=TensorSerializer()
+    ) as storage:
+        cache = NanoVLLMExternalCache(LAYOUT, storage)
+        prompt = tokens(3, extra=1)
+        save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
+
+        assert len(cache.fetch(prompt, 0, 3)) == 3
+        assert storage.read_ops == 1
+
+
+def test_batch_fetch_stops_at_the_first_missing_payload():
+    class GappedBatchStorage(RecordingBatchStorage):
+        def get_many(self, keys):
+            values = super().get_many(keys)
+            return [values[0], None, values[2]]
+
+    storage = GappedBatchStorage()
+    cache = NanoVLLMExternalCache(LAYOUT, storage)
+    prompt = tokens(3, extra=1)
+    save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
+
+    payloads = cache.fetch(prompt, 0, 3)
+
+    assert len(payloads) == 1
+    assert cache.stats.fetched_blocks == 1
+
+
+def test_batch_fetch_rejects_a_result_with_the_wrong_length():
+    class ShortBatchStorage(RecordingBatchStorage):
+        def get_many(self, keys):
+            return super().get_many(keys)[:-1]
+
+    storage = ShortBatchStorage()
+    cache = NanoVLLMExternalCache(LAYOUT, storage)
+    prompt = tokens(2, extra=1)
+    save(cache, prompt, make_kv_cache(), [0, 1], 2)
+
+    with pytest.raises(ValueError, match="one result per requested key"):
+        cache.fetch(prompt, 0, 2)
 
 
 def test_fetch_returns_fewer_blocks_if_some_were_evicted():

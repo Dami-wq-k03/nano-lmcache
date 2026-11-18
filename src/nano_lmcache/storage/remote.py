@@ -1,9 +1,10 @@
 """A small JSON-framed shared cache server for multi-process experiments.
 
 The wire format carries serializer bytes as base64 inside length-prefixed JSON
-frames. It is deliberately boring: no pickle, no executable payloads, and a
-bounded frame size. The server reuses the existing prefix-safe in-memory
-backend, so parent admission and eviction semantics remain unchanged.
+frames. Batch responses stream across as many bounded frames as needed without
+splitting an individual payload. There is no pickle or executable payload. The
+server reuses the existing prefix-safe in-memory backend, so parent admission
+and eviction semantics remain unchanged.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from nano_lmcache.storage.memory import MemoryKVCache
+from nano_lmcache.storage.protocol import BatchReadableStorage
 from nano_lmcache.storage.serializers import JsonSerializer, Serializer
 
 _DEFAULT_MAX_FRAME = 64 * 1024 * 1024
@@ -89,6 +91,40 @@ def _encode_payload(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
 
+def _batch_response_frames(
+    payloads: list[str | None], *, max_frame_size: int
+) -> list[dict[str, Any]]:
+    """Split one logical batch response without splitting any payload."""
+    empty_frame_size = len(
+        json.dumps(
+            {"ok": True, "payloads": [], "more": False}, separators=(",", ":")
+        ).encode("utf-8")
+    )
+    frames: list[dict[str, Any]] = []
+    current: list[str | None] = []
+    current_size = empty_frame_size
+    for payload in payloads:
+        encoded_size = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        additional_size = encoded_size + (1 if current else 0)
+        if current_size + additional_size <= max_frame_size:
+            current.append(payload)
+            current_size += additional_size
+            continue
+        if not current:
+            raise RemoteCacheProtocolError(
+                "single payload exceeds maximum frame size"
+            )
+        frames.append({"ok": True, "payloads": current, "more": True})
+        current = [payload]
+        current_size = empty_frame_size + encoded_size
+        if current_size > max_frame_size:
+            raise RemoteCacheProtocolError(
+                "single payload exceeds maximum frame size"
+            )
+    frames.append({"ok": True, "payloads": current, "more": False})
+    return frames
+
+
 class _ThreadingTCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -116,15 +152,34 @@ class _RequestHandler(socketserver.BaseRequestHandler):
                 return
             try:
                 response = cache_server.handle(request)
+                if request.get("op") == "get_many" and request.get("stream") is True:
+                    payloads = response.get("payloads")
+                    if response.get("ok") is True and isinstance(payloads, list):
+                        responses = _batch_response_frames(
+                            payloads, max_frame_size=cache_server.max_frame_size
+                        )
+                    else:
+                        responses = [response]
+                else:
+                    responses = [response]
             except (KeyError, TypeError, ValueError, RemoteCacheError) as error:
-                response = {"ok": False, "error": str(error)}
+                responses = [{"ok": False, "error": str(error)}]
             except Exception:
-                response = {"ok": False, "error": "internal server error"}
-            _send_frame(
-                self.request,
-                response,
-                max_frame_size=cache_server.max_frame_size,
-            )
+                responses = [{"ok": False, "error": "internal server error"}]
+            for response in responses:
+                try:
+                    _send_frame(
+                        self.request,
+                        response,
+                        max_frame_size=cache_server.max_frame_size,
+                    )
+                except RemoteCacheProtocolError as error:
+                    _send_frame(
+                        self.request,
+                        {"ok": False, "error": str(error)},
+                        max_frame_size=cache_server.max_frame_size,
+                    )
+                    return
 
 
 class RemoteCacheServer:
@@ -208,9 +263,16 @@ class RemoteCacheServer:
                 isinstance(key, str) for key in keys
             ):
                 raise RemoteCacheProtocolError("keys must be a list of strings")
+            if isinstance(self.storage, BatchReadableStorage):
+                values = self.storage.get_many(keys)
+            else:
+                values = [self.storage.get(key) for key in keys]
+            if len(values) != len(keys):
+                raise RemoteCacheError(
+                    "server storage returned the wrong number of batch results"
+                )
             payloads = []
-            for key in keys:
-                value = self.storage.get(key)
+            for value in values:
                 if value is not None and not isinstance(value, bytes):
                     raise RemoteCacheError("server storage contains non-byte payload")
                 payloads.append(None if value is None else _encode_payload(value))
@@ -265,7 +327,7 @@ class RemoteCacheClient:
     def get(self, key: str) -> object | None:
         try:
             response = self._request({"op": "get", "key": key})
-        except (OSError, RemoteCacheError):
+        except OSError:
             return None
         encoded = response.get("payload")
         if encoded is None:
@@ -277,19 +339,62 @@ class RemoteCacheClient:
             return False
         try:
             return bool(self._request({"op": "contains", "key": key}).get("present"))
-        except (OSError, RemoteCacheError):
+        except OSError:
             return False
 
     def get_many(self, keys: Sequence[str]) -> list[object | None]:
-        """Fetch many keys in one round trip, preserving key order."""
-        response = self._request({"op": "get_many", "keys": list(keys)})
-        payloads = response.get("payloads")
-        if not isinstance(payloads, list) or len(payloads) != len(keys):
-            raise RemoteCacheProtocolError("server returned an invalid payload list")
+        """Fetch many keys in one round trip, preserving key order.
+
+        An unreachable server is a miss for every requested key, matching scalar
+        ``get``. Protocol and decoding errors remain explicit because treating a
+        malformed response as an ordinary miss would hide cache corruption.
+        """
+        snapshot = list(keys)
+        try:
+            payloads = self._request_many(snapshot)
+        except OSError:
+            return [None] * len(snapshot)
         return [
             None if payload is None else self.serializer.loads(_decode_payload(payload))
             for payload in payloads
         ]
+
+    def _request_many(self, keys: list[str]) -> list[object]:
+        request = {"op": "get_many", "keys": keys, "stream": True}
+        payloads: list[object] = []
+        with socket.create_connection((self.host, self.port), self.timeout) as stream:
+            stream.settimeout(self.timeout)
+            _send_frame(stream, request, max_frame_size=self.max_frame_size)
+            while True:
+                response = _receive_frame(stream, max_frame_size=self.max_frame_size)
+                if response.get("ok") is not True:
+                    raise RemoteCacheError(
+                        str(response.get("error", "remote request failed"))
+                    )
+                frame_payloads = response.get("payloads")
+                if not isinstance(frame_payloads, list):
+                    raise RemoteCacheProtocolError(
+                        "server returned an invalid payload list"
+                    )
+                if len(payloads) + len(frame_payloads) > len(keys):
+                    raise RemoteCacheProtocolError(
+                        "server returned too many batch results"
+                    )
+                payloads.extend(frame_payloads)
+                more = response.get("more", False)
+                if not isinstance(more, bool):
+                    raise RemoteCacheProtocolError(
+                        "server returned an invalid stream flag"
+                    )
+                if not more:
+                    break
+                if not frame_payloads or len(payloads) == len(keys):
+                    raise RemoteCacheProtocolError(
+                        "server returned an invalid batch stream"
+                    )
+        if len(payloads) != len(keys):
+            raise RemoteCacheProtocolError("server returned an invalid payload list")
+        return payloads
 
     def _request(self, request: dict[str, Any]) -> dict[str, Any]:
         with socket.create_connection((self.host, self.port), self.timeout) as stream:

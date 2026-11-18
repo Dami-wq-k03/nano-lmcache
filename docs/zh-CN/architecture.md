@@ -72,7 +72,10 @@ graph TD
 部分场景会变慢，因此不会自动启用。`tensor/peer.py` 明确区分 peer access
 与 pinned 主机内存中转。传输完成前，调用方必须保持输入不变，等待对应事件后再归还缓冲区。
 
-`storage/remote.py` 提供支持批量查找的本地 TCP 服务。
+`storage/remote.py` 提供支持批量查找的本地 TCP 服务。可选的
+`BatchReadableStorage` 能力不会扩大最小存储协议，同时让远端服务保留 packed
+后端合并后的 `get_many()` 读取，并让 nano-vLLM 用一次批量调用恢复外部区间。
+远端批量响应会通过多个有界帧传输，同时保持单个载荷完整；不支持这一能力的简单后端仍逐项读取。
 `storage/async_write.py` 将自有、不可变的载荷排入后台线程，关闭时拒绝新写入，
 排空已接受的任务，即使后端失败也会退出线程。读取待提交的 key 会等待写入完成。
 nano-vLLM 示例的 `--async-store` 仅将 tier 写入移入后台，GPU 导出仍在请求路径上。

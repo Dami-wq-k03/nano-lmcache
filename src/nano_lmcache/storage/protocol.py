@@ -1,5 +1,6 @@
-"""Storage interface the prefix cache depends on."""
+"""Storage interfaces used by the cache and optional fast paths."""
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 
@@ -33,4 +34,19 @@ class CacheStorage(Protocol):
 
     def get(self, key: str) -> object | None:
         """Return the payload for `key`, or None on a miss."""
+        ...
+
+
+@runtime_checkable
+class BatchReadableStorage(Protocol):
+    """Optional capability for reading several ordered keys in one operation.
+
+    Implementations return exactly one result per requested key and preserve
+    request order. ``None`` retains the scalar ``get`` meaning of a cache miss.
+    Keeping this separate from :class:`CacheStorage` lets simple teaching
+    backends implement only the two operations required by the prefix cache.
+    """
+
+    def get_many(self, keys: Sequence[str]) -> list[object | None]:
+        """Return ordered payloads and misses for all requested keys."""
         ...
