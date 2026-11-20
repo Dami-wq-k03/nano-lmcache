@@ -187,7 +187,7 @@ class KVBlockLayout:
 
     @property
     def chunk_nbytes(self) -> int:
-        return prod(self.chunk_shape) * self.torch_dtype.itemsize
+        return prod(self.chunk_shape) * int(self.torch_dtype.itemsize)
 
     def to_kv_layout(self) -> "KVLayout":
         """Describe canonical stored chunks via the engine-independent page ABI."""
