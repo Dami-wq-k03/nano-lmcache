@@ -64,13 +64,14 @@ def max_reusable_blocks(num_tokens: int, block_size: int) -> int:
 
 @dataclass
 class ExternalCacheStats:
-    """What the L2 cache did, counted in blocks."""
+    """What the L2 cache did, counted in blocks.
 
-    # Blocks reported as available after the L1 hits.
+    `hit_blocks` counts membership hits, `fetched_blocks` counts payload
+    reads, and `stored_blocks` counts writes the backend kept.
+    """
+
     hit_blocks: int = 0
-    # Blocks whose payload was read from storage.
     fetched_blocks: int = 0
-    # Blocks written to storage (and kept by it).
     stored_blocks: int = 0
 
 
@@ -105,11 +106,6 @@ class NanoVLLMExternalCache:
     @property
     def stats(self) -> ExternalCacheStats:
         return self._stats
-
-    @property
-    def tracing(self) -> bool:
-        """Whether engine callbacks should collect trace metadata."""
-        return self._trace_recorder is not None and self._trace_recorder.enabled
 
     def block_keys(
         self, token_ids: Sequence[int], num_blocks: int | None = None
@@ -148,8 +144,9 @@ class NanoVLLMExternalCache:
 
         hits = 0
         keys = self.block_keys(token_ids, limit)
-        for index in range(num_gpu_cached_blocks, limit):
-            key = keys[index]
+        for index, key in enumerate(
+            keys[num_gpu_cached_blocks:], start=num_gpu_cached_blocks
+        ):
             present = key in self._storage
             self.record_event(
                 "l2_lookup",
@@ -251,57 +248,43 @@ class NanoVLLMExternalCache:
 
         Each block is linked to the key of the block before it, so storage
         drops a block whose prefix it does not hold (it could never be
-        reached). Returns how many blocks storage actually kept.
+        reached). Every payload is checked first, so a rejected call writes
+        nothing. Returns how many blocks storage actually kept.
         """
         if start_block < 0:
             raise ValueError("start_block must not be negative")
         keys = self.block_keys(token_ids, start_block + len(payloads))
 
-        # Validate everything before writing anything, so a bad call never
-        # leaves a partial chain behind.
+        chunk_shape = self._layout.chunk_shape
         for payload in payloads:
             if not isinstance(payload, torch.Tensor):
                 raise ValueError(
                     f"payloads must be tensors, got {type(payload).__name__}"
                 )
-            if tuple(payload.shape) != self._layout.chunk_shape:
+            if tuple(payload.shape) != chunk_shape:
                 raise ValueError(
                     f"payload shape {tuple(payload.shape)} is not this layout's "
-                    f"chunk shape {self._layout.chunk_shape}"
+                    f"chunk shape {chunk_shape}"
                 )
 
-        for index, payload in enumerate(payloads, start=start_block):
-            parent_key = keys[index - 1] if index > 0 else None
-            self._storage.put(keys[index], payload, parent_key=parent_key)
+        block_keys = keys[start_block:]
+        for index, (key, payload) in enumerate(
+            zip(block_keys, payloads, strict=True), start=start_block
+        ):
+            parent_key = keys[index - 1] if index else None
+            self._storage.put(key, payload, parent_key=parent_key)
             self.record_event(
                 "chunk_stored",
                 chunk_index=index,
-                key=keys[index],
+                key=key,
                 parent_key=parent_key,
-                result="stored" if keys[index] in self._storage else "rejected",
+                result="stored" if key in self._storage else "rejected",
                 metadata={"blocks": 1},
             )
 
-        stored = sum(key in self._storage for key in keys[start_block:])
+        stored = sum(key in self._storage for key in block_keys)
         self._stats.stored_blocks += stored
         return stored
-
-    def record_gpu_import(self, block_count: int) -> None:
-        """Record payloads copied from L2 into nano-vLLM GPU blocks."""
-        self.record_event(
-            "gpu_import",
-            result="restored",
-            metadata={"blocks": block_count},
-        )
-
-    def record_l1_hit(self, block_count: int) -> None:
-        """Record blocks already resident in nano-vLLM's GPU cache."""
-        if block_count:
-            self.record_event(
-                "l1_hit",
-                result="hit",
-                metadata={"blocks": block_count},
-            )
 
     def record_event(
         self,

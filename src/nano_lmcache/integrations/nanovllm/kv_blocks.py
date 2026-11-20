@@ -58,8 +58,9 @@ def export_blocks(
     reusable cache. Block order (including repeated source IDs) is preserved.
     """
     _check_kv_cache(kv_cache)
+    num_blocks = kv_cache.shape[2]
     for block_id in block_ids:
-        _check_block_id(kv_cache, block_id)
+        _check_block_id(num_blocks, block_id)
     if not block_ids:
         return []
     indices = torch.tensor(block_ids, dtype=torch.long, device=kv_cache.device)
@@ -95,15 +96,16 @@ def import_blocks(
     with one transfer and indexed scatter per source device, not per block.
     Destination IDs must be unique; duplicate indexed writes are ambiguous.
     """
-    _check_kv_cache(kv_cache)
+    expected = chunk_shape(kv_cache)
+    num_blocks = kv_cache.shape[2]
     if len(block_ids) != len(payloads):
         raise ValueError("block_ids and payloads must have the same length")
     if len(set(block_ids)) != len(block_ids):
         raise ValueError("destination block_ids must be unique")
     groups: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
     for block_id, payload in zip(block_ids, payloads, strict=True):
-        _check_block_id(kv_cache, block_id)
-        _check_payload(kv_cache, payload)
+        _check_block_id(num_blocks, block_id)
+        _check_payload(payload, expected, kv_cache.dtype)
         groups.setdefault(payload.device, []).append((block_id, payload))
     for group in groups.values():
         indices = torch.tensor(
@@ -116,16 +118,20 @@ def import_blocks(
         kv_cache.index_copy_(2, indices, source)
 
 
-def _check_payload(kv_cache: torch.Tensor, payload: torch.Tensor) -> None:
-    expected = chunk_shape(kv_cache)
+def _check_payload(
+    payload: torch.Tensor, expected: tuple[int, ...], dtype: torch.dtype
+) -> None:
+    """Check one payload against a block's chunk shape and the cache dtype.
 
+    A block-size mismatch gets its own message because it is the likeliest
+    mistake: nano-vLLM's kvcache_block_size and nano-lmcache's chunk_size
+    must agree.
+    """
     if payload.dim() != len(expected):
         raise ValueError(
             f"payload shape {tuple(payload.shape)} is not a chunk; expected "
             f"{expected} = [layers, 2, kv_heads, block_size, head_dim]"
         )
-    # Report a block size mismatch on its own: it is the likeliest mistake
-    # (nano-vLLM's kvcache_block_size and nano-lmcache's chunk_size differ).
     if payload.shape[3] != expected[3] and (
         tuple(payload.shape[:3]) + (payload.shape[4],)
         == expected[:3] + (expected[4],)
@@ -140,13 +146,15 @@ def _check_payload(kv_cache: torch.Tensor, payload: torch.Tensor) -> None:
             f"cache's chunk shape {expected} = "
             "[layers, 2, kv_heads, block_size, head_dim]"
         )
-    if payload.dtype != kv_cache.dtype:
+    if payload.dtype != dtype:
         raise ValueError(
             f"payload dtype {payload.dtype} does not match the KV cache "
-            f"dtype {kv_cache.dtype}"
+            f"dtype {dtype}"
         )
 
+
 def _check_kv_cache(kv_cache: torch.Tensor) -> None:
+    """Check the shape of nano-vLLM's whole KV cache tensor."""
     if kv_cache.dim() != 6 or kv_cache.shape[0] != 2:
         raise ValueError(
             "expected a nano-vLLM KV cache shaped [2, num_layers, num_blocks, "
@@ -154,10 +162,11 @@ def _check_kv_cache(kv_cache: torch.Tensor) -> None:
         )
 
 
-def _check_block_id(kv_cache: torch.Tensor, block_id: int) -> None:
-    _check_kv_cache(kv_cache)
-    num_blocks = kv_cache.shape[2]
-    # Negative IDs must be rejected explicitly: nano-vLLM pads block tables
-    # with -1, and `kv_cache[:, :, -1]` would quietly mean the last block.
+def _check_block_id(num_blocks: int, block_id: int) -> None:
+    """Check a physical block ID, rejecting negative values.
+
+    nano-vLLM pads block tables with -1, and `kv_cache[:, :, -1]` would
+    quietly address the last block.
+    """
     if type(block_id) is not int or not 0 <= block_id < num_blocks:
         raise ValueError(f"block_id must be in 0..{num_blocks - 1}, got {block_id}")

@@ -19,6 +19,7 @@ picking the fields that seem to matter.
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from math import prod
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -30,9 +31,6 @@ if TYPE_CHECKING:
 
 BLOCK_FORMAT_VERSION = 1
 
-# Config fields that cannot change any KV value. Token IDs only choose
-# which tokens are fed in, `use_cache` toggles caching itself, and the
-# rest describe where and how the config was loaded.
 _FIELDS_THAT_CANNOT_CHANGE_KV = frozenset(
     {
         "_name_or_path",
@@ -49,6 +47,12 @@ _FIELDS_THAT_CANNOT_CHANGE_KV = frozenset(
 )
 
 
+def _sha256_hex(value: object) -> str:
+    """Stable SHA-256 hex digest of a JSON-serializable value."""
+    encoded = json.dumps(value, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def model_config_fingerprint(hf_config: Any) -> str:
     """Hash of a Hugging Face model config, ignoring fields that cannot change KV.
 
@@ -60,12 +64,10 @@ def model_config_fingerprint(hf_config: Any) -> str:
     """
     fields = hf_config.to_dict() if hasattr(hf_config, "to_dict") else dict(hf_config)
     relevant = {
-        name: value
-        for name, value in fields.items()
+        name: value for name, value in fields.items()
         if name not in _FIELDS_THAT_CANNOT_CHANGE_KV
     }
-    encoded = json.dumps(relevant, sort_keys=True, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
+    return _sha256_hex(relevant)[:32]
 
 
 def _dtype_name(dtype: object) -> str:
@@ -76,21 +78,15 @@ def _dtype_name(dtype: object) -> str:
 class KVBlockLayout:
     """Everything that determines the bytes of one nano-vLLM KV block."""
 
-    # Model identity, for example "Qwen/Qwen3-0.6B".
     model: str
-    # Which weights: a repository commit, a release tag, or a checksum.
-    # Different weights give different KV for the same tokens.
     revision: str
-    # torch dtype name of the KV cache, for example "bfloat16".
     dtype: str
     num_layers: int
-    # KV heads held by this rank; nano-vLLM splits them across GPUs.
     num_kv_heads: int
     head_dim: int
     block_size: int = 256
     tensor_parallel_size: int = 1
     tensor_parallel_rank: int = 0
-    # `model_config_fingerprint` of the model config, or "" if unknown.
     config_fingerprint: str = ""
 
     def __post_init__(self) -> None:
@@ -191,10 +187,7 @@ class KVBlockLayout:
 
     @property
     def chunk_nbytes(self) -> int:
-        count = 1
-        for size in self.chunk_shape:
-            count *= size
-        return count * int(torch.empty((), dtype=self.torch_dtype).element_size())
+        return prod(self.chunk_shape) * self.torch_dtype.itemsize
 
     def to_kv_layout(self) -> "KVLayout":
         """Describe canonical stored chunks via the engine-independent page ABI."""
@@ -216,7 +209,5 @@ class KVBlockLayout:
     def namespace(self) -> str:
         """Differs whenever any field, or the block format version, differs."""
         fields = {"format": BLOCK_FORMAT_VERSION, **asdict(self)}
-        digest = hashlib.sha256(
-            json.dumps(fields, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        digest = _sha256_hex(fields)
         return f"nanovllm-kv/v{BLOCK_FORMAT_VERSION}/{digest[:32]}"
