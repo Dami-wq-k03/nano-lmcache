@@ -240,9 +240,10 @@ request can survive long-tail insertions.
 This run does **not** establish that LFU always wins. It used a stationary
 catalog and enough repeated requests for frequency to accumulate. A changing
 working set, a short measurement window, a much larger capacity, or a workload
-where recent requests are more predictive can favor LRU. LRU has a simpler
-access state and the same O(log n) heap operations; LFU stores a frequency for
-every key and updates a two-dimensional priority on hits. The measured
+where recent requests are more predictive can favor LRU. In the measured heap
+version, LRU tracked recency and LFU also tracked frequency; both used O(log n)
+heap operations. The current scan keeps both access fields in the shared index
+and selects victims in O(n). The measured
 latency differences here are small (LFU lookup was 0.08--0.25 us slower), so
 they should not be treated as a portable performance guarantee.
 

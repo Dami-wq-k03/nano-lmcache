@@ -4,6 +4,16 @@ This follow-up validates real external-hit generation, asynchronous GPU export,
 cold NVMe reads and a two-GPU model KV handoff. Correctness does not imply a
 serving speedup. Raw samples are in [measurements/serving](measurements/serving).
 
+**Historical measurements:** these results describe revision `9bfb38a`, not the
+current connector. The connector simplification in `5a64ded` removed its
+asynchronous-writer integration and load-error tracking; current saves are
+synchronous. The benchmark still accepts `--async-store`, but the current
+connector ignores that setting. Run the historical source revision to reproduce
+the async variant below. The standalone `AsyncTensorWriteStorage` component
+remains available; it is not wired into the current vLLM connector.
+The later N6 batch-read integration targets nano-vLLM, not this report's vLLM
+load path; real-engine batch measurements remain open.
+
 ## Environment and method
 
 Linux 6.8 / Ubuntu 22.04, vLLM 0.33.0, torch 2.14.0+cu130 / CUDA 13.0,
@@ -62,7 +72,9 @@ serialization/transport path need separate tests.
 
 Use the pinned vLLM image/environment and a locally cached model (`MODEL`).
 Run from the checkout with `PYTHONPATH=src`, offline model loading enabled and
-`NANO_LMCACHE_GIT_SHA` set to the measured source revision:
+`NANO_LMCACHE_GIT_SHA` set to the measured source revision. That variable only
+labels the report; it does not change the checkout. The async commands below
+require source revision `9bfb38a`, as noted above:
 
 ```bash
 python3 benchmarks/bench_vllm_external.py --model "$MODEL" --json sync.json

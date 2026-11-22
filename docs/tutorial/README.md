@@ -6,7 +6,7 @@ Work through these steps in order. Each step pairs a small experiment with
 an explanation and the tests that establish the behavior. Run commands from
 the repository root after `uv sync --locked`. Steps 1–5 use only the core
 package; step 6 adds model weights and optional dependencies; step 7 needs
-Linux and an NVIDIA GPU. Step 8 returns to the core package.
+Linux and an NVIDIA GPU. Steps 8–9 return to the core package.
 
 | Step | Question |
 | --- | --- |
@@ -259,7 +259,7 @@ Run the real-model checks in the same GPU environment:
 
 ```bash
 NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
-  --group nanovllm pytest tests/integration/test_nanovllm_engine.py
+  --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
 Tests cover restored KV, matching generated tokens, disk reuse after
@@ -336,7 +336,7 @@ Workload A (`uniform`) spreads requests across system families; Workload B
 (`zipf`) repeats a small hot set and injects a long tail. Both policies consume
 the same fixed-seed sequence. In the recorded run, LFU won on both workloads,
 but that is an observation rather than a rule: LRU can be preferable when the
-working set changes quickly because it forgets old frequency sooner.
+working set changes quickly because it does not rank by accumulated frequency.
 
 An internal node's frequency is not reset when its last child is evicted. Disk
 recovery deliberately starts LFU frequencies at 1 because frequencies are not

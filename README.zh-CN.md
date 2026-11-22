@@ -23,6 +23,7 @@ nano-lmcache 用简短、易读的 Python 模块实现
 | --- | --- | --- |
 | **复用共享前缀** | 匹配完整 Token 块，遇到第一个缺失块就停止，只计算未缓存的后缀；分块键包含前文信息，区分不同上下文。 | [前缀缓存示例](examples/demo_prefix_cache.py) |
 | **让 KV 超出显存和进程生命周期** | 内存、磁盘及分层存储；慢层命中后提升到快层。支持条目数/字节容量限制，叶节点 LRU 保持前缀可达；内存、磁盘和分层后端支持多线程共享实例。 | [磁盘示例](examples/demo_disk_cache.py)、[分层示例](examples/demo_tiered_storage.py) |
+| **选择淘汰策略** | 默认使用前缀安全的 LRU，也支持 LFU，依次以访问次数、最近访问时间和稳定键打破平局；内存、磁盘及 CPU 卸载层共享叶节点淘汰机制。 | [淘汰策略实验（英文）](docs/eviction-performance.md) |
 | **复用真实模型张量** | 在 CPU 或 CUDA 上运行 Hugging Face 模型，将 KV 卸载到固定页 CPU 内存，并选择无损序列化或可选的有损 INT8 压缩。 | [真实模型示例](examples/demo_kv_reuse.py)、[INT8 实验（英文）](docs/quantized-kv.md) |
 | **恢复真实推理引擎的缓存** | 将 nano-vLLM 完整 KV 块存入外部 L2；重启后恢复到 GPU 块，后续请求继续复用 GPU L1。 | [引擎教程](docs/zh-CN/tutorial.md#7-恢复真实引擎的缓存) |
 | **观察完整缓存链路** | 在独立 HTML 中查看前缀树、命中/未命中、淘汰、提升和 GPU 导入/导出事件；支持流式回放已排序的工作负载 JSONL、限制缓存与明细预算并导出完整统计，也可导入真实引擎 Trace。 | [查看器教程](docs/zh-CN/tutorial.md#5-在查看器中跟踪查询)、[流式回放](docs/zh-CN/streaming-replay.md)、[引擎 Trace（英文）](docs/engine-traces.md) |
@@ -52,6 +53,7 @@ flowchart LR
 | **进程重启恢复**：Qwen3-0.6B、RTX 4090 | 新 nano-vLLM 进程在空 L1 下从磁盘恢复 **5 个 KV 块**；两道问题在冷启动与重启后生成的答案一致。 | [GPU 验证记录（英文）](docs/gpu-validation.md) |
 | **INT8 存储**：合成 FP16/BF16 KV 块、Apple M4 CPU | **原始字节数 / INT8 序列化字节数 ≈ 1.60×**，已计入 FP32 缩放因子开销。压缩有损，需主动启用。 | [压缩报告（英文）](docs/quantized-kv.md) |
 | **历史堆优化实验**：链深 1,024 块、容量 8,192、Apple arm64 | 早期堆实现曾将整轮淘汰耗时从 **788 ms 降到 208 ms**。当前教学实现为保持易读，改用 O(n) 叶节点扫描；这不是当前版本的耗时。 | [淘汰取舍（英文）](docs/eviction-performance.md) |
+| **历史 LRU/LFU 策略对比**：5,000 个共享前缀请求、容量 48 | 固定种子 2026 的实验中，LFU 在均匀 / Zipf 负载的命中率为 **56.16% / 85.21%**，LRU 为 **52.70% / 80.68%**；两种负载下 LFU 淘汰均更少。 | [策略对比（英文）](docs/eviction-performance.md#policy-comparison-experiment) |
 
 同一 TTFT 实验中，磁盘 L2 在所有测试长度下都比重算更慢；短链淘汰负载也会付出额外的维护开销。
 报告同时记录了收益与成本，方便判断什么场景值得使用缓存。
@@ -131,7 +133,7 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 | 查找概念、命令和实验 | [文档目录](docs/zh-CN/README.md) | 按主题说明 |
 | 理解术语和设计 | [术语与 FAQ（英文）](docs/glossary.md)、[架构](docs/zh-CN/architecture.md) | 核心包即可 |
 | 理解引擎适配层 | [nano-vLLM 集成设计（英文）](docs/nanovllm-integration.md) | 运行需要 GPU；源码可独立阅读 |
-| 探索完整 vLLM 的 Connector API | [vLLM Connector 指南（英文）](docs/vllm-kv-connector.md) | 空操作 Connector、真实请求日志与 GPU 输出对照 |
+| 探索完整 vLLM 的 Connector API | [vLLM Connector 指南（英文）](docs/vllm-nano-lmcache-connector.md) | vLLM 0.33.0；共享外部 KV 查询、保存/加载和重启复用 |
 | 学习 Prefill/Decode 交接 | [PD 指南](docs/zh-CN/pd-disaggregation.md) | Toy model，只需核心包 |
 
 核心包没有运行时依赖。PyTorch 和推理引擎依赖均为可选项，安装与测试命令统一见
@@ -140,8 +142,8 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 ## 项目范围与贡献
 
 这是一个用于理解 LMCache 类系统的教学实现。
-nano-vLLM 已支持外部 KV 复用；完整 vLLM 集成已提供经过验证的空操作 Connector，
-外部 KV 查询和传输仍待实现。
+nano-vLLM 和 vLLM 0.33.0 Connector 均已支持外部 KV 复用。
+vLLM 路径支持共享外部查询、同步保存/加载和重启复用；正确性已验证，但尚未建立服务性能优势。
 PD 分离使用确定性的 toy model 和模拟时间线。
 生产性能和 LMCache API 兼容性不属于当前项目目标。
 

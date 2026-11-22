@@ -1,7 +1,7 @@
 
 [English](../architecture.md) | [简体中文](architecture.md)
 
-本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-14。实验报告与更完整的性能推导见对应英文专题。
+本文与[英文架构说明](../architecture.md)同步维护，最近校对：2026-11-22。实验报告与更完整的性能推导见对应英文专题。
 
 # 架构
 
@@ -35,6 +35,8 @@ graph TD
         CH["chunk_tokens, make_chunk_key<br/>core/chunking.py"]
         MET["CacheMetrics<br/>core/metrics.py"]
         ST["CacheStorage protocol<br/>storage/protocol.py"]
+        IDX["PrefixIndex<br/>prefix-safe mechanism"]
+        POL["EvictionPolicy<br/>LRU / LFU"]
         MEM["MemoryKVCache<br/>storage/memory.py"]
         SS["StorageStats<br/>storage/stats.py"]
     end
@@ -48,8 +50,10 @@ graph TD
     PC --> MET
     PC -->|"put / get via CacheStorage"| ST
     ST -.->|implemented by| MEM
+    MEM --> IDX
+    IDX --> POL
     MEM --> SS
-    ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
+    ST -.->|implemented by| OTHER["disk, tiered, GPU offload"]
 ```
 
 `ChunkedPrefixCache` 负责匹配逻辑和指标统计。它只依赖 `CacheStorage` 协议，因此可以更换存储后端，而不必修改缓存逻辑。
@@ -193,7 +197,9 @@ graph LR
 5. 报告可以复用多少前缀，并记录命中和未命中指标。
 6. 将新计算的分块数据载荷存入内存后端。
 
-只有完整分块才参与复用。末尾若有短于 `chunk_size` 的分块，则既不会被存储，也不会参与匹配，因为它的状态还取决于尚未到达的 token。
+只有完整分块才参与复用。末尾短于 `chunk_size` 的分块既不存储，也不匹配，
+以保持存储与查询使用相同的固定分块边界。这是简化实现的选择，不是因果模型的限制：
+已有 Token 的 KV 不依赖未来 Token。
 
 该实现使用纯 Python 编写，因此无需 GPU 或推理引擎，也能理解缓存的工作方式。
 
@@ -224,7 +230,7 @@ graph LR
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`：L2 块计数、读取和保存 |
 | `integrations/nanovllm/engine.py` | `attach()`：在运行中的引擎内恢复 L2、保存新块（需要 nano-vLLM） |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`：引擎块与张量载荷之间转换（需要 torch） |
-| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 共享存储查询、保存/加载和可选异步发布；真实外部命中生成已验证 |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 共享存储查询、同步保存/加载；历史外部命中生成测量 |
 | `experimental/dataplane/` | 与 PyTorch 无关的 `KVLayout`、页面生命周期、逻辑/物理副本目录和 CPU 参考存储 |
 | `experimental/scheduler.py` | 透明的重算/加载估算器和去重 prefetch 状态机 |
 | `observability/` | 请求上下文、事件模式、Recorder 与存储 Trace |
@@ -285,7 +291,8 @@ storage = MemoryKVCache(max_entries=100, max_bytes=1024, size_fn=byte_payload_si
 后面的数据即使仍在存储中，也无法被复用。因此淘汰规则为：
 
 1. 只能淘汰没有后代的叶节点。
-2. 在叶节点中选择最近最少使用者，`get` 会刷新最近使用顺序。
+2. 按配置策略选择叶节点；默认 LRU 按最近访问时间排序，LFU 先看访问次数。
+   `get` 会更新访问状态。
 3. 新条目的父节点受保护；覆盖写入时，被覆盖键及其祖先受保护。
 4. 接纳前先检查新载荷与完整祖先链能否放入容量；若不能，则拒绝写入，不淘汰已有数据。
 5. 父节点未存储时，拒绝写入。
@@ -295,7 +302,8 @@ storage = MemoryKVCache(max_entries=100, max_bytes=1024, size_fn=byte_payload_si
 `nbytes` 并刷新最近使用顺序。较大的覆盖载荷可能淘汰其后代，无法容纳时则保留原值和其他条目。
 
 `PrefixIndex`（兼容名 `PrefixLRUIndex`）只保存元数据，后端负责实际载荷。每个键只有一条记录：
-父节点、大小、访问次数和最近访问 Tick。容量不足时，先收集所有父节点，再扫描不在其中的键（叶节点），
+父节点、大小、访问次数和最近访问 Tick。新键次数从 1 开始，命中时加 1，
+成功覆盖仅刷新最近访问时间。容量不足时，先收集所有父节点，再扫描不在其中的键（叶节点），
 排除受保护的键，按策略评分选择最小者。LRU 使用 `(最近访问 Tick, key)`；LFU 使用
 `(访问次数, 最近访问 Tick, key)`。父节点刚成为叶节点时保留原来的访问记录，不算新命中。
 
@@ -321,7 +329,8 @@ storage = MemoryKVCache(max_entries=100, max_bytes=1024, size_fn=byte_payload_si
 `[num_layers, 2, num_kv_heads, chunk_tokens, head_dim]`
 
 `run_with_prefix_cache` 查找最长缓存前缀，重建 `past_key_values`，仅计算剩余 Token，
-并保存完整分块供后续请求使用。即使 Prompt 已全部命中，也需重新计算最后一个 Token 以生成下一个 Token 的 Logits。
+只保存已匹配前缀之后的新完整分块。即使 Prompt 已全部命中，也需重新计算最后一个 Token
+以生成下一个 Token 的 Logits，但不会重写已匹配的分块。
 
 无损存储会保留原始 KV。在因果模型中，相同前导 Token 具有相同 K/V；相同 Token 出现在不同前缀之后则不同，
 这正是键要包含完整前缀的原因。测试比较复用与完整前向的 Logits，并验证不同前缀产生不同 KV。
@@ -379,7 +388,8 @@ CPU 复现命令、尺寸与延迟、G1 对比见[INT8 实验（英文）](../qu
   快层放不下父节点时，也拒绝其后代，但慢层仍可返回数据。
 - **覆盖拒绝**：慢层拒绝已有键的覆盖时，两层原值不变。慢层更新成功、快层拒绝覆盖时，
   必须通过 `invalidate` 清除快层旧键及其后代，避免读到旧数据。移除计为淘汰，不改变无关条目的顺序。
-  后端的独立 `put` 在拒绝时仍保留原值。自定义可拒绝覆盖的快层应实现 `try_put` 和 `invalidate`。
+  后端的独立 `put` 在拒绝时仍保留原值。两层都必须提供 `try_put`、成员查询、`keys`
+  和 `parent_of`，快层还必须提供 `invalidate`；不再探测能力或兼容只有 `put` 的后端。
   慢层拒绝的新键仍可能被快层接纳，但这类条目不会持久化。
 - **不变量**：每层各自保存完整祖先链，两层并集也满足前缀安全。
 
@@ -449,6 +459,9 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 [TTFT 报告（英文）](../nanovllm-benchmark.md)；L1/L2 与 GPU 传输事件见
 [引擎 Trace 指南（英文）](../engine-traces.md)。
 
+独立的 vLLM 0.33.0 Connector 通过共享远端存储完成外部查询及同步保存/加载；
+环境要求、钩子流程和限制见 [Connector 指南（英文）](../vllm-nano-lmcache-connector.md)。
+
 核心包应始终保持独立、易于理解并且可测试。只有在确实需要时，才应引入集成特定的依赖项。
 
 ## Prefill/Decode 分离
@@ -464,10 +477,12 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 
 ## vLLM 异步导出
 
-`tensor.async_store.AsyncTensorWriteStorage` 拥有 GPU 快照，通过独立 CUDA Stream
-复制到有界页锁定池。后台线程等待事件，再克隆 CPU 数据并发布，避免后端引用被复用的池缓冲区。
-队列或池满时施加背压；关闭时排空并报告错误。GPU Gather 和快照仍有成本。
-没有新增完整分块时跳过导出。只有 vLLM Worker 创建异步写入器。
+`tensor.async_store.AsyncTensorWriteStorage` 是独立实验组件，未接入当前 Connector。
+它拥有 GPU 快照，通过独立 CUDA Stream 复制到有界页锁定池。后台线程等待事件，
+再克隆 CPU 数据并发布，避免后端引用被复用的池缓冲区。队列或池满时施加背压；
+关闭时排空并报告错误。GPU Gather 和快照仍有成本。
 
+早期 vLLM Worker 接线已在 `5a64ded` 中移除；当前 Worker 同步保存，不创建此写入器。
+当前行为见 [Connector 指南（英文）](../vllm-nano-lmcache-connector.md)。
 `RemoteCacheServer` 接受字节存储后端，包括持久化 `CoalescedDiskKVCache`。
-真实 vLLM、NVMe 和双卡模型实测及范围见[服务验证（英文）](../serving-validation-report.md)。
+vLLM、NVMe 和双卡模型的历史实测及范围见[服务验证（英文）](../serving-validation-report.md)。
