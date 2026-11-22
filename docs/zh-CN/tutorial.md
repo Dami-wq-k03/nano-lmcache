@@ -14,7 +14,7 @@
 | [4. 分层存储](#4-持久化与提升分块) | 重启后什么会保留，命中来自哪一层？ |
 | [5. Trace 查看器](#5-在查看器中跟踪查询) | 哪些分块命中、未命中或没有检查？ |
 | [6. 真实张量](#6-复用真实模型张量) | 复用是否保持模型输出，是否节省时间？ |
-| [7. 引擎恢复](#7-恢复真实引擎的缓存) | 外部 L2 块如何回到引擎的 GPU L1？ |
+| [7. 引擎恢复](#7-复用真实引擎的-kv-缓存) | 外部 L2 块如何回到引擎的 GPU L1？ |
 | [8. PD 分离](#8-拆分-prefill-与-decode) | Prefill Worker 要交出什么，Decode Worker 才能接着生成？ |
 | [9. 淘汰策略实验](#9-对比-lru-与-lfu) | 均匀与热点负载下，哪种叶节点策略更合适？ |
 
@@ -193,28 +193,26 @@ uv run --extra hf python examples/demo_kv_reuse.py --device cuda --offload \
 [`tensor/hf.py`](../../src/nano_lmcache/tensor/hf.py)。有损压缩另见
 [INT8 实验（英文）](../quantized-kv.md)。更换序列化器或不兼容的模型配置时，应使用不同缓存目录。
 
-## 7. 恢复真实引擎的缓存
+## 7. 复用真实引擎的 KV 缓存
 
-要求：Linux、NVIDIA GPU、Python 3.11 或 3.12，以及本地 Qwen3-0.6B 模型。
-第一条引擎命令使用新磁盘目录：
+要求：Linux、NVIDIA GPU、Python 3.11 或 3.12，以及本地 Qwen3-0.6B 模型：
 
 ```bash
 uv sync --extra hf --group nanovllm
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
-  --dir /tmp/nano-learning-engine --trace-output /tmp/nano-cold.json
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
-  --dir /tmp/nano-learning-engine --trace-output /tmp/nano-restart.json
-uv run python -m nano_lmcache.visualize --trace-json /tmp/nano-restart.json \
-  --output /tmp/nano-engine.html
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 ```
 
-第二个进程以空 GPU L1 和空内存 L2 启动，从磁盘恢复共享前缀并导入引擎 KV 块。
-同一进程的后续请求可复用 GPU L1。示例的快速 L2 是 `MemoryKVCache`，
-张量保留在原有设备上，并不是显式的页锁定 CPU 卸载层。
+示例的 L2 是 `TieredStorage(fast=CPUOffloadKVCache, slow=DiskKVCache)`，
+外面包一层 `AsyncWriteBehindStorage`。第一次运行计算文档 KV，并把完成块排队写入
+磁盘和页锁定 CPU 内存；进程退出时 `storage.close()` 会 flush 队列。第二个进程
+以空 GPU L1 和空 CPU fast tier 启动，从磁盘恢复共享前缀，提升到 CPU fast tier，
+再拷入引擎 KV 块后执行 Prefill。同一进程的后续请求继续复用 GPU L1。
 
-实验：对比冷启动和重启 Trace，区分 `l2_lookup` 可用性探测与真正的 `l2_hit`/`l2_restore`。
-GPU 复制事件表示入队顺序，不是 CUDA 完成时间。即使最后一个 Prompt 块完整，引擎仍需计算它以获取 Logits；
-仅用通用缓存的不完整分块规则不能解释这一行为。
+每个 question 只发一次请求；打印的 request time 覆盖完整请求：Prefill、Decode、
+GPU 导出和入队，不包含后台磁盘写入。集成不再记录引擎 Trace 事件，demo 也没有
+`--trace-output` 或 `--memory-max-entries` 参数。性能比较应使用受控的
+[TTFT 基准（英文）](../nanovllm-benchmark.md)，而不是 demo 的 request time。
 
 在同一 GPU 环境执行真实模型检查：
 
@@ -223,15 +221,12 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
   --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
-测试覆盖 KV 恢复、生成 Token 一致、进程重启后的磁盘复用和 Trace 转 HTML。
-没有可选引擎依赖时，CPU 上仍可运行
-[`test_engine_trace.py`](../../tests/unit/test_engine_trace.py) 验证导入与渲染。
+测试覆盖 KV 恢复、生成 Token 一致和进程重启后的磁盘复用。没有可选引擎依赖时，
+引擎级测试会跳过，核心测试仍可运行。
 
-阅读[集成规则（英文）](../nanovllm-integration.md#rules-the-integration-must-keep)和
-[引擎 Trace 指南（英文）](../engine-traces.md)。性能比较应使用受控
-[TTFT 基准（英文）](../nanovllm-benchmark.md)：示例 TTFT 包含 Trace 开销和同步写入，并非单独的缓存加速测量。
-
-[GPU 验证记录（英文）](../gpu-validation.md)记录了上述示例的实际运行结果，包含跨进程恢复和 Trace 渲染。
+阅读[集成规则（英文）](../nanovllm-integration.md#rules-the-integration-must-keep)。
+[GPU 验证记录（英文）](../gpu-validation.md)记录了上述示例的实际运行结果，
+包含跨进程恢复。
 
 ## 8. 拆分 Prefill 与 Decode
 

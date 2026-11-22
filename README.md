@@ -27,8 +27,8 @@ backed by runnable examples, correctness tests, and measured trade-offs.
 | **Keep KV beyond GPU memory and process lifetime** | Store in memory or on disk; combine tiers with promotion on a slow-tier hit. Entry/byte budgets and leaf-only LRU preserve reachable prefixes. Memory, disk, and tiered backends support shared-thread access. | [Disk demo](examples/demo_disk_cache.py), [tiered demo](examples/demo_tiered_storage.py) |
 | **Choose an eviction policy** | Prefix-safe LRU is the default; LFU is also available with frequency, recency, and stable-key tie breakers. Memory, disk, and CPU-offload tiers share the same leaf-only mechanism. | [Eviction policy experiment](docs/eviction-performance.md) |
 | **Reuse real model tensors** | Run Hugging Face models on CPU or CUDA, offload KV to pinned CPU memory, and serialize tensors losslessly or with optional lossy INT8 compression. | [Real-model demo](examples/demo_kv_reuse.py), [INT8 experiment](docs/quantized-kv.md) |
-| **Restore a real inference engine** | Save complete nano-vLLM KV blocks to external L2, load them back into GPU blocks after restart, and reuse resident GPU L1 blocks on later requests. | [Engine tutorial](docs/tutorial/README.md#7-restore-a-real-engines-cache) |
-| **Inspect the entire cache path** | View prefix trees, hit/miss decisions, eviction, promotion, and GPU import/export events in standalone HTML. Stream sorted workload JSONL with bounded cache/detail budgets and exact summary statistics; also import recorded engine traces. | [Viewer tutorial](docs/tutorial/README.md#5-follow-a-lookup-in-the-viewer), [streaming replay](docs/streaming-replay.md), [engine traces](docs/engine-traces.md) |
+| **Restore a real inference engine** | Save complete nano-vLLM KV blocks to external L2, load them back into GPU blocks after restart, and reuse resident GPU L1 blocks on later requests. | [Engine tutorial](docs/tutorial/README.md#7-reuse-a-real-engines-kv-cache) |
+| **Inspect the entire cache path** | View prefix trees, hit/miss decisions, eviction, promotion, and copy events in standalone HTML. Stream sorted workload JSONL with bounded cache/detail budgets and exact summary statistics; also import trace JSON from other sources. | [Viewer tutorial](docs/tutorial/README.md#5-follow-a-lookup-in-the-viewer), [streaming replay](docs/streaming-replay.md), [engine trace notes](docs/engine-traces.md) |
 | **Explore prefill/decode disaggregation** | Transfer checksummed KV between two toy-model roles, verify identical tokens without prompt recomputation, and simulate the scheduling trade-off. | [PD demo](examples/demo_pd_disaggregation.py) — core package only |
 
 The engine integration follows this path: local GPU KV first, external KV
@@ -116,7 +116,8 @@ uv run python -m nano_lmcache.visualize --scenario partial_prefix_hit \
 
 Open `/tmp/nano-lmcache-trace.html` in a browser. The HTML includes a prefix
 tree and event timeline with Next/Previous and playback controls. It needs
-no server or CDN. The same viewer also loads [real engine traces](docs/engine-traces.md).
+no server or CDN. It also renders trace JSON from other sources; see
+[engine trace notes](docs/engine-traces.md).
 
 ### Move to a real model or engine
 
@@ -131,7 +132,7 @@ The demo reports reused/computed tokens and compares suffix logits with a
 full recomputation. Add `--device cuda --offload` to keep cached KV in
 pinned CPU memory while the model runs on CUDA.
 
-For nano-vLLM, follow the [engine tutorial](docs/tutorial/README.md#7-restore-a-real-engines-cache)
+For nano-vLLM, follow the [engine tutorial](docs/tutorial/README.md#7-reuse-a-real-engines-kv-cache)
 to run the disk-backed engine demo twice and observe cold computation,
 restoration after restart, and later GPU L1 hits. It needs Linux, an NVIDIA
 GPU, local model weights, and the `nanovllm` dependency group.

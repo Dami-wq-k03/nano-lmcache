@@ -6,6 +6,12 @@ including the thread-safe storage change. The documentation working tree
 does not change runtime code or tests. This record checks the runnable
 [learning path](tutorial/README.md); it is not a performance benchmark.
 
+**Historical note.** This run predates the simplified
+`integrations/nanovllm` package: engine trace recording and the demo's
+`--trace-output`/`--memory-max-entries` options have since been removed.
+The trace entries below belong to the recorded revision; current behavior is
+described in [the engine trace notes](engine-traces.md).
+
 ## Environment
 
 | Component | Value |
@@ -60,7 +66,7 @@ disk reopening, and trace rendering.
 
 Reproduction commands for the demos are in tutorial
 [step 6](tutorial/README.md#6-reuse-real-model-tensors) and
-[step 7](tutorial/README.md#7-restore-a-real-engines-cache). The engine demo
+[step 7](tutorial/README.md#7-reuse-a-real-engines-kv-cache). The engine demo
 was invoked twice as separate Python processes with the same disk directory.
 
 ## Interpretation

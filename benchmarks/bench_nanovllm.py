@@ -47,6 +47,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from math import prod
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,8 @@ def run_benchmark(args: argparse.Namespace) -> tuple[list[Row], dict[str, Any]]:
     layout = KVBlockLayout.from_hf_config(
         hf_config, model=Path(args.model).name, revision="benchmark"
     )
+    element_size = torch.empty((), dtype=getattr(torch, layout.dtype)).element_size()
+    block_mib = prod(layout.chunk_shape) * element_size / 2**20
     params = SamplingParams(temperature=1e-6, max_tokens=1)
 
     def ttft(token_ids: list[int]) -> float:
@@ -269,6 +272,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[list[Row], dict[str, Any]]:
         """
         token_ids = make_prompt(blocks, args.tail, hf_config.vocab_size, seed=blocks)
         directory = root / f"blocks-{blocks}"
+        shutil.rmtree(directory, ignore_errors=True)
         serializer = TensorSerializer()
 
         # First requests with each L2 backend: compute and store.
@@ -349,7 +353,7 @@ def run_benchmark(args: argparse.Namespace) -> tuple[list[Row], dict[str, Any]]:
         "torch": torch.__version__,
         "model": Path(args.model).name,
         "dtype": layout.dtype,
-        "block_mib": layout.chunk_nbytes / 2**20,
+        "block_mib": block_mib,
         "repeats": args.repeats,
         "tail_tokens": args.tail,
         "min_gain": args.min_gain,

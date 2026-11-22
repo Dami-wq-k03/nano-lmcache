@@ -25,7 +25,7 @@
 | 流式回放大型工作负载、对比有界缓存实验 | [流式回放](streaming-replay.md) | 核心包；按到达时间和请求 ID 排序的 JSONL |
 | 只读检查持久化条目 | [磁盘教程](tutorial.md#4-持久化与提升分块) | 核心包和已有缓存目录 |
 | 复用 Hugging Face 模型 KV | [真实模型教程](tutorial.md#6-复用真实模型张量) | `hf` 扩展和模型权重，支持 CPU |
-| 采集引擎事件并生成离线 HTML | [引擎 Trace（英文）](../engine-traces.md) | 采集需要 Linux/NVIDIA GPU/本地模型；渲染只需核心包 |
+| 了解精简版集成为何不记录引擎事件 | [引擎 Trace 备注（英文）](../engine-traces.md) | 核心包 |
 | 把 KV 从 Prefill Worker 交给 Decode Worker | [PD 教程](tutorial.md#8-拆分-prefill-与-decode) | 核心包 |
 
 ## 实验与取舍
@@ -40,7 +40,7 @@
 | [GPU/数据平面实验（英文）](../gpu-experiment-report.md) | 在开发 GPU 上，pinned/异步复制、页面操作、INT8、重启恢复和 write-behind 的实测结果是什么？ |
 | [服务验证（英文）](../serving-validation-report.md) | 真实 vLLM 外部命中、异步导出、NVMe 冷读和双卡模型交接 |
 
-[GPU 验证记录（英文）](../gpu-validation.md)记录了完整测试、真实模型示例、跨进程磁盘恢复和引擎 Trace 渲染的实测结果。
+[GPU 验证记录（英文）](../gpu-validation.md)记录了完整测试、真实模型示例和跨进程磁盘恢复的实测结果。
 
 ## 贡献与维护
 

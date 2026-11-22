@@ -27,7 +27,7 @@ model or GPU.
 | Stream large workloads and compare bounded cache runs | [Streaming replay](streaming-replay.md) | Core package; JSONL sorted by arrival time and request ID |
 | Inspect persisted entries without changing them | [Disk tutorial](tutorial/README.md#4-persist-and-promote-chunks) | Core package, existing cache directory |
 | Reuse Hugging Face model KV | [Real-model tutorial](tutorial/README.md#6-reuse-real-model-tensors) | `hf` extra, model weights; CPU supported |
-| Record engine events and render offline HTML | [Engine traces](engine-traces.md) | Linux/NVIDIA GPU/local model to record; core package to render |
+| Understand why the simplified nano-vLLM integration has no engine events | [Engine trace notes](engine-traces.md) | Core package |
 | Hand KV from a prefill worker to a decode worker | [PD tutorial](tutorial/README.md#8-split-prefill-and-decode) | Core package |
 
 ## Experiments and trade-offs
@@ -44,7 +44,7 @@ results are measurements under those conditions, not universal speedup claims.
 | [Serving validation](serving-validation-report.md) | Real vLLM external hits, async export, cold NVMe and two-GPU model handoff |
 
 The [GPU validation record](gpu-validation.md) documents a complete test run,
-real-model examples, two-process disk restoration, and engine trace rendering.
+real-model examples, and two-process disk restoration.
 
 ## Contribute and maintain
 

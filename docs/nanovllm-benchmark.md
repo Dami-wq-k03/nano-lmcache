@@ -14,9 +14,10 @@ each setup, and says where L2 starts to beat recomputing. The design is in
 - **L2 on disk** is never faster than recomputing for this model, up to
   8,192 tokens. Its value here is reuse across processes and restarts, not
   latency.
-- **Storing is not free**: version 1 stores synchronously, so the first
-  request with a disk-backed L2 waits for its blocks to be written, about
-  270 to 330 ms per block.
+- **Storing is not free in this benchmark**: it stores synchronously, so the
+  first request with a disk-backed L2 waits for its blocks to be written,
+  about 270 to 330 ms per block. The demo can defer these writes with
+  `AsyncWriteBehindStorage`.
 
 ## Setup
 
@@ -130,12 +131,17 @@ for Qwen3-0.6B here.
 
 ### Storing sits on the request's critical path
 
-Version 1 stores inside `hash_blocks`, before the request returns. With
-pinned CPU memory that adds about 5 to 9 ms per block, mostly allocating
-the pinned buffer. With disk it adds about 270 to 330 ms per block: roughly
-90 ms to serialize (including the copy off the GPU) and the rest to write
-and `fsync` the file. A cold 8,224-token request takes 10.7 s instead of
-0.125 s.
+This benchmark uses the bare storage backends, so stores run inside
+`hash_blocks` before the request returns. With pinned CPU memory that adds
+about 5 to 9 ms per block, mostly allocating the pinned buffer. With disk
+it adds about 270 to 330 ms per block: roughly 90 ms to serialize (including
+the copy off the GPU) and the rest to write and `fsync` the file. A cold
+8,224-token request takes 10.7 s instead of 0.125 s.
+
+`AsyncWriteBehindStorage` can queue these backend writes in a bounded
+background worker; the demo uses it. That moves the store cost out of the
+request, but durability is then guaranteed only at `flush()`/`close()`.
+These measurements do not include that wrapper.
 
 ## What would move the crossover
 
@@ -152,8 +158,9 @@ L2 pays off when loading a block costs less than recomputing it:
 - **Fewer copies on the disk path**: today a warm read copies the file into
   Python bytes and then deserializes it; memory-mapping the file or reading
   straight into pinned memory would remove one or both steps.
-- **Storing off the critical path**: a background writer with batched
-  `fsync` would take the store cost out of TTFT entirely.
+- **Storing off the critical path**: `AsyncWriteBehindStorage` now provides
+  a bounded background writer; these measurements use the synchronous path.
+  Batched `fsync` would reduce the remaining write cost further.
 - **A lower per-step floor**: capturing prefill in CUDA graphs would make
   compute, and therefore reuse, visible at shorter prompts.
 

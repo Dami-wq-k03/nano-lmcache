@@ -78,11 +78,11 @@ graph TD
 
 `storage/remote.py` 提供支持批量查找的本地 TCP 服务。可选的
 `BatchReadableStorage` 能力不会扩大最小存储协议，同时让远端服务保留 packed
-后端合并后的 `get_many()` 读取，并让 nano-vLLM 用一次批量调用恢复外部区间。
-远端批量响应会通过多个有界帧传输，同时保持单个载荷完整；不支持这一能力的简单后端仍逐项读取。
+后端合并后的 `get_many()` 读取。远端批量响应会通过多个有界帧传输，同时保持
+单个载荷完整；不支持这一能力的简单后端仍逐项读取。
 `storage/async_write.py` 将自有、不可变的载荷排入后台线程，关闭时拒绝新写入，
 排空已接受的任务，即使后端失败也会退出线程。读取待提交的 key 会等待写入完成。
-nano-vLLM 示例的 `--async-store` 仅将 tier 写入移入后台，GPU 导出仍在请求路径上。
+nano-vLLM 示例在分层 L2 外再包一层 `AsyncWriteBehindStorage`，GPU 导出仍在请求路径上。
 
 `storage/coalesced.py` 使用追加文件和原子发布的带校验索引。
 容量只计算存活载荷，不包含失效文件片段，目前没有压缩回收工具。
@@ -454,10 +454,11 @@ TieredStorage(
 ## 推理引擎集成
 
 nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 前恢复 L2 块，
-并同步保存已完成块。块格式、命名空间、导入/导出与正确性约束见
+并保存已完成块。GPU 导出仍在请求路径上，存储写入可用 `AsyncWriteBehindStorage`
+移入后台。块格式、命名空间、导入/导出与正确性约束见
 [集成设计（英文）](../nanovllm-integration.md)；实测成本见
-[TTFT 报告（英文）](../nanovllm-benchmark.md)；L1/L2 与 GPU 传输事件见
-[引擎 Trace 指南（英文）](../engine-traces.md)。
+[TTFT 报告（英文）](../nanovllm-benchmark.md)。精简版集成不再记录引擎 Trace 事件，
+说明见[引擎 Trace 备注（英文）](../engine-traces.md)。
 
 独立的 vLLM 0.33.0 Connector 通过共享远端存储完成外部查询及同步保存/加载；
 环境要求、钩子流程和限制见 [Connector 指南（英文）](../vllm-nano-lmcache-connector.md)。
