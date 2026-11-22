@@ -40,6 +40,7 @@ results are measurements under those conditions, not universal speedup claims.
 | [Eviction performance](eviction-performance.md) | Why use a simple leaf scan now, and what did the earlier heap and policy experiments measure? |
 | [INT8 KV compression](quantized-kv.md) | How much space does quantization save, and what errors and latency does it add? |
 | [nano-vLLM TTFT](nanovllm-benchmark.md) | When do memory/disk loads cost less than recomputing the prefix? |
+| [QMSum prefix reuse](qmsum-benchmark.md) | Real-meeting L2 reuse, cold/warm latency, and the limits of strict token-ID equivalence |
 | [GPU/data-plane experiments](gpu-experiment-report.md) | What do pinned/asynchronous copies, page operations, INT8, restart recovery, and write-behind measure on the development GPU? |
 | [Serving validation](serving-validation-report.md) | Real vLLM external hits, async export, cold NVMe and two-GPU model handoff |
 
@@ -53,7 +54,7 @@ real-model examples, and two-process disk restoration.
 - Architecture and topic guides describe implemented behavior. Completed
   task specifications in the roadmap provide historical context.
 - Keep the English and Chinese README, index, tutorial, and architecture
-  aligned when changing the concepts they explain. Specialist reports are
-  currently in English; the [Chinese index](zh-CN/README.md) labels them.
+  aligned when changing the concepts they explain. The [Chinese index](zh-CN/README.md)
+  labels specialist reports that do not have a Chinese edition.
 
 Return to the [project README](../README.md).

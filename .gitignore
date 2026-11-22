@@ -9,4 +9,6 @@ dist/
 build/
 GPUserver.md
 .vscode/
+/data/qmsum/
+/results/qmsum/
 
