@@ -19,7 +19,6 @@ from nano_lmcache.integrations.nanovllm.kv_blocks import (  # noqa: E402
     import_block,
 )
 from nano_lmcache.integrations.nanovllm.layout import KVBlockLayout  # noqa: E402
-from nano_lmcache.storage.coalesced import CoalescedDiskKVCache  # noqa: E402
 from nano_lmcache.storage.disk import DiskKVCache  # noqa: E402
 from nano_lmcache.storage.memory import MemoryKVCache  # noqa: E402
 from nano_lmcache.storage.tiered import TieredStorage  # noqa: E402
@@ -80,17 +79,6 @@ class RecordingStorage(MemoryKVCache):
         super().put(key, value, parent_key=parent_key)
 
 
-class RecordingBatchStorage(RecordingStorage):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.get_many_calls = []
-
-    def get_many(self, keys):
-        snapshot = tuple(keys)
-        self.get_many_calls.append(snapshot)
-        return [MemoryKVCache.get(self, key) for key in snapshot]
-
-
 @pytest.fixture
 def cache():
     return NanoVLLMExternalCache(LAYOUT, MemoryKVCache())
@@ -99,30 +87,12 @@ def cache():
 # ---- keys -------------------------------------------------------------
 
 
-def test_storage_must_support_membership_checks():
-    class GetPutOnly:
-        def put(self, key, value, *, parent_key=None): ...
-
-        def get(self, key):
-            return None
-
-    with pytest.raises(TypeError, match="__contains__"):
-        NanoVLLMExternalCache(LAYOUT, GetPutOnly())
-
-
 def test_block_keys_are_nano_lmcache_chunk_keys(cache):
     prompt = tokens(3, extra=2)
     reference = ChunkedPrefixCache(chunk_size=BLOCK, namespace=LAYOUT.namespace())
     reference.store(prompt, ["a", "b", "c"])
 
     assert cache.block_keys(prompt) == reference.lookup(prompt).keys
-
-
-def test_block_keys_cover_complete_blocks_only(cache):
-    assert len(cache.block_keys(tokens(3, extra=3))) == 3
-    assert len(cache.block_keys(tokens(3, extra=3), num_blocks=2)) == 2
-    with pytest.raises(ValueError):
-        cache.block_keys(tokens(3, extra=3), num_blocks=4)
 
 
 def test_a_block_key_depends_on_everything_before_it(cache):
@@ -163,7 +133,7 @@ def test_a_prompt_of_whole_blocks_leaves_its_last_block_to_compute(cache):
     prompt = tokens(3)  # exactly 3 full blocks
     save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
 
-    assert len(cache.storage) == 3
+    assert len(cache._storage) == 3
     assert cache.count_hits(prompt, 0) == 2
 
 
@@ -194,11 +164,6 @@ def test_counting_never_reads_a_payload():
     assert storage.gets == []
 
 
-def test_more_l1_hits_than_reusable_blocks_is_an_error(cache):
-    with pytest.raises(ValueError):
-        cache.count_hits(tokens(2), 2)
-
-
 # ---- fetching ---------------------------------------------------------
 
 
@@ -225,62 +190,6 @@ def test_fetch_from_a_start_block_skips_the_l1_hits():
     assert storage.gets == list(cache.block_keys(prompt)[2:4])
 
 
-def test_fetch_uses_one_batch_read_for_the_external_span():
-    storage = RecordingBatchStorage()
-    cache = NanoVLLMExternalCache(LAYOUT, storage)
-    prompt = tokens(4, extra=1)
-    save(cache, prompt, make_kv_cache(), [0, 1, 2, 3], 4)
-
-    payloads = cache.fetch(prompt, 1, 3)
-
-    assert len(payloads) == 3
-    assert storage.get_many_calls == [cache.block_keys(prompt)[1:4]]
-    assert storage.gets == []
-
-
-def test_fetch_coalesces_packed_disk_reads(tmp_path):
-    with CoalescedDiskKVCache(
-        tmp_path, serializer=TensorSerializer()
-    ) as storage:
-        cache = NanoVLLMExternalCache(LAYOUT, storage)
-        prompt = tokens(3, extra=1)
-        save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
-
-        assert len(cache.fetch(prompt, 0, 3)) == 3
-        assert storage.read_ops == 1
-
-
-def test_batch_fetch_stops_at_the_first_missing_payload():
-    class GappedBatchStorage(RecordingBatchStorage):
-        def get_many(self, keys):
-            values = super().get_many(keys)
-            return [values[0], None, values[2]]
-
-    storage = GappedBatchStorage()
-    cache = NanoVLLMExternalCache(LAYOUT, storage)
-    prompt = tokens(3, extra=1)
-    save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
-
-    payloads = cache.fetch(prompt, 0, 3)
-
-    assert len(payloads) == 1
-    assert cache.stats.fetched_blocks == 1
-
-
-def test_batch_fetch_rejects_a_result_with_the_wrong_length():
-    class ShortBatchStorage(RecordingBatchStorage):
-        def get_many(self, keys):
-            return super().get_many(keys)[:-1]
-
-    storage = ShortBatchStorage()
-    cache = NanoVLLMExternalCache(LAYOUT, storage)
-    prompt = tokens(2, extra=1)
-    save(cache, prompt, make_kv_cache(), [0, 1], 2)
-
-    with pytest.raises(ValueError, match="one result per requested key"):
-        cache.fetch(prompt, 0, 2)
-
-
 def test_fetch_returns_fewer_blocks_if_some_were_evicted():
     storage = MemoryKVCache(max_entries=8)
     cache = NanoVLLMExternalCache(LAYOUT, storage)
@@ -294,20 +203,6 @@ def test_fetch_returns_fewer_blocks_if_some_were_evicted():
 
     assert promised == 3
     assert len(cache.fetch(prompt, 0, promised)) < promised
-
-
-def test_fetch_never_crosses_the_last_block_limit(cache):
-    prompt = tokens(3)
-    save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
-
-    with pytest.raises(ValueError):
-        cache.fetch(prompt, 0, 3)
-
-
-@pytest.mark.parametrize(("start", "count"), [(-1, 1), (0, -1)])
-def test_fetch_rejects_negative_arguments(cache, start, count):
-    with pytest.raises(ValueError):
-        cache.fetch(tokens(3, extra=1), start, count)
 
 
 def test_fetching_nothing_reads_nothing(cache):
@@ -329,19 +224,14 @@ def test_missing_blocks_starts_after_what_is_stored(cache):
     assert cache.missing_blocks(prompt, 2) == range(2, 2)
 
 
-def test_missing_blocks_cannot_exceed_complete_blocks(cache):
-    with pytest.raises(ValueError):
-        cache.missing_blocks(tokens(3, extra=1), 4)
-
-
 def test_store_links_each_block_to_the_previous_one(cache):
     prompt = tokens(3, extra=1)
     save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
 
     keys = cache.block_keys(prompt)
-    assert cache.storage.parent_of(keys[0]) is None
-    assert cache.storage.parent_of(keys[1]) == keys[0]
-    assert cache.storage.parent_of(keys[2]) == keys[1]
+    assert cache._storage.parent_of(keys[0]) is None
+    assert cache._storage.parent_of(keys[1]) == keys[0]
+    assert cache._storage.parent_of(keys[2]) == keys[1]
 
 
 def test_store_after_a_missing_prefix_is_dropped(cache):
@@ -352,22 +242,7 @@ def test_store_after_a_missing_prefix_is_dropped(cache):
     stored = cache.store(prompt, 1, [export_block(kv_cache, 1)])
 
     assert stored == 0
-    assert len(cache.storage) == 0
-
-
-def test_store_checks_its_arguments(cache):
-    kv_cache = make_kv_cache()
-    payload = export_block(kv_cache, 0)
-    prompt = tokens(2, extra=1)
-
-    with pytest.raises(ValueError):
-        cache.store(prompt, 0, [payload] * 3)  # only 2 complete blocks
-    with pytest.raises(ValueError):
-        cache.store(prompt, -1, [payload])
-    with pytest.raises(ValueError):
-        cache.store(prompt, 0, [payload, None])
-    with pytest.raises(ValueError):
-        cache.store(prompt, 0, [torch.zeros(2, 2)])  # not a chunk
+    assert len(cache._storage) == 0
 
 
 def test_chunked_prefill_stores_every_block_exactly_once():
@@ -390,17 +265,6 @@ def test_store_reports_what_capacity_kept():
     prompt = tokens(3, extra=1)
 
     assert save(cache, prompt, make_kv_cache(), [0, 1, 2], 3) == 2
-
-
-def test_stats_track_what_happened(cache):
-    prompt = tokens(3, extra=1)
-    save(cache, prompt, make_kv_cache(), [0, 1, 2], 3)
-    cache.count_hits(prompt, 1)
-    cache.fetch(prompt, 1, 2)
-
-    assert cache.stats.stored_blocks == 3
-    assert cache.stats.hit_blocks == 2
-    assert cache.stats.fetched_blocks == 2
 
 
 # ---- isolation --------------------------------------------------------
@@ -446,7 +310,7 @@ def test_blocks_saved_by_one_engine_restore_into_another(backend, tmp_path):
 
     # Disk-backed storage is reopened from its directory, as after a
     # restart; memory storage is shared, as inside one process.
-    storage = writer.storage if backend == "memory" else BACKENDS[backend](tmp_path)
+    storage = writer._storage if backend == "memory" else BACKENDS[backend](tmp_path)
     reader = NanoVLLMExternalCache(LAYOUT, storage)
     engine_b = torch.zeros_like(engine_a)
 

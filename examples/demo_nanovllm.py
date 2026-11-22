@@ -1,33 +1,16 @@
-"""nano-lmcache as the L2 KV cache of nano-vLLM: run it twice.
+"""nano-vLLM with nano-lmcache as its external L2 KV cache.
 
-Needs Linux, an NVIDIA GPU, and the nanovllm dependency group:
+The disk cache persists between runs. Completed KV blocks are written
+through a CPU-offloaded memory tier in front of disk, so running the
+script twice restores the shared document from L2 in the second process.
 
     uv sync --extra hf --group nanovllm
-    uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B   # 1st
-    uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B   # 2nd
-
-The first run computes the shared document's KV and nano-lmcache stores
-every complete block on disk. The second run is a new process: nano-vLLM's
-own GPU prefix cache (L1) starts empty, so its prompt blocks can only come
-from nano-lmcache (L2). Inside each run, a second question about the same
-document hits L1, the way nano-vLLM already works on its own.
-
-nano-vLLM always uses the first visible GPU; pick one with
-CUDA_VISIBLE_DEVICES. Pass --clear to empty the disk cache.
-
-Read the timings honestly. Storing is synchronous in this version: the
-first run's first request also waits for its blocks to be written to disk
-(with an fsync per block). And with a small model on a fast GPU,
-recomputing a prompt can be cheaper than reading its blocks back from
-disk. What L2 buys here is reuse across processes; whether it is also
-faster depends on the model, the prompt length, and the storage tier,
-which roadmap task N4 measures.
+    uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 """
 
 import argparse
 import atexit
-import json
-import shutil
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -37,14 +20,12 @@ from nanovllm import LLM, SamplingParams
 
 from nano_lmcache.integrations.nanovllm import KVBlockLayout, NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.engine import attach
-from nano_lmcache.observability import TraceRecorder, TracingStorage, request_context
-from nano_lmcache.storage.async_write import AsyncWriteBehindStorage
 from nano_lmcache.storage.disk import DiskKVCache
-from nano_lmcache.storage.memory import MemoryKVCache
 from nano_lmcache.storage.tiered import TieredStorage
+from nano_lmcache.tensor.offload import CPUOffloadKVCache
 from nano_lmcache.tensor.serializers import TensorSerializer
 
-DEFAULT_DIR = Path(tempfile.gettempdir()) / "nano-lmcache-nanovllm"
+CACHE_DIR = Path(tempfile.gettempdir()) / "nano-lmcache-nanovllm"
 
 DOCUMENT = (
     "The city council met on Tuesday to discuss the new transit plan. The "
@@ -58,153 +39,86 @@ QUESTIONS = [
 ]
 
 
-def ask(llm, manager, token_ids, label, recorder=None):  # type: ignore[no-untyped-def]
-    """Generate one token (time to first token), then a short answer."""
-    before = (manager.stats.l1_hit_blocks, manager.stats.l2_hit_blocks,
-              manager.stats.prefill_tokens, manager.stats.stored_blocks)
+def generate(llm, prompt, max_tokens):
+    """Run one request with a fixed seed so outputs are repeatable."""
+    torch.manual_seed(0)
+    (output,) = llm.generate(
+        [prompt],
+        SamplingParams(temperature=1e-6, max_tokens=max_tokens),
+        use_tqdm=False,
+    )
+    return output
+
+
+def engine_counters(manager):
+    """Return the four engine counters in the order `ask` prints them."""
+    stats = manager.stats
+    return (
+        stats.l1_hit_blocks,
+        stats.l2_hit_blocks,
+        stats.prefill_tokens,
+        stats.stored_blocks,
+    )
+
+
+def ask(llm, manager, token_ids, label):
+    """Run one request and time it from start to finish."""
+    before = engine_counters(manager)
 
     torch.cuda.synchronize()
     start = time.perf_counter()
-    torch.manual_seed(0)
-    trace_start = len(recorder) if recorder is not None else 0
-    with request_context(label + "/ttft"):
-        llm.generate([token_ids], SamplingParams(temperature=1e-6, max_tokens=1),
-                     use_tqdm=False)
+    answer = generate(llm, token_ids, 24)
     torch.cuda.synchronize()
-    ttft = time.perf_counter() - start
-    finish_trace(recorder, trace_start, ttft_ms=ttft * 1000)
+    elapsed_ms = (time.perf_counter() - start) * 1000
 
     l1, l2, computed, stored = (
         now - then
-        for now, then in zip(
-            (manager.stats.l1_hit_blocks, manager.stats.l2_hit_blocks,
-             manager.stats.prefill_tokens, manager.stats.stored_blocks),
-            before,
-            strict=True,
-        )
+        for now, then in zip(engine_counters(manager), before, strict=True)
     )
-    # nano-vLLM forbids temperature 0 and breaks ties between equally likely
-    # tokens with random noise; bfloat16 logits tie often. A fixed seed makes
-    # the answer repeatable across runs.
-    torch.manual_seed(0)
-    trace_start = len(recorder) if recorder is not None else 0
-    with request_context(label + "/answer"):
-        (answer,) = llm.generate(
-            [token_ids], SamplingParams(temperature=1e-6, max_tokens=24),
-            use_tqdm=False,
-        )
-    finish_trace(recorder, trace_start)
-    print(f"{label}")
+    print(label)
     print(f"  prompt {len(token_ids)} tokens: {l1} blocks from L1 (GPU), "
-          f"{l2} from L2 (disk), {computed} tokens computed, {stored} blocks stored")
-    print(f"  time to first token: {ttft * 1000:.1f} ms")
+          f"{l2} from L2 (CPU/disk), {computed} tokens computed, "
+          f"{stored} blocks stored")
+    print(f"  request time: {elapsed_ms:.1f} ms")
     print(f"  answer: {answer['text'].strip()!r}\n")
 
 
-def finish_trace(recorder, start, **metadata):  # type: ignore[no-untyped-def]
-    """Complete this generate call's requests without capturing text/tensors."""
-    if recorder is None:
-        return
-    for event in recorder.events[start:]:
-        if event.event_type == "request_started":
-            recorder.record(
-                "request_completed",
-                request_id=event.request_id,
-                result="completed",
-                metadata=metadata,
-            )
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description="nano-vLLM with nano-lmcache as its external L2 KV cache"
+    )
     parser.add_argument("--model", required=True, help="local model directory")
-    parser.add_argument("--dir", type=Path, default=DEFAULT_DIR)
-    parser.add_argument("--clear", action="store_true")
-    parser.add_argument("--trace-output", type=Path, help="metadata-only Trace JSON")
-    parser.add_argument(
-        "--memory-max-entries", type=int, default=None,
-        help="limit the memory L2 tier to observe disk restores and eviction",
-    )
-    parser.add_argument(
-        "--async-store",
-        action="store_true",
-        help="queue L2 writes in a bounded background worker",
-    )
-    parser.add_argument(
-        "--write-queue",
-        type=int,
-        default=32,
-        help="maximum pending L2 writes with --async-store",
-    )
     args = parser.parse_args()
+    model = os.path.expanduser(args.model)
 
-    if args.clear:
-        shutil.rmtree(args.dir, ignore_errors=True)
-        print(f"Cleared {args.dir}")
-        return
-
-    llm = LLM(args.model, enforce_eager=True, tensor_parallel_size=1,
+    llm = LLM(model, enforce_eager=True, tensor_parallel_size=1,
               gpu_memory_utilization=0.5, max_model_len=4096)
-    write_behind: AsyncWriteBehindStorage | None = None
     try:
         layout = KVBlockLayout.from_hf_config(
             llm.model_runner.config.hf_config,
-            model=Path(args.model).name,
-            revision="local",  # use a commit or checksum of the weights in practice
+            model=Path(model).name,
+            revision="local",
         )
-        disk = DiskKVCache(args.dir, serializer=TensorSerializer())
-        print(f"L2 on disk: {args.dir} ({len(disk)} blocks from earlier runs)\n")
-        # Memory in front of disk; every stored block is written through to disk.
-        recorder = TraceRecorder() if args.trace_output is not None else None
-        memory = MemoryKVCache(max_entries=args.memory_max_entries)
-        if recorder is None:
-            storage = TieredStorage(fast=memory, slow=disk)
-        else:
-            storage = TieredStorage(
-                fast=TracingStorage(memory, recorder, name="memory"),
-                slow=TracingStorage(disk, recorder, name="disk"),
-                trace_recorder=recorder,
-            )
-        if args.async_store:
-            write_behind = AsyncWriteBehindStorage(
-                storage, max_pending=args.write_queue
-            )
-            storage = write_behind
-        # Warm up first. nano-vLLM compiles several layers and its sampler with
-        # torch.compile, and the first new sequence length or batch size
-        # triggers a recompile. That costs hundreds of milliseconds, has nothing
-        # to do with caching, and would otherwise land on the first measured
-        # request. One request at a time (batch size 1, like the measured ones),
-        # with a long prompt twice so both the cold and the prefix-cache
-        # attention paths are compiled. Done before attach(), so L2 stays clean.
-        for warmup in ["Hello", "warm up " * 650, "warm up " * 650]:
-            llm.generate([warmup], SamplingParams(temperature=1e-6, max_tokens=2),
-                         use_tqdm=False)
-        manager = attach(llm, NanoVLLMExternalCache(layout, storage, recorder))
+        disk = DiskKVCache(CACHE_DIR, serializer=TensorSerializer())
+        storage = TieredStorage(
+            fast=CPUOffloadKVCache(device="cuda"),
+            slow=disk,
+        )
+        print(f"L2 on disk: {CACHE_DIR} ({len(disk)} blocks from earlier runs)\n")
+        for prompt in ("Hello", "warm up " * 650, "warm up " * 650):
+            generate(llm, prompt, 2)
+        manager = attach(llm, NanoVLLMExternalCache(layout, storage))
 
         for index, question in enumerate(QUESTIONS, start=1):
             ask(llm, manager, llm.tokenizer.encode(DOCUMENT + question),
-                f"question-{index}", recorder)
+                f"question-{index}")
 
-        if write_behind is not None:
-            write_behind.flush()
         print(f"L2 now holds {len(disk)} blocks on disk.")
         if manager.stats.l2_hit_blocks == 0:
             print("Run the script again: the next process restores them from disk.")
-        if recorder is not None:
-            args.trace_output.write_text(json.dumps({
-                "format_version": 1,
-                "source": "nanovllm",
-                "events": recorder.to_list(),
-            }, indent=2), encoding="utf-8")
-            print(f"Trace written to {args.trace_output}")
     finally:
-        try:
-            if write_behind is not None:
-                write_behind.close()
-        finally:
-            atexit.unregister(llm.exit)
-            llm.exit()
+        atexit.unregister(llm.exit)
+        llm.exit()
 
 
 if __name__ == "__main__":

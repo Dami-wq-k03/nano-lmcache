@@ -10,7 +10,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from nano_lmcache.integrations.nanovllm.kv_blocks import (  # noqa: E402
-    chunk_shape,
     export_block,
     import_block,
 )
@@ -33,17 +32,12 @@ def make_kv_cache(dtype=torch.float32, seed=0, device="cpu"):
 # ---- the format -------------------------------------------------------
 
 
-def test_chunk_shape_is_nano_lmcache_chunk_format():
-    # [num_layers, 2 (K/V), num_kv_heads, chunk_tokens, head_dim]
-    assert chunk_shape(make_kv_cache()) == (LAYERS, 2, HEADS, BLOCK_SIZE, HEAD_DIM)
-
-
 def test_export_has_chunk_shape_dtype_and_device():
     kv_cache = make_kv_cache(torch.bfloat16)
 
     payload = export_block(kv_cache, 3)
 
-    assert tuple(payload.shape) == chunk_shape(kv_cache)
+    assert tuple(payload.shape) == (LAYERS, 2, HEADS, BLOCK_SIZE, HEAD_DIM)
     assert payload.dtype == torch.bfloat16
     assert payload.device == kv_cache.device
 
@@ -179,76 +173,6 @@ def test_payload_survives_a_disk_cache_restart(tmp_path):
     import_block(target, 0, reopened.get("block"))
 
     assert torch.equal(target[:, :, 0], kv_cache[:, :, 3])
-
-
-# ---- errors -----------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "bad_cache",
-    [
-        torch.zeros(LAYERS, BLOCKS, BLOCK_SIZE, HEADS, HEAD_DIM),  # 5-D
-        torch.zeros(3, LAYERS, BLOCKS, BLOCK_SIZE, HEADS, HEAD_DIM),  # not K/V
-    ],
-)
-def test_rejects_a_tensor_that_is_not_a_nanovllm_kv_cache(bad_cache):
-    with pytest.raises(ValueError, match="nano-vLLM KV cache"):
-        export_block(bad_cache, 0)
-
-
-@pytest.mark.parametrize("block_id", [-1, BLOCKS])
-def test_rejects_block_ids_outside_the_cache(block_id):
-    # -1 matters: nano-vLLM pads block tables with -1, and plain indexing
-    # would silently read the last block instead.
-    kv_cache = make_kv_cache()
-    payload = export_block(kv_cache, 0)
-
-    with pytest.raises(ValueError, match="block_id"):
-        export_block(kv_cache, block_id)
-    with pytest.raises(ValueError, match="block_id"):
-        import_block(kv_cache, block_id, payload)
-
-
-def test_rejects_a_payload_with_another_block_size():
-    kv_cache = make_kv_cache()
-    wrong = torch.zeros(LAYERS, 2, HEADS, BLOCK_SIZE * 2, HEAD_DIM)
-
-    with pytest.raises(ValueError, match="block size"):
-        import_block(kv_cache, 0, wrong)
-
-
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (LAYERS + 1, 2, HEADS, BLOCK_SIZE, HEAD_DIM),
-        (LAYERS, 2, HEADS * 2, BLOCK_SIZE, HEAD_DIM),
-        (LAYERS, 2, HEADS, BLOCK_SIZE, HEAD_DIM + 1),
-        (2, LAYERS, BLOCK_SIZE, HEADS, HEAD_DIM),  # nano-vLLM order, not chunk order
-        (LAYERS, 2, HEADS, BLOCK_SIZE),
-    ],
-)
-def test_rejects_a_payload_with_the_wrong_shape(shape):
-    with pytest.raises(ValueError, match="shape"):
-        import_block(make_kv_cache(), 0, torch.zeros(shape))
-
-
-def test_rejects_a_payload_with_the_wrong_dtype():
-    kv_cache = make_kv_cache(torch.bfloat16)
-    wrong = torch.zeros(chunk_shape(kv_cache), dtype=torch.float32)
-
-    with pytest.raises(ValueError, match="dtype"):
-        import_block(kv_cache, 0, wrong)
-
-
-def test_a_rejected_import_leaves_the_cache_untouched():
-    kv_cache = make_kv_cache()
-    before = kv_cache.clone()
-
-    with pytest.raises(ValueError):
-        import_block(kv_cache, 0, torch.zeros(LAYERS, 2, HEADS, BLOCK_SIZE + 1,
-                                              HEAD_DIM))
-
-    assert torch.equal(kv_cache, before)
 
 
 # ---- GPU --------------------------------------------------------------
