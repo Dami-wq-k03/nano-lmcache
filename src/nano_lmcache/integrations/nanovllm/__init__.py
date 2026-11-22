@@ -11,7 +11,6 @@ from nano_lmcache.integrations.nanovllm.external_cache import (
     max_reusable_blocks,
 )
 from nano_lmcache.integrations.nanovllm.kv_blocks import (
-    chunk_shape,
     export_block,
     import_block,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "KVBlockLayout",
     "MembershipStorage",
     "NanoVLLMExternalCache",
-    "chunk_shape",
     "export_block",
     "import_block",
     "max_reusable_blocks",

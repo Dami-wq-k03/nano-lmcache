@@ -99,9 +99,6 @@ class DiskKVCache:
             eviction_policy=eviction_policy,
         )
         self._lock = threading.RLock()
-        # Last-used times are written as file mtimes. Keeping them strictly
-        # increasing makes the order exact even when two accesses land in
-        # the same clock tick.
         self._last_tick = 0
         self._recover()
 
