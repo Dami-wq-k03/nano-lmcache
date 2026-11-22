@@ -16,7 +16,7 @@ Linux and an NVIDIA GPU. Steps 8–9 return to the core package.
 | [4. Storage tiers](#4-persist-and-promote-chunks) | What survives a restart, and where does a hit come from? |
 | [5. Trace viewer](#5-follow-a-lookup-in-the-viewer) | Which chunks were hit, missed, or never checked? |
 | [6. Real tensors](#6-reuse-real-model-tensors) | Does reuse preserve model output, and does it save time? |
-| [7. Engine restoration](#7-restore-a-real-engines-cache) | How do external L2 blocks return to the engine's GPU L1? |
+| [7. Engine restoration](#7-reuse-a-real-engines-kv-cache) | How do external L2 blocks return to the engine's GPU L1? |
 | [8. PD disaggregation](#8-split-prefill-and-decode) | What must a prefill worker hand over so a decode worker can continue? |
 | [9. Eviction policy lab](#9-compare-lru-and-lfu) | Which leaf policy fits a uniform or skewed workload? |
 
@@ -227,33 +227,31 @@ Read [real tensors](../architecture.md#real-kv-tensors),
 use the separate [INT8 experiment](../quantized-kv.md); use a different cache
 directory when changing serializers or incompatible model configurations.
 
-## 7. Restore a real engine's cache
+## 7. Reuse a real engine's KV cache
 
 Requirements: Linux, an NVIDIA GPU, Python 3.11 or 3.12, and a local
-Qwen3-0.6B model. Use a new disk directory for the first invocation:
+Qwen3-0.6B model:
 
 ```bash
 uv sync --extra hf --group nanovllm
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
-  --dir /tmp/nano-learning-engine --trace-output /tmp/nano-cold.json
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B \
-  --dir /tmp/nano-learning-engine --trace-output /tmp/nano-restart.json
-uv run python -m nano_lmcache.visualize --trace-json /tmp/nano-restart.json \
-  --output /tmp/nano-engine.html
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
+uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 ```
 
-The second process starts with empty GPU L1 and memory L2, restores the
-shared prefix from disk, and imports it into engine KV blocks. Later
-requests within that process can reuse GPU L1. The demo's fast L2 is
-`MemoryKVCache`, which keeps tensors on their existing device; it is not
-an explicit pinned CPU-offload tier.
+The demo's L2 is `TieredStorage(fast=CPUOffloadKVCache, slow=DiskKVCache)`
+wrapped in `AsyncWriteBehindStorage`. The first run computes the document's
+KV and queues completed blocks for disk and pinned CPU storage; the queue is
+flushed by `storage.close()` when the process exits. The second process starts
+with an empty GPU L1 and an empty CPU fast tier. It reads the shared prefix
+from disk, promotes it into the CPU fast tier, and copies it into engine KV
+blocks before prefill. Later requests in the same process reuse GPU L1.
 
-Experiment: compare the cold and restart traces, then distinguish an
-`l2_lookup` availability probe from an actual `l2_hit`/`l2_restore`.
-GPU copy events describe stream enqueue order, not CUDA completion time.
-The engine always computes its last prompt block to obtain logits, even
-when that block is complete; the generic cache's incomplete-chunk rule
-alone does not explain this behavior.
+Each question is one generation request, and the printed time covers the whole
+request: prefill, decode, GPU export, and enqueueing. Background disk writes
+are not included. The integration does not record engine trace events, and
+the demo has no `--trace-output` or `--memory-max-entries` options. Use the
+controlled [TTFT benchmark](../nanovllm-benchmark.md) for speed comparisons,
+not the demo's request time.
 
 Run the real-model checks in the same GPU environment:
 
@@ -262,19 +260,13 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
   --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
-Tests cover restored KV, matching generated tokens, disk reuse after
-restart, and trace-to-HTML conversion. Without optional engine dependencies,
-[`test_engine_trace.py`](../../tests/unit/test_engine_trace.py) still checks
-trace import and rendering on CPU.
+Tests cover restored KV, matching generated tokens, and disk reuse after
+restart. Without the optional engine dependencies, engine-level tests skip;
+the core test suite still runs.
 
-Read the [integration rules](../nanovllm-integration.md#rules-the-integration-must-keep)
-and [engine trace guide](../engine-traces.md). Use the controlled
-[TTFT benchmark](../nanovllm-benchmark.md) for speed comparisons: demo TTFT
-includes tracing overhead and synchronous writes and is not an isolated
-measurement of cache speedup.
-
+Read the [integration rules](../nanovllm-integration.md#rules-the-integration-must-keep).
 A [GPU validation record](../gpu-validation.md) records a completed run of
-these examples, including two-process restoration and trace rendering.
+these examples, including two-process restoration.
 
 ## 8. Split prefill and decode
 

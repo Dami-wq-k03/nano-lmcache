@@ -103,14 +103,13 @@ transfer buffers only after the corresponding event.
 
 `storage/remote.py` exposes batch lookup over a local TCP service. The optional
 `BatchReadableStorage` capability keeps the minimal storage contract small while
-letting the remote server preserve a packed backend's coalesced `get_many()` and
-letting nano-vLLM restore an external span with one batch call. Remote batch
-responses stream over bounded frames without splitting an individual payload.
-Backends without that capability retain scalar reads.
+letting the remote server preserve a packed backend's coalesced `get_many()`.
+Remote batch responses stream over bounded frames without splitting an
+individual payload. Backends without that capability retain scalar reads.
 `storage/async_write.py` queues owned, immutable payloads, rejects submissions
 while closing, drains accepted writes and stops its worker even after a backend
-failure. A pending key's read waits for committed data. The nano-vLLM demo's
-`--async-store` moves tier writes to that worker; GPU export still runs on the
+failure. A pending key's read waits for committed data. The nano-vLLM demo
+wraps its tiered L2 in `AsyncWriteBehindStorage`; GPU export still runs on the
 request path. This is a write-behind prototype, not a complete GPU pipeline.
 
 `storage/coalesced.py` packs payloads into an append-only file with an atomic
@@ -743,9 +742,11 @@ nano-lmcache implements an external (L2) KV cache for nano-vLLM, behind
 nano-vLLM's own GPU prefix cache (L1). The design, including the block
 format in `integrations/nanovllm/kv_blocks.py`, is in
 [nanovllm-integration.md](nanovllm-integration.md). Version 1 restores L2
-blocks before prefill and saves completed blocks synchronously. See the
-[TTFT report](nanovllm-benchmark.md) for measured costs and
-[engine trace guide](engine-traces.md) for L1/L2 and GPU transfer events.
+blocks before prefill and saves completed blocks. GPU export runs in the
+step; storage writes can be moved to a background worker with
+`AsyncWriteBehindStorage`. See the [TTFT report](nanovllm-benchmark.md)
+for measured costs. The simplified integration does not record engine
+events; see [engine trace notes](engine-traces.md).
 
 The separate vLLM 0.33.0 connector uses a shared remote store for external
 lookup and synchronous save/load. See its

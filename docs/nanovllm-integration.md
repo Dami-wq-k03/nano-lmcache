@@ -14,6 +14,11 @@ the integration targets Python 3.11 and 3.12. nano-vLLM also needs
 `flash-attn`, `triton`, and `xxhash`; their versions must be checked
 against this project's PyTorch (see N2).
 
+**Implementation note.** The current `integrations/nanovllm` package is the
+deliberately small teaching version. It has no tracing, no batch-read fast
+path, and no eager payload/block-ID validation at the integration boundary.
+Storage backends still provide prefix-safe capacity and eviction.
+
 ## Why nano-vLLM
 
 nano-vLLM is a ~1,200-line reimplementation of vLLM's core: a paged KV
@@ -132,12 +137,13 @@ the existing chunk format means `TensorSerializer`, `CPUOffloadKVCache`,
 
 - Export returns an independent contiguous copy: nano-vLLM reuses a
   physical block for other tokens once its sequence finishes.
-- Import checks layers, KV heads, head size, block size, and dtype before
-  writing anything, and accepts a payload on another device (a disk tier
-  returns CPU tensors).
-- Block IDs are range-checked. Negative IDs are rejected on purpose:
-  `-1` pads nano-vLLM's block tables, and `kv_cache[:, :, -1]` would
-  quietly address the last block.
+- Import accepts a payload on another device (a disk tier returns CPU
+  tensors) and copies it into the target block.
+- The simplified implementation trusts the layout and nano-vLLM's
+  `seq.block_table`; it does not re-check payload shapes, dtypes, or block
+  IDs on every call. Pass values produced by `export_block` and
+  non-negative block IDs. (`-1` pads nano-vLLM's block table, and
+  `kv_cache[:, :, -1]` would quietly address the last block.)
 - Import copies on the current CUDA stream, the stream nano-vLLM's
   forward pass runs on, so attention cannot read a block before its copy
   finishes. Code that runs the model on another stream must synchronize.
@@ -161,15 +167,14 @@ bytes, and `namespace()` hashes it into every key:
 - tensor-parallel size and rank;
 - a fingerprint of the whole model config (`model_config_fingerprint`).
 
-The config is hashed as a whole, minus a short list of fields that cannot
-change KV (token IDs such as `eos_token_id`, `use_cache`, the load path,
-the transformers version), instead of picking the fields that seem to
-matter. A field wrongly included only costs a miss; a field wrongly left
-out causes a wrong hit. Fields that do matter include the RoPE parameters
-(nano-vLLM caches keys after rotary embedding), the norm epsilon (Qwen3
-normalizes keys before caching), and the MLP settings (they shape every
-later layer's input). `KVBlockLayout.from_hf_config` sizes the layout
-exactly as `ModelRunner.allocate_kv_cache` sizes the KV cache; for
+The current implementation hashes the complete model config dictionary
+(`model_config_fingerprint`). A field wrongly included only costs a miss;
+a field wrongly left out causes a wrong hit, so the simplified version errs
+on the side of including everything. Fields that do matter include the
+RoPE parameters (nano-vLLM caches keys after rotary embedding), the norm
+epsilon (Qwen3 normalizes keys before caching), and the MLP settings (they
+shape every later layer's input). `KVBlockLayout.from_hf_config` sizes the
+layout exactly as `ModelRunner.allocate_kv_cache` sizes the KV cache; for
 Qwen3-0.6B that is 28 layers, 8 KV heads, head size 128, bfloat16, and
 28 MiB per block.
 
@@ -187,11 +192,9 @@ backend does.
 `count_hits` and `fetch` never go past `max_reusable_blocks`, the
 last-block limit of rule 1. Blocks L2 holds always form a prefix of the
 prompt, because storage is prefix-safe, so `missing_blocks` is simply
-"everything from the first missing block on". If storage implements the
-optional `BatchReadableStorage` capability, `fetch` reads its requested external
-span with one `get_many()` operation; ordinary storage retains the scalar
-fallback. Either path stops restoring at the first miss, including a miss caused
-by an unreachable remote server.
+"everything from the first missing block on". `fetch` uses scalar
+`storage.get` calls and stops at the first miss; this simplified version
+does not use the optional `BatchReadableStorage` fast path.
 
 ## The integration
 
@@ -212,9 +215,11 @@ changes two objects of a running engine:
 stays an unmodified dependency pinned to `bb823b3` (dependency group
 `nanovllm`). The cost of not keeping a patched fork is that `attach`
 relies on the internal method names of that commit, which is one more
-reason the commit is pinned. Tensor parallelism is rejected for now: ranks
-1..N run their own `ModelRunner.loop` in other processes and would each
-need to copy their slice of the KV heads.
+reason the commit is pinned. Tensor parallelism is out of scope for
+version 1: ranks 1..N run their own `ModelRunner.loop` in other processes
+and would each need to copy their slice of the KV heads. Install the
+integration only on a single-GPU engine (`tensor_parallel_size == 1`); the
+simplified `attach` does not reject larger values.
 
 ```mermaid
 sequenceDiagram
@@ -289,8 +294,10 @@ is copied into nano-vLLM.
 - `tensor_parallel_size = 1`: one process, one GPU.
 - `enforce_eager = True`: CUDA graphs only capture decode, but disabling
   them takes one source of confusion out of debugging KV problems.
-- Synchronous: loads finish before the forward pass, stores before the
-  next step.
+- Loads finish before the forward pass. `hash_blocks` calls `store` before
+  the next step; a storage wrapper such as `AsyncWriteBehindStorage` can
+  defer the backend write, and then only `flush()`/`close()` guarantee
+  durability.
 - Pinned nano-vLLM commit, single model.
 
 ### What version 1 costs
@@ -304,7 +311,7 @@ Measured by `benchmarks/bench_nanovllm.py` (Qwen3-0.6B, bfloat16, one RTX
 | Recompute a block (once prefill outgrows its ~45 to 55 ms floor) | ~1.5 to 2.5 ms |
 | Load a block from pinned CPU memory into the GPU KV cache | ~1.3 ms |
 | Load a block from `DiskKVCache`, page cache warm / cold | ~17 ms / ~150 ms |
-| Store a block in `CPUOffloadKVCache` / `DiskKVCache`, inside the request | ~5 to 9 ms / ~270 to 330 ms |
+| Synchronous store in `CPUOffloadKVCache` / `DiskKVCache`, inside the request | ~5 to 9 ms / ~270 to 330 ms |
 
 Three consequences:
 
@@ -317,14 +324,15 @@ Three consequences:
   block from disk costs far more than recomputing it, so the disk tier
   never wins on latency here. What it always adds is reuse across
   processes and restarts.
-- **Stores sit on the request's critical path.** `hash_blocks` runs inside
-  the step, so a cold request with a disk-backed L2 waits for every new
-  block to be written. Moving stores off the critical path (a background
-  writer, batched `fsync`) is the first thing to change after version 1.
+- **GPU export stays on the request path.** `hash_blocks` exports each
+  completed block before the next schedule. The storage write can be moved
+  to a background worker with `AsyncWriteBehindStorage`; the demo does
+  this, so a cold request no longer waits for every disk write, but it
+  still pays the GPU export and enqueue cost.
 
-Later: asynchronous stores and loads overlapped with compute, tensor
-parallelism (a namespace per rank, copies in every rank's process), and
-scheduling that waits for L2 loads instead of blocking on them.
+Later: asynchronous loads overlapped with compute, tensor parallelism
+(a namespace per rank, copies in every rank's process), and scheduling
+that waits for L2 loads instead of blocking on them.
 
 ## Tasks
 

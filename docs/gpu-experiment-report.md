@@ -6,6 +6,10 @@ current checkout or portable performance guarantees.
 
 The [serving follow-up](serving-validation-report.md) supersedes the V4, async
 store, NVMe and model-handoff status below. Earlier measurements remain historical.
+The simplified `integrations/nanovllm` package no longer records engine trace
+events, and the demo's `--async-store`/`--write-queue` flags were removed;
+async writes are now the demo's fixed behavior. Commands below are kept as
+recorded.
 The later connector simplification (`5a64ded`) removed async-writer integration
 and load-error tracking. Test paths and pass counts below belong to their
 recorded revisions; for example, `test_vllm_kv_load.py` is no longer present.

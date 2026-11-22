@@ -20,10 +20,13 @@ from nanovllm import LLM, SamplingParams
 
 from nano_lmcache.integrations.nanovllm import KVBlockLayout, NanoVLLMExternalCache
 from nano_lmcache.integrations.nanovllm.engine import attach
+from nano_lmcache.storage.async_write import AsyncWriteBehindStorage
 from nano_lmcache.storage.disk import DiskKVCache
 from nano_lmcache.storage.tiered import TieredStorage
 from nano_lmcache.tensor.offload import CPUOffloadKVCache
 from nano_lmcache.tensor.serializers import TensorSerializer
+
+MAX_PENDING_WRITES = 64
 
 CACHE_DIR = Path(tempfile.gettempdir()) / "nano-lmcache-nanovllm"
 
@@ -32,11 +35,17 @@ DOCUMENT = (
     "plan adds two bus lines, extends the tram route to the airport, and "
     "replaces the oldest vehicles with electric ones. Supporters say it will "
     "cut commute times, while critics worry about the cost to taxpayers. "
-) * 24
+) * 48
 QUESTIONS = [
     "Question: what does the plan add? Answer:",
     "Question: why do critics object? Answer:",
 ]
+
+
+def to_cpu(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu()
+    return value
 
 
 def generate(llm, prompt, max_tokens):
@@ -93,6 +102,7 @@ def main() -> None:
 
     llm = LLM(model, enforce_eager=True, tensor_parallel_size=1,
               gpu_memory_utilization=0.5, max_model_len=4096)
+    storage = None
     try:
         layout = KVBlockLayout.from_hf_config(
             llm.model_runner.config.hf_config,
@@ -100,10 +110,16 @@ def main() -> None:
             revision="local",
         )
         disk = DiskKVCache(CACHE_DIR, serializer=TensorSerializer())
-        storage = TieredStorage(
+        tiered = TieredStorage(
             fast=CPUOffloadKVCache(device="cuda"),
-            slow=disk,
+            slow=disk
         )
+        storage = AsyncWriteBehindStorage(
+            tiered,
+            max_pending=MAX_PENDING_WRITES,
+            prepare=to_cpu,
+        )
+
         print(f"L2 on disk: {CACHE_DIR} ({len(disk)} blocks from earlier runs)\n")
         for prompt in ("Hello", "warm up " * 650, "warm up " * 650):
             generate(llm, prompt, 2)
@@ -113,12 +129,17 @@ def main() -> None:
             ask(llm, manager, llm.tokenizer.encode(DOCUMENT + question),
                 f"question-{index}")
 
+        storage.flush()
         print(f"L2 now holds {len(disk)} blocks on disk.")
         if manager.stats.l2_hit_blocks == 0:
             print("Run the script again: the next process restores them from disk.")
     finally:
-        atexit.unregister(llm.exit)
-        llm.exit()
+        try:
+            if storage is not None:
+                storage.close()
+        finally:
+            atexit.unregister(llm.exit)
+            llm.exit()
 
 
 if __name__ == "__main__":

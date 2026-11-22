@@ -102,8 +102,6 @@ Done (optional torch / GPU layer):
       (`integrations/nanovllm/`, N0–N3)
 - [x] Real-engine correctness and restart reuse tests, plus TTFT benchmarks
       (`docs/nanovllm-benchmark.md`, N4)
-- [x] Real nano-vLLM traces rendered by the offline viewer
-      (`docs/engine-traces.md`, VIS-10)
 - [x] Pinned buffer pool, asynchronous CUDA stream/event transfers, torch page
       gather/scatter reference operations, and per-head INT8 reference codec
       (`tensor/transfer.py`, `tensor/page_ops.py`, `tensor/quantization.py`)
@@ -183,7 +181,7 @@ open an issue to discuss it.
 | N3 | Save newly completed KV blocks | Medium | Yes | N2 | Done |
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Prototype done; production integration open |
-| N6 | Faster disk tier reads | Medium | Optional | N4 | Batch reads connected to nano-vLLM; real-engine remeasurement open |
+| N6 | Faster disk tier reads | Medium | Optional | N4 | Batch capability remains, but the simplified nano-vLLM fetch is scalar; real-engine remeasurement open |
 | **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
 | V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Done |
@@ -219,8 +217,9 @@ open an issue to discuss it.
    measured TPOT regression gate remains unmet.
 2. Integrate bounded asynchronous GPU export into nano-vLLM (N5), preserving
    ownership and publication semantics beyond the demo's background tier writer.
-   N6 now connects batch reads to nano-vLLM; remeasure that path in the real engine
-   before claiming latency improvements. Historical vLLM measurements do not
+   N6's batch path was not carried into the simplified nano-vLLM
+   integration; reconnect it and remeasure in the real engine before
+   claiming latency improvements. Historical vLLM measurements do not
    complete these nano-vLLM acceptance gates.
 3. Extend validation to longer prefixes, larger models and concurrent requests,
    recording output agreement, TTFT, TPOT, publication waits and cold/warm state.
@@ -948,13 +947,13 @@ stored exactly once; the N4 correctness tests still pass.
 
 ### N6: Faster disk tier reads
 
-**Status: packed/batched reads are connected to nano-vLLM; real-engine
-remeasurement remains open.** [Serving validation](docs/serving-validation-report.md)
+**Status: not connected in the simplified nano-vLLM integration.** The
+current `NanoVLLMExternalCache.fetch` uses scalar `get` calls. The
+`BatchReadableStorage` capability and the remote server's packed
+`get_many()` path remain available to other callers, but the nano-vLLM
+integration does not use them. [Serving validation](docs/serving-validation-report.md)
 records cold/warm NVMe component results and the earlier cold-disk external
-run. Batch-capable storage now supplies a requested external span through one
-`get_many()` call, while simple backends retain scalar fallback. The remote
-server also preserves a packed backend's batch operation instead of expanding
-it back into individual reads. Remeasure this path in the real engine before
+run. Reconnect the batch path and remeasure it in the real engine before
 claiming an end-to-end latency improvement.
 
 Reading a 28 MiB block from `DiskKVCache` costs about 17 ms from the page
@@ -1141,11 +1140,11 @@ the setup recorded; behavior defined when prefill fails mid-stream.
 
 ## Visualization Lab and datasets
 
-**VIS-10: done.** `examples/demo_nanovllm.py --trace-output` records real
-engine and per-tier storage events. `python -m nano_lmcache.visualize
---trace-json` imports them without engine dependencies. Tests cover cold
-KV computation, disk restoration with empty L1, warm L1 reuse, and ownership
-of batched GPU imports. See [the experiment guide](docs/engine-traces.md).
+**VIS-10: superseded.** The simplified `integrations/nanovllm` package no
+longer emits engine trace events, and `examples/demo_nanovllm.py` no longer
+has `--trace-output` or `--memory-max-entries` options. The offline
+importer and HTML viewer remain available for synthetic and replay traces.
+See [the engine trace notes](docs/engine-traces.md).
 
 **VIS-11: done.** Already-sorted FreeInference/workload JSONL streams through
 replay without collecting the full input. `ReplaySummary` maintains exact

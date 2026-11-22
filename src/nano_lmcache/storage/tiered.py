@@ -59,8 +59,6 @@ class TierStats:
     fast_hits: int = 0
     slow_hits: int = 0
     misses: int = 0
-    # Slow-tier hits copied into the fast tier. Lower than `slow_hits`
-    # when the fast tier refused an entry (no room, or parent missing).
     promotions: int = 0
 
     @property
@@ -134,14 +132,11 @@ class TieredStorage:
         parent_key: str | None = None,
     ) -> None:
         with self._lock:
-            # Slow tier first: if it raises (for example, a payload it cannot
-            # serialize), the fast tier is left untouched.
             present = key in self._slow
             admitted = self._slow.try_put(key, value, parent_key=parent_key)
             if present and not admitted:
-                return  # Keep both old copies when the slow overwrite is rejected.
+                return  
             if not self._fast.try_put(key, value, parent_key=parent_key):
-                # Slow has the new value; never serve an older fast copy.
                 self._fast.invalidate(key)
 
     def get(self, key: str) -> object | None:

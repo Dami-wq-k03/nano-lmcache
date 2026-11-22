@@ -236,9 +236,9 @@ No, not for the cache concepts. `core/` and `storage/` are pure Python with no r
 
 Real tensor operations need PyTorch; the Hugging Face model demo additionally
 needs transformers (`uv sync --extra hf`) and can run on CPU. CUDA offload
-and real nano-vLLM generation/trace recording need an NVIDIA GPU; the latter
-also needs Linux and the `nanovllm` dependency group. Reading a saved engine
-trace and producing offline HTML need only the core package.
+and real nano-vLLM generation need an NVIDIA GPU; the latter also needs Linux
+and the `nanovllm` dependency group. The offline HTML viewer needs only the
+core package and can render traces from other sources.
 
 See: [README](../README.md), [CONTRIBUTING.md](../CONTRIBUTING.md)
 

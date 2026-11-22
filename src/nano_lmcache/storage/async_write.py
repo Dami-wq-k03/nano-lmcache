@@ -34,8 +34,6 @@ class AsyncWriteBehindStorage:
         max_pending: int = 64,
         prepare: Callable[[object], object] | None = None,
     ) -> None:
-        if max_pending <= 0:
-            raise ValueError("max_pending must be positive")
         self.backend = backend
         self._queue: queue.Queue[_Write | None] = queue.Queue(max_pending)
         self._prepare = prepare or (lambda value: value)
@@ -107,11 +105,6 @@ class AsyncWriteBehindStorage:
             raise RuntimeError("write-behind worker failed") from errors[0]
 
     def close(self, *, flush: bool = True) -> None:
-        """Reject new writes and stop the worker even when a write failed.
-
-        With flush=False, skip the initial flush but still drain accepted writes
-        before the FIFO stop marker. Backend I/O must eventually return.
-        """
         with self._close_lock:
             with self._pending_lock:
                 if self._closed:

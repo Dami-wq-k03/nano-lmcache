@@ -25,8 +25,8 @@ nano-lmcache 用简短、易读的 Python 模块实现
 | **让 KV 超出显存和进程生命周期** | 内存、磁盘及分层存储；慢层命中后提升到快层。支持条目数/字节容量限制，叶节点 LRU 保持前缀可达；内存、磁盘和分层后端支持多线程共享实例。 | [磁盘示例](examples/demo_disk_cache.py)、[分层示例](examples/demo_tiered_storage.py) |
 | **选择淘汰策略** | 默认使用前缀安全的 LRU，也支持 LFU，依次以访问次数、最近访问时间和稳定键打破平局；内存、磁盘及 CPU 卸载层共享叶节点淘汰机制。 | [淘汰策略实验（英文）](docs/eviction-performance.md) |
 | **复用真实模型张量** | 在 CPU 或 CUDA 上运行 Hugging Face 模型，将 KV 卸载到固定页 CPU 内存，并选择无损序列化或可选的有损 INT8 压缩。 | [真实模型示例](examples/demo_kv_reuse.py)、[INT8 实验（英文）](docs/quantized-kv.md) |
-| **恢复真实推理引擎的缓存** | 将 nano-vLLM 完整 KV 块存入外部 L2；重启后恢复到 GPU 块，后续请求继续复用 GPU L1。 | [引擎教程](docs/zh-CN/tutorial.md#7-恢复真实引擎的缓存) |
-| **观察完整缓存链路** | 在独立 HTML 中查看前缀树、命中/未命中、淘汰、提升和 GPU 导入/导出事件；支持流式回放已排序的工作负载 JSONL、限制缓存与明细预算并导出完整统计，也可导入真实引擎 Trace。 | [查看器教程](docs/zh-CN/tutorial.md#5-在查看器中跟踪查询)、[流式回放](docs/zh-CN/streaming-replay.md)、[引擎 Trace（英文）](docs/engine-traces.md) |
+| **恢复真实推理引擎的缓存** | 将 nano-vLLM 完整 KV 块存入外部 L2；重启后恢复到 GPU 块，后续请求继续复用 GPU L1。 | [引擎教程](docs/zh-CN/tutorial.md#7-复用真实引擎的-kv-缓存) |
+| **观察完整缓存链路** | 在独立 HTML 中查看前缀树、命中/未命中、淘汰、提升和复制事件；支持流式回放已排序的工作负载 JSONL、限制缓存与明细预算并导出完整统计，也可导入其他来源的 Trace JSON。 | [查看器教程](docs/zh-CN/tutorial.md#5-在查看器中跟踪查询)、[流式回放](docs/zh-CN/streaming-replay.md)、[引擎 Trace 备注（英文）](docs/engine-traces.md) |
 | **探索 Prefill/Decode 分离** | 在两个 toy model 角色之间传递带校验和的 KV，验证 Decode 不重算 Prompt 且生成 Token 一致，并模拟调度取舍。 | [PD 示例](examples/demo_pd_disaggregation.py)，只需核心包 |
 
 引擎集成先复用本地 GPU KV，再查询外部 KV，最后计算剩余 Prompt。
@@ -107,7 +107,8 @@ uv run python -m nano_lmcache.visualize --scenario partial_prefix_hit \
 
 在浏览器中打开 `/tmp/nano-lmcache-trace.html`，即可查看前缀树和事件时间线，
 使用 Next/Previous 和播放控件逐步观察，无需服务端或 CDN。
-同一个查看器也能加载[真实引擎 Trace（英文）](docs/engine-traces.md)。
+同一个查看器也能加载其他来源的 Trace JSON；说明见
+[引擎 Trace 备注（英文）](docs/engine-traces.md)。
 
 ### 运行真实模型或引擎
 
@@ -121,7 +122,7 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 示例会报告复用/计算的 Token 数，并将后缀 logits 与完整重算进行比较。
 加上 `--device cuda --offload`，即可让模型在 CUDA 上运行、缓存 KV 留在固定页 CPU 内存。
 
-对于 nano-vLLM，请按[引擎教程](docs/zh-CN/tutorial.md#7-恢复真实引擎的缓存)运行两次磁盘缓存示例，
+对于 nano-vLLM，请按[引擎教程](docs/zh-CN/tutorial.md#7-复用真实引擎的-kv-缓存)运行两次磁盘缓存示例，
 观察冷启动计算、重启恢复和后续 GPU L1 命中。
 需要 Linux、NVIDIA GPU、本地模型权重和 `nanovllm` 依赖组。
 
