@@ -35,16 +35,30 @@ uv sync
 
 ## Checks
 
-CI runs exactly these commands. Please make sure they pass locally
-before opening a pull request:
+CI runs these core and CPU tensor checks. Please make sure the applicable
+checks pass locally before opening a pull request:
 
 ```bash
-uv run pytest
-uv run ruff check .
-uv run mypy src/nano_lmcache
-uv sync --locked --group tensor-test
-uv run --locked --group tensor-test pytest -m "torch and not gpu"
+uv sync --locked --no-group nanovllm
+uv run --locked --no-group nanovllm pytest
+uv run --locked --no-group nanovllm ruff check .
+uv run --locked --no-group nanovllm mypy src/nano_lmcache
+uv sync --locked --group tensor-test --no-group nanovllm
+uv run --locked --group tensor-test --no-group nanovllm pytest -m "torch and not gpu"
 ```
+
+In its core job, CI additionally installs vLLM 0.33.0 and runs the connector
+unit tests without a GPU:
+
+```bash
+uv pip install --python .venv/bin/python "vllm==0.33.0"
+.venv/bin/python -m pytest -q tests/unit/test_nano_lmcache_connector.py
+```
+
+Keep vLLM checks in a separate Linux environment from the `tensor-test` and
+CUDA 12.4 groups. Real vLLM generation tests additionally require a compatible
+CUDA GPU and local model weights; see the
+[connector guide](docs/vllm-nano-lmcache-connector.md).
 
 - Ruff uses a line length of 88 with the `E`, `F`, `I`, `UP`, `B` rules.
 - mypy runs in `strict` mode; public code needs complete type hints.

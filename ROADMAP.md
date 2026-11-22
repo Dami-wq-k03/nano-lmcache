@@ -158,7 +158,7 @@ open an issue to discuss it.
 | I3 | Benchmark scaffolding | Easy | No | – | Done |
 | **Mini: cache behavior (pure Python)** | | | | | |
 | M1 | Eviction metrics | Easy | No | – | Done |
-| M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Done |
+| M2 | Make eviction cheaper than a linear scan | Medium | No | I3 | Experiment completed; heap retired |
 | M3 | Byte-based capacity | Medium | No | – | Done |
 | M4 | Local disk backend | Medium | No | – | Done |
 | M5 | Tiered memory + disk storage | Hard | No | M4 | Done |
@@ -183,7 +183,7 @@ open an issue to discuss it.
 | N3 | Save newly completed KV blocks | Medium | Yes | N2 | Done |
 | N4 | Correctness, reuse across restarts, TTFT benchmarks | Medium | Yes | N3 | Done |
 | N5 | Store blocks off the request's critical path | Medium | Yes | N4 | Prototype done; production integration open |
-| N6 | Faster disk tier reads | Medium | Optional | N4 | Packed/prefetch NVMe baseline measured; engine integration open |
+| N6 | Faster disk tier reads | Medium | Optional | N4 | Batch reads connected to nano-vLLM; real-engine remeasurement open |
 | **vLLM connector** | | | | | |
 | V0 | Version baseline, connector hooks, paged KV mapping, APC, and reference connector | Medium | No | I1 | Done |
 | V1 | Minimal connector skeleton | Medium | Yes | I1, V0 | Done |
@@ -210,16 +210,18 @@ open an issue to discuss it.
 | D9 | Glossary and FAQ | Easy | No | – | Done |
 | D11 | Chinese translation of README and docs | Easy | No | – | Done |
 
-**Next priorities (reviewed 2026-11-16):**
+**Next priorities (reviewed 2026-11-22):**
 
 1. Reduce external-load overhead and decode TPOT regression. Measure transport,
    serialization, and GPU restoration separately; integrate batched payload
-   reads into serving and compare against recompute and local APC controls.
+   reads into vLLM serving and compare against recompute and local APC controls.
    Correct external hits currently do not establish a serving speedup; the
    measured TPOT regression gate remains unmet.
-2. Integrate bounded asynchronous export into nano-vLLM (N5) and the measured
-   packed/batched disk read path into its engine adapter (N6). Component and
-   vLLM measurements do not complete nano-vLLM integration or its acceptance gates.
+2. Integrate bounded asynchronous GPU export into nano-vLLM (N5), preserving
+   ownership and publication semantics beyond the demo's background tier writer.
+   N6 now connects batch reads to nano-vLLM; remeasure that path in the real engine
+   before claiming latency improvements. Historical vLLM measurements do not
+   complete these nano-vLLM acceptance gates.
 3. Extend validation to longer prefixes, larger models and concurrent requests,
    recording output agreement, TTFT, TPOT, publication waits and cold/warm state.
 4. Continue PD-2 tracing and PD-3 two-engine nano-vLLM handoff; PD-4 overlap
@@ -924,8 +926,9 @@ starts to pay off.
 ### N5: Store blocks off the request's critical path
 
 **Status: prototype implemented; nano-vLLM integration and acceptance open.**
-The bounded asynchronous tensor writer and real-vLLM measurements are in
-[serving validation](docs/serving-validation-report.md). Integrating it into
+The bounded asynchronous tensor writer and historical real-vLLM measurements
+are in [serving validation](docs/serving-validation-report.md); the current vLLM
+connector no longer creates that writer. Integrating it into
 nano-vLLM must preserve GPU block ownership, bounded queues, publication and
 shutdown semantics, then satisfy the original TTFT/correctness criteria below.
 
@@ -971,11 +974,13 @@ before and after; all disk backend tests still pass.
 
 ## vLLM connector research
 
-**V0: done.** [Research notes](docs/vllm-nano-lmcache-connector.md) pin the
-implementation target to vLLM 0.33.0 and review its scheduler/worker hooks,
-block tables and slot mapping, block-to-chunk conversion, APC versus external
-storage, and ExampleConnector's limitations against that release's source.
-V1–V4 now have real external-hit generation validation; V5 has reproducible
+**V0: done.** [Historical research notes](https://github.com/Dami-wq-k03/nano-lmcache/blob/7ce0648aa63f73f98e1146a4b2a28d120ea11d37/docs/vllm-kv-connector.md)
+pin the implementation target to vLLM 0.33.0 and review its scheduler/worker
+hooks, block tables and slot mapping, block-to-chunk conversion, APC versus
+external storage, and ExampleConnector's limitations against that release's
+source. The [current connector guide](docs/vllm-nano-lmcache-connector.md)
+explains the simplified synchronous path and its limits.
+V1–V4 have historical real external-hit generation validation; V5 has
 TTFT/TPOT measurements, with performance acceptance still open.
 
 V1–V5 track that implementation separately from the completed nano-vLLM
@@ -988,7 +993,7 @@ Start with one GPU, dense full attention, unquantized KV, and
 
 **Status: done** ([#25](https://github.com/Dami-wq-k03/nano-lmcache/issues/25),
 merged in [PR #75](https://github.com/Dami-wq-k03/nano-lmcache/pull/75)).
-The [validation record](docs/vllm-nano-lmcache-connector.md#real-request-validation-2026-11-08)
+The [historical validation record](https://github.com/Dami-wq-k03/nano-lmcache/blob/7ce0648aa63f73f98e1146a4b2a28d120ea11d37/docs/vllm-kv-connector.md#no-op-connector-lifecycle-tracing)
 includes Qwen3-0.6B token-ID comparisons, local APC hit counts and real
 scheduler/worker logs from vLLM 0.33.0 on an RTX 4080.
 

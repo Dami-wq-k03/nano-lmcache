@@ -1,13 +1,18 @@
 # GPU and data-plane experiment report
 
 This report records the first implementation and measurements from the research
-roadmap. Results are measurements of this checkout and this machine, not
-portable performance guarantees.
+roadmap. Results describe the recorded source revisions and machine, not the
+current checkout or portable performance guarantees.
 
 The [serving follow-up](serving-validation-report.md) supersedes the V4, async
 store, NVMe and model-handoff status below. Earlier measurements remain historical.
+The later connector simplification (`5a64ded`) removed async-writer integration
+and load-error tracking. Test paths and pass counts below belong to their
+recorded revisions; for example, `test_vllm_kv_load.py` is no longer present.
+Use the [connector guide](vllm-nano-lmcache-connector.md#current-scope-and-validation)
+for current behavior and test commands.
 
-## Current checkout validation (2026-11-14)
+## Historical checkout validation (2026-11-14)
 
 Local checks: full suite **748 passed, 75 skipped**; CPU tensor group
 **208 passed, 3 skipped**; Ruff and strict mypy pass. `uv lock --check` and

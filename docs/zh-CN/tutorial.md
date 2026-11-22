@@ -16,6 +16,7 @@
 | [6. 真实张量](#6-复用真实模型张量) | 复用是否保持模型输出，是否节省时间？ |
 | [7. 引擎恢复](#7-恢复真实引擎的缓存) | 外部 L2 块如何回到引擎的 GPU L1？ |
 | [8. PD 分离](#8-拆分-prefill-与-decode) | Prefill Worker 要交出什么，Decode Worker 才能接着生成？ |
+| [9. 淘汰策略实验](#9-对比-lru-与-lfu) | 均匀与热点负载下，哪种叶节点策略更合适？ |
 
 ## 1. 生成分块键
 
@@ -219,7 +220,7 @@ GPU 复制事件表示入队顺序，不是 CUDA 完成时间。即使最后一�
 
 ```bash
 NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
-  --group nanovllm pytest tests/integration/test_nanovllm_engine.py
+  --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
 测试覆盖 KV 恢复、生成 Token 一致、进程重启后的磁盘复用和 Trace 转 HTML。
@@ -250,5 +251,46 @@ Decode 无法自行重算缺失的 KV，因此交接不能丢掉末尾位置。
 
 阅读 [PD 分离指南](pd-disaggregation.md)，再阅读唯一的教学模块
 [`disaggregation.py`](../../src/nano_lmcache/disaggregation.py)。
+
+## 9. 对比 LRU 与 LFU
+
+前缀安全是淘汰机制；叶节点之间的顺序由策略决定。默认 LRU 兼容原有行为，
+LFU 则保留内部节点及叶节点的访问频率。本步只需核心包。
+
+运行固定种子的对比实验，耗时列取决于运行机器：
+
+```bash
+uv run python benchmarks/bench_prefix_cache.py \
+  --policy-requests 5000 --policy-seed 2026 \
+  --policy-capacity 48 --policy-repeats 5
+uv run pytest tests/unit/test_eviction_policies.py tests/unit/test_benchmarks.py
+```
+
+在 Python 会话中直接选择策略：
+
+```python
+from nano_lmcache.core.prefix_cache import ChunkedPrefixCache
+from nano_lmcache.storage.memory import MemoryKVCache
+
+storage = MemoryKVCache(max_entries=8, eviction_policy="lfu")
+cache = ChunkedPrefixCache(
+    chunk_size=2, namespace="policy-lab", storage=storage
+)
+cache.store([1, 2, 3, 4], ["system", "tail"])
+cache.lookup([1, 2, 3, 4])  # 真正命中会增加 LFU 频率
+print(storage.eviction_policy, storage.frequency_of(next(storage.keys())))
+```
+
+实验：把策略改成 `"lru"`，比较命中率、复用 Token、淘汰数、最终占用，以及查询/存储耗时。
+`uniform` 在 system/user 前缀目录中均匀取样，`zipf` 重复访问一小组热点并混入长尾。
+两种策略消费相同请求序列。已记录的实验中 LFU 在两种负载都获胜，但这不是通用规律：
+工作集快速变化时，LRU 不受历史累计频率影响，可能更合适。
+
+内部节点在最后一个子节点被淘汰后，访问频率不会重置。磁盘不持久化频率，
+重启恢复后频率从 1 开始，文件 mtime 只恢复最近访问顺序这一平局条件。
+解释重启实验前，先阅读[策略报告（英文）](../eviction-performance.md)。
+
+源码入口：[`storage/eviction.py`](../../src/nano_lmcache/storage/eviction.py)、
+[`storage/eviction_policies.py`](../../src/nano_lmcache/storage/eviction_policies.py)。
 
 返回[文档目录](README.md)，或从[路线图（英文）](../../ROADMAP.md)选择贡献任务。

@@ -208,7 +208,7 @@ See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py), [TTFT results and limit
 
 ### 5. What happens when the cache is full?
 
-The cache must make room or reject the new entry. nano-lmcache uses prefix-safe eviction: it evicts the least recently used leaf, so no stored chunk is left without its ancestors. After an eviction, a request usually still hits its prefix and recomputes only the lost tail.
+The cache must make room or reject the new entry. nano-lmcache uses prefix-safe eviction: only eligible leaves are evicted, with LRU ordering by default and LFU available. No stored chunk is left without its ancestors. After an eviction, a request usually still hits its prefix and recomputes only the lost tail.
 
 See: [Capacity and eviction](architecture.md#capacity-and-eviction)
 

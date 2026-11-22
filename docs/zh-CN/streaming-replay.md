@@ -102,7 +102,8 @@ uv run pytest tests/unit/test_streaming_replay.py
 容量为 2 时，重访未命中（0/4 命中、淘汰两次）；容量为 3 时，重访命中（1/4 命中、无淘汰）。
 比较 JSON 中的 `summary.hit_rate`、`summary.event_counts.eviction`（缺失表示零）、
 `summary.storage_hits` 与配置。磁盘/分层冷启动比较需要分别使用空目录；沿用目录会测到持久化热缓存。
-当前淘汰策略仍是前缀安全的叶节点 LRU，替代策略属于 M11。
+默认淘汰策略是前缀安全的叶节点 LRU；内存、磁盘和 CPU 卸载后端也支持 LFU。
+替代策略的对比与重启频率规则见 [M11 策略报告（英文）](../eviction-performance.md#policy-comparison-experiment)。
 
 内存基准会生成共享前两块、第三块始终不同的请求；缓存限 64 条，保留 20 个请求、100 个事件，
 每 10 个事件采样一次。基线模式会排序全部输入并保留全部明细。它使用 `tracemalloc` 测量

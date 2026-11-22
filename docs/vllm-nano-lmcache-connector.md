@@ -2,15 +2,57 @@
 
 ## vLLM version baseline (vllm==0.33.0)
 
+Run from the repository root in a separate Linux environment with a compatible
+NVIDIA GPU and vLLM CUDA stack. Do not combine the `vllm` group with the `hf`,
+`torch`, `tensor-test`, or `nanovllm` groups; their PyTorch sources differ.
+
 ```bash
 uv sync --locked --group vllm
-uv run python examples/demo_vllm_with_nano_lmcache_connector.py
+uv run --locked --group vllm python examples/demo_vllm_with_nano_lmcache_connector.py \
+  --model /path/to/Qwen3-0.6B
 ```
 
-**Reason:** Pinning 0.33.0, gives V1–V5 a reproducible baseline for connector development and testing.
+Use local model weights to avoid a download; the demo defaults to
+`Qwen/Qwen3-0.6B` if `--model` is omitted. Pinning 0.33.0 gives V1–V5 a
+reproducible baseline for connector development and testing.
 
+## Current scope and validation
 
-## KVConnectorBase_V1 interfaces used during request processing
+The connector implements shared external prefix lookup, synchronous KV
+save/load, and disk-backed restart reuse. It is not a no-op connector.
+The teaching baseline is one GPU, TP = PP = 1, dense full attention,
+unquantized KV, one cache group, and `chunk_size == block_size`.
+
+- Scheduler and worker must share a `remote_cache` server for external reuse;
+  private in-memory caches do not share worker saves with the scheduler.
+- Local APC reuses resident GPU blocks. An external hit instead fetches a
+  payload and restores it into allocated GPU blocks. The demo compares
+  recomputation, local APC, and external storage across engine/server restart.
+- Loads and saves are synchronous. The standalone `AsyncTensorWriteStorage`
+  remains experimental and is not wired into this connector; the benchmark's
+  `--async-store` setting is currently ignored by the connector.
+- Missing or invalid load payloads fail explicitly rather than reporting
+  failed block IDs for automatic recomputation. This version does not track
+  load errors or emit KV cache events.
+
+The generation and HF-reference tests use cached `Qwen/Qwen3-0.6B` weights at
+revision `c1899de289a04d12100db370d81485cdf75e47ca`. Shared external-hit and
+load-failure tests additionally need `NANO_LMCACHE_TEST_MODEL` pointing to local
+Qwen3-0.6B weights. For current source checks in the vLLM environment:
+
+```bash
+uv run --locked --group vllm pytest tests/unit/test_nano_lmcache_connector.py
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run --locked --group vllm \
+  pytest tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py
+```
+
+The integration tests check generated token agreement, saved KV against a
+Hugging Face reference, shared external hits with APC disabled, and explicit
+load failure. The [serving report](serving-validation-report.md) preserves
+historical real-model measurements and their source revision: external hits
+were correct but slower than recomputation. Its async measurements are not a
+claim about the simplified connector, and no general serving speedup is established.
 
 ## Request-processing sequence
 

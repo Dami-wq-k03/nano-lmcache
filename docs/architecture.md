@@ -56,7 +56,7 @@ graph TD
     MEM --> IDX
     IDX --> POL
     MEM --> SS
-    ST -.->|"future backends"| FUT["disk, tiered, GPU offload"]
+    ST -.->|implemented by| OTHER["disk, tiered, GPU offload"]
 ```
 
 `ChunkedPrefixCache` owns the matching logic and the metrics. It only
@@ -245,8 +245,9 @@ The current implementation covers a minimal cache lifecycle:
 6. Store newly computed chunk payloads in an in-memory backend.
 
 Only complete chunks participate in reuse. A trailing chunk shorter than
-`chunk_size` is neither stored nor matched, because its state would
-depend on tokens that have not arrived yet.
+`chunk_size` is neither stored nor matched, keeping storage and lookup aligned
+to fixed-size chunk boundaries. This is an implementation choice, not a causal
+model constraint: existing tokens' KV does not depend on future tokens.
 
 The implementation is pure Python so that cache behavior can be
 understood without a GPU or an inference engine.
@@ -277,7 +278,7 @@ understood without a GPU or an inference engine.
 | `integrations/nanovllm/external_cache.py` | `NanoVLLMExternalCache`: count, fetch, and store nano-vLLM blocks in L2 |
 | `integrations/nanovllm/engine.py` | `attach()`: restore L2 hits and store new blocks inside a running nano-vLLM engine (needs nano-vLLM) |
 | `integrations/nanovllm/kv_blocks.py` | `export_block` / `import_block`: nano-vLLM KV blocks <-> chunks (needs torch) |
-| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 shared-store lookup, save/load and optional asynchronous publication; real external-hit generation validated |
+| `integrations/vllm/nano_lmcache_connector.py` | vLLM 0.33.0 shared-store lookup and synchronous save/load; historical external-hit generation measurements |
 | `experimental/dataplane/` | PyTorch-independent `KVLayout`, page lifecycle, logical/physical replica directory, and CPU reference store |
 | `experimental/scheduler.py` | Transparent recompute/load estimator and duplicate-safe prefetch state machine |
 | `tensor/serializers.py` | `TensorSerializer` / `QuantizedTensorSerializer`: lossless or opt-in INT8 tensor encoding for disk (needs torch) |
@@ -470,6 +471,7 @@ Disk recovery keeps the same entry-file format. Frequencies restart at 1;
 file mtimes restore recency without replaying fake hits. This reset matters
 when comparing a fresh process with a warm one.
 
+### Real KV tensors
 
 With a real model the payload of a chunk is one tensor holding the K and V
 of every layer for that chunk's tokens:
@@ -478,9 +480,10 @@ of every layer for that chunk's tokens:
 
 `run_with_prefix_cache` looks up the longest cached prefix, rebuilds
 `past_key_values` from the matched chunks, runs the model over only the
-remaining tokens, and stores the chunks of the whole sequence for the next
-request. A fully cached prompt still recomputes its last token, because
-the model needs one forward step to produce next-token logits.
+remaining tokens, and stores only new complete chunks after the matched prefix
+for the next request. A fully cached prompt still recomputes its last token,
+because the model needs one forward step to produce next-token logits; it does
+not rewrite already matched chunks.
 
 With lossless storage, prefix reuse preserves the cached K/V. In a causal
 model the K and V of a token depend only on that token and the tokens
@@ -672,14 +675,15 @@ weights and the KV cache of running requests, while CPU memory is usually
 several times larger, so offloading lets a server keep far more reusable
 prefixes. It satisfies `CacheStorage` and evicts with the shared `PrefixIndex`
 and configured policy, so it can be used on its own or as the fast tier of a
-`run_with_prefix_cache` moves reused chunks to the model's device, so any
-backend may hand chunks back on the CPU.
+`TieredStorage`. `run_with_prefix_cache` moves reused chunks to the model's
+device, so any backend may hand chunks back on the CPU.
 
 `CPUOffloadKVCache(max_bytes=B)` limits cached tensor payloads to B bytes,
 excluding keys, bookkeeping, and allocator overhead. The read-only
 `max_bytes` property is `None` by default; `nbytes` reports the actual cached
 payload total. If `max_entries` is also set, both limits must be satisfied.
-Only LRU leaves may be evicted. A tensor whose required prefix cannot fit
+Only eligible leaves may be evicted, ordered by the configured LRU/LFU policy.
+A tensor whose required prefix cannot fit
 is rejected without evicting existing data. Overwrites account for the new
 tensor size. Use `device="cpu", pin_memory=False` to run without a GPU.
 
@@ -743,6 +747,10 @@ blocks before prefill and saves completed blocks synchronously. See the
 [TTFT report](nanovllm-benchmark.md) for measured costs and
 [engine trace guide](engine-traces.md) for L1/L2 and GPU transfer events.
 
+The separate vLLM 0.33.0 connector uses a shared remote store for external
+lookup and synchronous save/load. See its
+[guide](vllm-nano-lmcache-connector.md) for prerequisites, hook flow, and limits.
+
 The core package should remain independently understandable and
 testable. Integration-specific dependencies should be introduced only
 when required.
@@ -763,13 +771,16 @@ examples demonstrating its behavior.
 
 ## Asynchronous vLLM export
 
-`tensor.async_store.AsyncTensorWriteStorage` owns GPU snapshots and copies them
-on an independent CUDA stream into a bounded pinned pool. A worker waits for
-the event and clones CPU data before backend publication, so retained values
+`tensor.async_store.AsyncTensorWriteStorage` is a standalone experimental
+component, not part of the current connector. It owns GPU snapshots and copies
+them on an independent CUDA stream into a bounded pinned pool. A worker waits
+for the event and clones CPU data before backend publication, so retained values
 never alias recycled buffers. Saturation applies backpressure; shutdown drains
-writes and surfaces errors. GPU gather/snapshot still costs time. Requests with
-no newly complete chunk skip export. Only vLLM workers create this writer.
+writes and surfaces errors. GPU gather/snapshot still costs time.
 
+The historical vLLM worker integration was removed in `5a64ded`; current workers
+save synchronously and do not create this writer. The
+[connector guide](vllm-nano-lmcache-connector.md) describes current behavior.
 `RemoteCacheServer` accepts byte-storage backends, including persistent
 `CoalescedDiskKVCache`. See [serving validation](serving-validation-report.md)
-for actual vLLM, NVMe and two-GPU model measurements and their scope.
+for historical vLLM, NVMe and two-GPU model measurements and their scope.

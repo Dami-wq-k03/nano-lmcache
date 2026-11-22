@@ -13,9 +13,8 @@
 ## Checklist
 
 - [ ] Tests were written first, and new behavior has tests in `tests/unit/` (not applicable to documentation-only changes)
-- [ ] `uv run pytest` passes
-- [ ] `uv run ruff check .` passes
-- [ ] `uv run mypy src/nano_lmcache` passes
+- [ ] Core pytest, Ruff, and strict mypy checks in `CONTRIBUTING.md` pass
+- [ ] Applicable CPU tensor and vLLM connector checks pass, or unavailable checks are reported
 - [ ] Examples in `examples/` and docs in `docs/` are updated if behavior changed
 - [ ] Related roadmap status and affected glossary entries are current
 - [ ] Matching Chinese companion docs are updated where applicable

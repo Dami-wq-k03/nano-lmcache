@@ -11,11 +11,11 @@ model or GPU.
 
 | Document | What it explains |
 | --- | --- |
-| [Guided learning path](tutorial/README.md) | Chunking → prefix matching → eviction → storage tiers → traces → real tensors → engine restoration → PD disaggregation |
+| [Guided learning path](tutorial/README.md) | Chunking → prefix matching → eviction → storage tiers → traces → real tensors → engine restoration → PD disaggregation → LRU/LFU comparison |
 | [Glossary and FAQ](glossary.md) | KV, prefill, decode, TTFT, chunks, blocks, and common misconceptions |
 | [Architecture](architecture.md) | Current modules, invariants, capacity accounting, serialization, and concurrency boundaries |
 | [nano-vLLM integration](nanovllm-integration.md) | Engine block layout, L1/L2 lookup, restore/save hooks, and correctness rules |
-| [vLLM connector guide](vllm-kv-connector.md) | Pinned version, no-op connector, real request logs, output/APC comparisons and block/chunk mapping |
+| [vLLM connector guide](vllm-nano-lmcache-connector.md) | Pinned version, shared external KV lookup, synchronous save/load, restart reuse, and block/chunk mapping |
 | [PD disaggregation](pd-disaggregation.md) | Prefill/decode workers, KV handoff format, ownership, failure handling, and the TTFT vs. stall trade-off |
 
 ## Run and inspect

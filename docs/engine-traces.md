@@ -108,14 +108,14 @@ HTML detail budgets also apply to imported engine traces.
 
 ## Validation
 
-`tests/integration/test_nanovllm_engine.py` covers cold storage, reopened disk
+`tests/integration/nanovllm/test_nanovllm_engine.py` covers cold storage, reopened disk
 with empty L1, warm L1, and batched import attribution using the real
 scheduler. Its GPU tests verify identical generated tokens after restoration
 and an engine trace-to-HTML round trip. To include the real model tests:
 
 ```bash
 NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B \
-  uv run --group nanovllm pytest tests/integration/test_nanovllm_engine.py
+  uv run --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
 Without the optional engine dependencies, `tests/unit/test_engine_trace.py`

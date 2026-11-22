@@ -56,7 +56,7 @@ specified below. Each report includes the setup and reproduction commands.
 | **Restart recovery** — Qwen3-0.6B, RTX 4090 | A fresh nano-vLLM process restored **five KV blocks from disk** with empty L1; both questions produced identical answers across cold and restarted processes. | [GPU validation record](docs/gpu-validation.md) |
 | **INT8 storage** — synthetic FP16/BF16 KV chunk, Apple M4 CPU | **Raw bytes / INT8 serialized bytes ≈ 1.60×**, including FP32 scale overhead. Compression is lossy and opt-in. | [Compression report](docs/quantized-kv.md) |
 | **Historical heap experiment** — 1,024-chunk chains, capacity 8,192, Apple arm64 | The earlier heap reduced churn **788 → 208 ms**. Current teaching code deliberately uses an O(n) leaf scan instead; these are not current timings. | [Eviction trade-off](docs/eviction-performance.md) |
-| **LRU versus LFU policies** — 5,000 shared-prefix requests, capacity 48 | In the fixed 2026 seed run, LFU reached **56.16% / 85.21%** hit rate on uniform / Zipf versus LRU's **52.70% / 80.68%**, with fewer evictions in both cases. | [Policy comparison](docs/eviction-performance.md#policy-comparison-experiment) |
+| **Historical LRU versus LFU comparison** — 5,000 shared-prefix requests, capacity 48 | In the fixed 2026 seed run, LFU reached **56.16% / 85.21%** hit rate on uniform / Zipf versus LRU's **52.70% / 80.68%**, with fewer evictions in both cases. | [Policy comparison](docs/eviction-performance.md#policy-comparison-experiment) |
 
 The same TTFT experiment found disk L2 slower than recomputation at every
 tested size, and short-chain eviction workloads paid extra bookkeeping
@@ -144,7 +144,7 @@ GPU, local model weights, and the `nanovllm` dependency group.
 | Find a concept, command, or experiment | [Documentation index](docs/README.md) | Varies by topic |
 | Understand terminology and design | [Glossary and FAQ](docs/glossary.md), [architecture](docs/architecture.md) | Core package only |
 | Understand the engine adapter | [nano-vLLM integration design](docs/nanovllm-integration.md) | GPU to run; source readable independently |
-| Explore the full vLLM connector API | [vLLM connector guide](docs/vllm-kv-connector.md) | No-op connector, real request logs and GPU output comparisons |
+| Explore the full vLLM connector API | [vLLM connector guide](docs/vllm-nano-lmcache-connector.md) | vLLM 0.33.0; shared external KV lookup, save/load, and restart reuse |
 | Study prefill/decode handoff | [PD guide](docs/pd-disaggregation.md) | Toy model; core package only |
 
 The core package has no runtime dependencies. PyTorch and inference-engine
@@ -154,8 +154,9 @@ dependencies are optional; installation and test commands live in
 ## Scope and contributing
 
 This is a teaching implementation for understanding LMCache-style systems.
-External KV reuse works with nano-vLLM. The full vLLM integration provides a
-validated no-op connector; external KV lookup and transfer remain future work.
+External KV reuse works with nano-vLLM and the vLLM 0.33.0 connector. The
+vLLM path supports shared external lookup, synchronous save/load, and restart
+reuse; correctness is validated, but a serving speedup is not established.
 PD disaggregation uses a deterministic toy model and a
 simulated timeline. Production performance and LMCache API compatibility
 are outside the project's current goals.
