@@ -29,8 +29,8 @@ unquantized KV, one cache group, and `chunk_size == block_size`.
   payload and restores it into allocated GPU blocks. The demo compares
   recomputation, local APC, and external storage across engine/server restart.
 - Loads and saves are synchronous. The standalone `AsyncTensorWriteStorage`
-  remains experimental and is not wired into this connector; the benchmark's
-  `--async-store` setting is currently ignored by the connector.
+  remains experimental and is not wired into this connector. The current
+  benchmark rejects `--async-store` before importing vLLM or loading a model.
 - Missing or invalid load payloads fail explicitly rather than reporting
   failed block IDs for automatic recomputation. This version does not track
   load errors or emit KV cache events.
@@ -45,6 +45,13 @@ uv run --locked --group vllm pytest tests/unit/test_nano_lmcache_connector.py
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run --locked --group vllm \
   pytest tests/integration/vllm/test_vllm_with_nano_lmcache_connector.py
+```
+
+For a current synchronous benchmark in the same vLLM environment:
+
+```bash
+uv run --locked --group vllm python benchmarks/bench_vllm_external.py \
+  --model /path/to/Qwen3-0.6B --json sync.json
 ```
 
 The integration tests check generated token agreement, saved KV against a

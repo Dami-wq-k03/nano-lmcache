@@ -426,7 +426,6 @@ def test_shared_external_hits_generate_with_apc_disabled(monkeypatch):
             repeats=1,
             store_repeats=1,
             gpu_memory_utilization=0.35,
-            async_store=False,
             json=None,
         )
     )

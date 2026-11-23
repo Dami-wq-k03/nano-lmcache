@@ -82,7 +82,6 @@ def generate_case(
             kv_load_failure_policy="recompute",
             kv_connector_extra_config={
                 "remote_cache": {"host": host, "port": port},
-                "async_store": args.async_store,
             },
         )
     engine = LLM(
@@ -183,9 +182,7 @@ def generate_case(
                 )
                 while len(server.writes) < expected_writes:
                     if time.monotonic() >= deadline:
-                        raise RuntimeError(
-                            "async writes did not publish before deadline"
-                        )
+                        raise RuntimeError("writes did not publish before deadline")
                     time.sleep(0.01)
             rows.append(
                 {
@@ -275,7 +272,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--async-store", action="store_true")
     parser.add_argument("--with-apc-control", action="store_true")
     parser.add_argument(
         "--disk-directory",
