@@ -7,9 +7,10 @@ serving speedup. Raw samples are in [measurements/serving](measurements/serving)
 **Historical measurements:** these results describe revision `9bfb38a`, not the
 current connector. The connector simplification in `5a64ded` removed its
 asynchronous-writer integration and load-error tracking; current saves are
-synchronous. The benchmark still accepts `--async-store`, but the current
-connector ignores that setting. Run the historical source revision to reproduce
-the async variant below. The standalone `AsyncTensorWriteStorage` component
+synchronous. The current benchmark rejects `--async-store` before importing
+vLLM or loading a model. Run source revision `9bfb38a` to reproduce the async
+variant below; see the [connector guide](vllm-nano-lmcache-connector.md) for
+current synchronous usage. The standalone `AsyncTensorWriteStorage` component
 remains available; it is not wired into the current vLLM connector.
 The later N6 batch-read integration targets nano-vLLM, not this report's vLLM
 load path; real-engine batch measurements remain open.
@@ -68,7 +69,7 @@ controls. The **TPOT regression <5% gate fails**. No general serving speedup is
 established. Larger models, longer prefixes, batching and a faster
 serialization/transport path need separate tests.
 
-## Reproduction
+## Historical reproduction (`9bfb38a`)
 
 Use the pinned vLLM image/environment and a locally cached model (`MODEL`).
 Run from the checkout with `PYTHONPATH=src`, offline model loading enabled and

@@ -61,6 +61,23 @@ def test_invalid_benchmark_counts_fail_before_loading_models(script):
     assert "Traceback" not in result.stderr
 
 
+def test_async_store_is_rejected_before_loading_models():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "benchmarks/bench_vllm_external.py"),
+            "--model",
+            "does-not-exist",
+            "--async-store",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "unrecognized arguments: --async-store" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_disk_measure_reports_physical_reads_separately_from_payload_reads(monkeypatch):
     module = runpy.run_path(str(ROOT / "benchmarks/bench_disk_pages.py"))
     measure = module["measure"]
