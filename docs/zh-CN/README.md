@@ -37,6 +37,7 @@
 | [淘汰性能（英文）](../eviction-performance.md) | 为什么当前采用简单扫描，早期堆优化与策略实验测量了什么？ |
 | [INT8 KV 压缩（英文）](../quantized-kv.md) | 节省多少空间，会增加哪些误差和延迟？ |
 | [nano-vLLM TTFT（英文）](../nanovllm-benchmark.md) | 何时从内存或磁盘加载比重新计算前缀便宜？ |
+| [QMSum 前缀复用](qmsum-benchmark.md) | 真实会议的 L2 复用、冷/热延迟，以及严格 Token 一致性的边界 |
 | [GPU/数据平面实验（英文）](../gpu-experiment-report.md) | 在开发 GPU 上，pinned/异步复制、页面操作、INT8、重启恢复和 write-behind 的实测结果是什么？ |
 | [服务验证（英文）](../serving-validation-report.md) | 真实 vLLM 外部命中、异步导出、NVMe 冷读和双卡模型交接 |
 
@@ -47,6 +48,6 @@
 - [ROADMAP（英文）](../../ROADMAP.md) 统一维护任务状态、前置条件和验收标准。
 - [CONTRIBUTING（英文）](../../CONTRIBUTING.md) 统一维护环境配置、依赖组、检查命令和贡献流程。
 - 架构与专题指南解释当前实现；路线图中已完成任务的原始规格用于追溯设计背景。
-- 修改相关概念时，同步维护中英文 README、目录、教程和架构说明。专题实验报告目前以英文提供。
+- 修改相关概念时，同步维护中英文 README、目录、教程和架构说明。没有中文副本的专题报告在目录中标注为英文。
 
 返回[项目 README](../../README.zh-CN.md)。
