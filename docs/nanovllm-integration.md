@@ -325,10 +325,10 @@ Three consequences:
   never wins on latency here. What it always adds is reuse across
   processes and restarts.
 - **GPU export stays on the request path.** `hash_blocks` exports each
-  completed block before the next schedule. The storage write can be moved
-  to a background worker with `AsyncWriteBehindStorage`; the demo does
-  this, so a cold request no longer waits for every disk write, but it
-  still pays the GPU export and enqueue cost.
+  completed block before the next schedule. `AsyncWriteBehindStorage` can
+  move the backend write to a background worker, and the demo does this for
+  its CPU-memory L2 tier, but `prepare` still copies the payload to the CPU
+  on the caller thread; a cold request pays the GPU export and that copy.
 
 Later: asynchronous loads overlapped with compute, tensor parallelism
 (a namespace per rank, copies in every rank's process), and scheduling

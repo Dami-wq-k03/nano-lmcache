@@ -230,28 +230,34 @@ directory when changing serializers or incompatible model configurations.
 ## 7. Reuse a real engine's KV cache
 
 Requirements: Linux, an NVIDIA GPU, Python 3.11 or 3.12, and a local
-Qwen3-0.6B model:
+Qwen3-0.6B model supported by the pinned nano-vLLM loader:
 
 ```bash
 uv sync --extra hf --group nanovllm
 uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 ```
 
-The demo's L2 is `TieredStorage(fast=CPUOffloadKVCache, slow=DiskKVCache)`
-wrapped in `AsyncWriteBehindStorage`. The first run computes the document's
-KV and queues completed blocks for disk and pinned CPU storage; the queue is
-flushed by `storage.close()` when the process exits. The second process starts
-with an empty GPU L1 and an empty CPU fast tier. It reads the shared prefix
-from disk, promotes it into the CPU fast tier, and copies it into engine KV
-blocks before prefill. Later requests in the same process reuse GPU L1.
+The demo's L2 is `AsyncWriteBehindStorage` wrapping a pinned
+`CPUOffloadKVCache(device="cuda")`; there is no disk tier. The first question
+computes the document and queues its completed blocks into L2. Before each
+later question the demo calls `detach`/`attach`, which gives the request an
+empty GPU L1 as a new process would have; the shared prefix then comes from
+L2 and only the question suffix is prefilled.
 
-Each question is one generation request, and the printed time covers the whole
-request: prefill, decode, GPU export, and enqueueing. Background disk writes
-are not included. The integration does not record engine trace events, and
-the demo has no `--trace-output` or `--memory-max-entries` options. Use the
-controlled [TTFT benchmark](../nanovllm-benchmark.md) for speed comparisons,
-not the demo's request time.
+Each question generates one token, so the printed request time is essentially
+TTFT and the answer is only a first-token sanity check. TTFT covers
+scheduling, any L2 restore, prefill, and the store on that step: `prepare`
+copies the payload to the CPU on the caller thread, and only the backend write
+runs in the background. The demo prints the TTFT, the blocks and tokens
+restored from L2, and the final blocks and tokens held in CPU memory.
+`--gpu-memory-utilization` (default 0.5) caps the memory nano-vLLM may use;
+the KV cache gets what remains after the weights and warmup. `--max-model-len`
+(default 4096) must cover the prompt plus the one output token. The
+integration does not record engine trace events, and the demo has no
+`--trace-output` or `--memory-max-entries` options. L2 can be slower than
+recomputing on a slow PCIe link; use the controlled
+[TTFT benchmark](../nanovllm-benchmark.md) for speed comparisons, not the
+demo's TTFT.
 
 Run the real-model checks in the same GPU environment:
 
@@ -260,13 +266,14 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
   --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
-Tests cover restored KV, matching generated tokens, and disk reuse after
-restart. Without the optional engine dependencies, engine-level tests skip;
-the core test suite still runs.
+The integration tests cover restored KV, matching generated tokens, and disk
+reuse after restart; they are independent of this CPU-memory demo. Without
+the optional engine dependencies, engine-level tests skip; the core test
+suite still runs.
 
 Read the [integration rules](../nanovllm-integration.md#rules-the-integration-must-keep).
-A [GPU validation record](../gpu-validation.md) records a completed run of
-these examples, including two-process restoration.
+A [GPU validation record](../gpu-validation.md) records an earlier run of the
+integration, including two-process disk restoration.
 
 ## 8. Split prefill and decode
 

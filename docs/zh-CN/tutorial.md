@@ -195,24 +195,29 @@ uv run --extra hf python examples/demo_kv_reuse.py --device cuda --offload \
 
 ## 7. 复用真实引擎的 KV 缓存
 
-要求：Linux、NVIDIA GPU、Python 3.11 或 3.12，以及本地 Qwen3-0.6B 模型：
+要求：Linux、NVIDIA GPU、Python 3.11 或 3.12，以及固定的 nano-vLLM loader
+支持的本地 Qwen3-0.6B 模型：
 
 ```bash
 uv sync --extra hf --group nanovllm
 uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
-uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 ```
 
-示例的 L2 是 `TieredStorage(fast=CPUOffloadKVCache, slow=DiskKVCache)`，
-外面包一层 `AsyncWriteBehindStorage`。第一次运行计算文档 KV，并把完成块排队写入
-磁盘和页锁定 CPU 内存；进程退出时 `storage.close()` 会 flush 队列。第二个进程
-以空 GPU L1 和空 CPU fast tier 启动，从磁盘恢复共享前缀，提升到 CPU fast tier，
-再拷入引擎 KV 块后执行 Prefill。同一进程的后续请求继续复用 GPU L1。
+示例的 L2 是 `AsyncWriteBehindStorage` 包装的页锁定
+`CPUOffloadKVCache(device="cuda")`，不使用磁盘。第一个问题计算文档并把完成块
+排入 L2。之后每个问题前，demo 调用 `detach`/`attach`，让请求拥有像新进程一样
+的空 GPU L1；共享前缀因此只能从 L2 恢复，只有问题后缀参与 Prefill。
 
-每个 question 只发一次请求；打印的 request time 覆盖完整请求：Prefill、Decode、
-GPU 导出和入队，不包含后台磁盘写入。集成不再记录引擎 Trace 事件，demo 也没有
-`--trace-output` 或 `--memory-max-entries` 参数。性能比较应使用受控的
-[TTFT 基准（英文）](../nanovllm-benchmark.md)，而不是 demo 的 request time。
+每个问题只生成 1 个 Token，所以打印的 request time 基本等于 TTFT，答案仅用于
+确认首 Token。TTFT 包含调度、L2 恢复、Prefill 和该步的存储：`prepare` 在调用
+线程上把 payload 拷到 CPU，只有 backend 写入在后台执行。demo 会打印 TTFT、
+从 L2 恢复的 block 和 Token 数，以及最后 CPU 内存中的总量。
+`--gpu-memory-utilization`（默认 0.5）限制 nano-vLLM 可使用的显存总量，KV 缓存
+使用扣除权重和 warmup 后的剩余部分。`--max-model-len`（默认 4096）必须容纳
+prompt 加 1 个输出 Token。集成不记录引擎 Trace 事件，demo 也没有
+`--trace-output` 或 `--memory-max-entries` 参数。
+慢 PCIe 机器上 L2 可能比重算更慢；性能比较应使用受控的
+[TTFT 基准（英文）](../nanovllm-benchmark.md)，而不是 demo 的 TTFT。
 
 在同一 GPU 环境执行真实模型检查：
 
@@ -221,12 +226,12 @@ NANO_LMCACHE_TEST_MODEL=/path/to/Qwen3-0.6B uv run \
   --group nanovllm pytest tests/integration/nanovllm/test_nanovllm_engine.py
 ```
 
-测试覆盖 KV 恢复、生成 Token 一致和进程重启后的磁盘复用。没有可选引擎依赖时，
-引擎级测试会跳过，核心测试仍可运行。
+集成测试覆盖 KV 恢复、生成 Token 一致和进程重启后的磁盘复用，独立于本 CPU
+内存示例。没有可选引擎依赖时，引擎级测试会跳过，核心测试仍可运行。
 
 阅读[集成规则（英文）](../nanovllm-integration.md#rules-the-integration-must-keep)。
-[GPU 验证记录（英文）](../gpu-validation.md)记录了上述示例的实际运行结果，
-包含跨进程恢复。
+[GPU 验证记录（英文）](../gpu-validation.md)记录了集成层（含跨进程磁盘恢复）的
+一次历史运行。
 
 ## 8. 拆分 Prefill 与 Decode
 

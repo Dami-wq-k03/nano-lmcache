@@ -9,8 +9,10 @@ does not change runtime code or tests. This record checks the runnable
 **Historical note.** This run predates the simplified
 `integrations/nanovllm` package: engine trace recording and the demo's
 `--trace-output`/`--memory-max-entries` options have since been removed.
-The trace entries below belong to the recorded revision; current behavior is
-described in [the engine trace notes](engine-traces.md).
+The engine demo also used a disk-tiered L2 at the time; it now uses a
+CPU-memory L2 and simulates a restart with `detach`/`attach`. The trace
+entries below belong to the recorded revision; current behavior is described
+in [the engine trace notes](engine-traces.md).
 
 ## Environment
 
