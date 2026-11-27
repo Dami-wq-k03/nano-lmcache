@@ -133,9 +133,10 @@ full recomputation. Add `--device cuda --offload` to keep cached KV in
 pinned CPU memory while the model runs on CUDA.
 
 For nano-vLLM, follow the [engine tutorial](docs/tutorial/README.md#7-reuse-a-real-engines-kv-cache)
-to run the disk-backed engine demo twice and observe cold computation,
-restoration after restart, and later GPU L1 hits. It needs Linux, an NVIDIA
-GPU, local model weights, and the `nanovllm` dependency group.
+to run the engine demo: the first question fills the CPU-memory L2, and the
+second one restores the shared prefix from L2 after a simulated restart with
+an empty GPU L1. It needs Linux, an NVIDIA GPU, local model weights, and the
+`nanovllm` dependency group.
 
 ## Choose your next step
 

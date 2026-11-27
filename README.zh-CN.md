@@ -122,8 +122,8 @@ uv run --extra hf python examples/demo_kv_reuse.py --model Qwen/Qwen3-0.6B
 示例会报告复用/计算的 Token 数，并将后缀 logits 与完整重算进行比较。
 加上 `--device cuda --offload`，即可让模型在 CUDA 上运行、缓存 KV 留在固定页 CPU 内存。
 
-对于 nano-vLLM，请按[引擎教程](docs/zh-CN/tutorial.md#7-复用真实引擎的-kv-缓存)运行两次磁盘缓存示例，
-观察冷启动计算、重启恢复和后续 GPU L1 命中。
+对于 nano-vLLM，请按[引擎教程](docs/zh-CN/tutorial.md#7-复用真实引擎的-kv-缓存)运行引擎示例：
+第一个问题填充 CPU 内存 L2，第二个问题在模拟重启（空 GPU L1）后从 L2 恢复共享前缀。
 需要 Linux、NVIDIA GPU、本地模型权重和 `nanovllm` 依赖组。
 
 ## 接下来读什么

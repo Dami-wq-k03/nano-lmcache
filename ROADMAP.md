@@ -878,8 +878,10 @@ Acceptance criteria:
 
 **Status: done** (`ExternalBlockManager.hash_blocks` in
 `integrations/nanovllm/engine.py`; `examples/demo_nanovllm.py`). nano-vLLM
-now fills L2 on its own: run the demo twice and the second process
-restores its prompt blocks from disk and generates the same tokens.
+now fills L2 on its own: the demo's first question stores the document's
+completed blocks in the CPU L2 tier, and the next question, after
+`detach`/`attach` clears the GPU L1, restores them from L2 and prefills only
+the question suffix.
 
 To do: in `ExternalBlockManager.hash_blocks`, export the blocks it just
 completed with N0's `export_block` and store the ones L2 does not have,
