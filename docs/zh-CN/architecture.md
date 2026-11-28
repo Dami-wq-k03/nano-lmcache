@@ -432,7 +432,7 @@ CPU 复现命令、尺寸与延迟、G1 对比见[INT8 实验（英文）](../qu
 - **页锁定内存（Pinned memory）**：内存页被锁定，因此 GPU 可以直接使用 DMA 将数据传输到该内存中。可分页内存则必须先经过一个隐藏的页锁定缓冲区，这会使带宽降低一半以上。
 - **`non_blocking`**：它不会让复制本身变得更快，而是让 Python 调用在复制任务进入队列后立即返回，使 CPU 能继续调度其他工作。两个方向的复制都在同一个 CUDA stream 上排队，因此复制回 GPU 的操作一定会在其依赖的复制操作之后执行。只有直接读取 CPU 缓冲区的代码才必须等待，例如 `peek`。
 
-以约 25 GB/s 的速度传输时，加载一个 28 MiB 的分块大约需要 1.1 ms。能否比重新计算这 256 个 token 更快，取决于模型和 GPU；[TTFT 实验（英文）](../nanovllm-benchmark.md)已在 nano-vLLM 中测量这一取舍（N4，合并了原 G3）。
+以约 25 GB/s 的速度传输时，加载一个 28 MiB 的分块大约需要 1.1 ms。能否比重新计算这 256 个 token 更快，取决于模型和 GPU；[QMSum 基准（英文）](../qmsum-benchmark.md)已在 nano-vLLM 中测量这一取舍（N4，合并了原 G3）。
 
 完整的、类似 LMCache 的存储层级可以组合如下：
 
@@ -457,7 +457,7 @@ nano-lmcache 已实现 nano-vLLM GPU L1 后的外部 L2 缓存。V1 在 Prefill 
 并保存已完成块。GPU 导出仍在请求路径上，存储写入可用 `AsyncWriteBehindStorage`
 移入后台。块格式、命名空间、导入/导出与正确性约束见
 [集成设计（英文）](../nanovllm-integration.md)；实测成本见
-[TTFT 报告（英文）](../nanovllm-benchmark.md)。精简版集成不再记录引擎 Trace 事件，
+[QMSum 基准报告（英文）](../qmsum-benchmark.md)。精简版集成不再记录引擎 Trace 事件，
 说明见[引擎 Trace 备注（英文）](../engine-traces.md)。
 
 独立的 vLLM 0.33.0 Connector 通过共享远端存储完成外部查询及同步保存/加载；

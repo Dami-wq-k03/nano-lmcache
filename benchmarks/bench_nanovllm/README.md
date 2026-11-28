@@ -1,8 +1,7 @@
 # QMSum-based Prefix KV Cache Reuse Benchmark
 
 Replay different questions about **complete, unchanged meeting transcripts** through
-single-GPU nano-vLLM. This supplements, rather than replaces,
-`benchmarks/bench_nanovllm.py`.
+single-GPU nano-vLLM.
 
 ## Requirements
 
@@ -33,7 +32,7 @@ for split in train val test; do
   curl -fL "https://raw.githubusercontent.com/Yale-LILY/QMSum/83d7768c1f2b4dfeb091385d3dc7e239b8e5bb7e/data/ALL/jsonl/$split.jsonl" \
     -o "$EXPERIMENT/raw/$split/$split.jsonl"
 done
-python -I benchmarks/qmsum/prepare_qmsum.py \
+python -I benchmarks/bench_nanovllm/prepare_qmsum.py \
   --raw "$EXPERIMENT/raw" --model "$MODEL" \
   --output "$EXPERIMENT/workload" --max-model-len 32768 \
   --max-output 64 --meetings 20 --max-queries 4
@@ -62,7 +61,7 @@ meeting's eligibility and prefix statistics, and the workload hash.
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0 \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-python -I benchmarks/qmsum/run_qmsum.py \
+python -I benchmarks/bench_nanovllm/run_qmsum.py \
   --model "$MODEL" --model-revision CHECKPOINT_REVISION \
   --source-revision "$(git rev-parse HEAD)" \
   --workload "$EXPERIMENT/workload/workload.jsonl" \
@@ -110,7 +109,7 @@ Same-meeting simultaneous arrival / stampede is not included.
 ## 3. Analyze
 
 ```bash
-python -I benchmarks/qmsum/analyze_qmsum.py \
+python -I benchmarks/bench_nanovllm/analyze_qmsum.py \
   --results "$EXPERIMENT/pilot" --figures
 ```
 
@@ -185,7 +184,7 @@ this Pilot's 0.6B/24-GiB setup):
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0 \
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-python -I benchmarks/qmsum/diagnose_qmsum.py \
+python -I benchmarks/bench_nanovllm/diagnose_qmsum.py \
   --model "$MODEL" --model-revision CHECKPOINT_REVISION \
   --workload "$EXPERIMENT/workload/workload.jsonl" \
   --meeting test-030 --query specific-0 \
@@ -208,7 +207,7 @@ If only Qwen3 fine-grained FP8 weights are already available, and dense BF16 fit
 one GPU, the small offline converter can reconstruct those weights:
 
 ```bash
-python -I benchmarks/qmsum/dequantize_fp8.py \
+python -I benchmarks/bench_nanovllm/dequantize_fp8.py \
   --source /absolute/path/to/existing/Qwen3-14B-FP8/snapshot \
   --output "$EXPERIMENT/models/Qwen3-14B-reconstructed-BF16"
 ```

@@ -15,7 +15,7 @@ nano-lmcache 用简短、易读的 Python 模块实现
 项目的目标是用尽量少的代码讲清每个原理，并用示例、正确性测试和实测结果验证它。
 
 [循序渐进教程](docs/zh-CN/tutorial.md) · [文档目录](docs/zh-CN/README.md) ·
-[GPU 验证记录（英文）](docs/gpu-validation.md) · [性能实验（英文）](docs/nanovllm-benchmark.md)
+[GPU 验证记录（英文）](docs/gpu-validation.md) · [性能实验（英文）](docs/qmsum-benchmark.md)
 
 ## 现在能做什么
 
@@ -49,14 +49,12 @@ flowchart LR
 
 | 实验 | 结果 | 依据 |
 | --- | --- | --- |
-| **真实引擎首 Token 延迟**：Qwen3-0.6B、RTX 4090、8,224-token Prompt，复用 8,192 tokens | GPU L1 为空时，从固定页 CPU 内存 L2 恢复，TTFT **125.0 → 52.4 ms**；五轮中位数。 | [TTFT 报告（英文）](docs/nanovllm-benchmark.md) |
 | **进程重启恢复**：Qwen3-0.6B、RTX 4090 | 新 nano-vLLM 进程在空 L1 下从磁盘恢复 **5 个 KV 块**；两道问题在冷启动与重启后生成的答案一致。 | [GPU 验证记录（英文）](docs/gpu-validation.md) |
 | **INT8 存储**：合成 FP16/BF16 KV 块、Apple M4 CPU | **原始字节数 / INT8 序列化字节数 ≈ 1.60×**，已计入 FP32 缩放因子开销。压缩有损，需主动启用。 | [压缩报告（英文）](docs/quantized-kv.md) |
 | **历史堆优化实验**：链深 1,024 块、容量 8,192、Apple arm64 | 早期堆实现曾将整轮淘汰耗时从 **788 ms 降到 208 ms**。当前教学实现为保持易读，改用 O(n) 叶节点扫描；这不是当前版本的耗时。 | [淘汰取舍（英文）](docs/eviction-performance.md) |
 | **历史 LRU/LFU 策略对比**：5,000 个共享前缀请求、容量 48 | 固定种子 2026 的实验中，LFU 在均匀 / Zipf 负载的命中率为 **56.16% / 85.21%**，LRU 为 **52.70% / 80.68%**；两种负载下 LFU 淘汰均更少。 | [策略对比（英文）](docs/eviction-performance.md#policy-comparison-experiment) |
 
-同一 TTFT 实验中，磁盘 L2 在所有测试长度下都比重算更慢；短链淘汰负载也会付出额外的维护开销。
-报告同时记录了收益与成本，方便判断什么场景值得使用缓存。
+短链淘汰负载也会付出额外的维护开销。报告同时记录了收益与成本，方便判断什么场景值得使用缓存。
 
 ## 从这里开始
 

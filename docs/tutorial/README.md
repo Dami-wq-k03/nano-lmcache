@@ -256,8 +256,8 @@ the KV cache gets what remains after the weights and warmup. `--max-model-len`
 integration does not record engine trace events, and the demo has no
 `--trace-output` or `--memory-max-entries` options. L2 can be slower than
 recomputing on a slow PCIe link; use the controlled
-[TTFT benchmark](../nanovllm-benchmark.md) for speed comparisons, not the
-demo's TTFT.
+[QMSum benchmark report](../qmsum-benchmark.md) for speed comparisons, not
+the demo's TTFT.
 
 Run the real-model checks in the same GPU environment:
 

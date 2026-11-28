@@ -101,7 +101,7 @@ Done (optional torch / GPU layer):
       restoration, and persistence of newly completed blocks
       (`integrations/nanovllm/`, N0–N3)
 - [x] Real-engine correctness and restart reuse tests, plus TTFT benchmarks
-      (`docs/nanovllm-benchmark.md`, N4)
+      (`benchmarks/bench_nanovllm/`, N4)
 - [x] Pinned buffer pool, asynchronous CUDA stream/event transfers, torch page
       gather/scatter reference operations, and per-head INT8 reference codec
       (`tensor/transfer.py`, `tensor/page_ops.py`, `tensor/quantization.py`)
@@ -900,10 +900,8 @@ be reused.
 compare L2 restores against a no-cache baseline for a batch sharing a
 prefix, chunked prefill, capacity-limited L2, and a disk-backed L2 across a
 restart; preemption is covered by the scheduler-level tests. The benchmark
-is `benchmarks/bench_nanovllm.py`, and the write-up
-[`docs/nanovllm-benchmark.md`](docs/nanovllm-benchmark.md): for Qwen3-0.6B
-on an RTX 4090, L2 in CPU memory pays off from 4,096 reused tokens, and
-the disk tier never beats recomputing.
+lives in `benchmarks/bench_nanovllm/`, with its report in
+[`docs/qmsum-benchmark.md`](docs/qmsum-benchmark.md).
 
 To do:
 
@@ -934,8 +932,7 @@ nano-vLLM must preserve GPU block ownership, bounded queues, publication and
 shutdown semantics, then satisfy the original TTFT/correctness criteria below.
 
 Version 1 stores inside `hash_blocks`, so a cold request with a disk-backed
-L2 waits about 300 ms per block for serialization, writing, and `fsync`
-(`docs/nanovllm-benchmark.md`).
+L2 waits about 300 ms per block for serialization, writing, and `fsync`.
 
 To do: export blocks in `hash_blocks` as today (they must be copied before
 `postprocess` frees them, design rule 7), but hand the copies to a
@@ -965,7 +962,7 @@ it.
 
 To do: remove copies on the read path, for example by memory-mapping the
 entry or reading straight into a pinned buffer, and measure the result with
-`benchmarks/bench_nanovllm.py` on the same machine. Keep the safety
+`benchmarks/bench_disk_pages.py` on the same machine. Keep the safety
 property: reading an entry must never run code from the file.
 
 Acceptance criteria: a lower page-cache read time per block, with numbers

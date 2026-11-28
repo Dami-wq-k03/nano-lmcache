@@ -42,7 +42,7 @@ def environment(args, llm):
     root = Path(__file__).resolve().parents[2]
     code = hashlib.sha256()
     for path in sorted(
-        [*root.glob("src/**/*.py"), *root.glob("benchmarks/qmsum/*.py")]
+        [*root.glob("src/**/*.py"), *root.glob("benchmarks/bench_nanovllm/*.py")]
     ):
         code.update(str(path.relative_to(root)).encode())
         code.update(path.read_bytes())

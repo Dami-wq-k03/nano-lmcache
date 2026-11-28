@@ -1,6 +1,6 @@
 # QMSum-based Prefix KV Cache Reuse Benchmark
 
-[中文](zh-CN/qmsum-benchmark.md) · [Reproduction guide](../benchmarks/qmsum/README.md)
+[中文](zh-CN/qmsum-benchmark.md) · [Reproduction guide](../benchmarks/bench_nanovllm/README.md)
 
 This experiment asks whether restoring **external L2 KV** reduces repeated
 prefill for different questions about complete, unchanged meeting transcripts.
@@ -219,7 +219,7 @@ and both L2 modes. True argmax removes sampling noise but **does not guarantee
 BF16 full/prefix generation identity**. This is an audit of saved logits, not a
 new GPU performance run.
 
-`benchmarks/qmsum/diagnose_qmsum.py` saves logits, Top-5 and byte comparisons.
+`benchmarks/bench_nanovllm/diagnose_qmsum.py` saves logits, Top-5 and byte comparisons.
 It explicitly drains async writes to inspect CPU snapshots; its timing is not a
 C2 wait-time measurement and never enters performance results.
 

@@ -217,7 +217,7 @@ uv run python examples/demo_nanovllm.py --model /path/to/Qwen3-0.6B
 prompt 加 1 个输出 Token。集成不记录引擎 Trace 事件，demo 也没有
 `--trace-output` 或 `--memory-max-entries` 参数。
 慢 PCIe 机器上 L2 可能比重算更慢；性能比较应使用受控的
-[TTFT 基准（英文）](../nanovllm-benchmark.md)，而不是 demo 的 TTFT。
+[QMSum 基准（英文）](../qmsum-benchmark.md)，而不是 demo 的 TTFT。
 
 在同一 GPU 环境执行真实模型检查：
 

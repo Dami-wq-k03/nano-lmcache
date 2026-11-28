@@ -39,7 +39,7 @@ have. An L1 hit is free: the block is already where attention reads it.
 **An L2 hit is not free**: the block has to be read from CPU memory or
 disk and copied into a GPU block before the forward pass. L2 pays off
 when that copy costs less than recomputing the block, which N4 measures
-([nanovllm-benchmark.md](nanovllm-benchmark.md)).
+([QMSum benchmark report](qmsum-benchmark.md)).
 
 ## What nano-vLLM looks like at `bb823b3`
 
@@ -302,9 +302,8 @@ is copied into nano-vLLM.
 
 ### What version 1 costs
 
-Measured by `benchmarks/bench_nanovllm.py` (Qwen3-0.6B, bfloat16, one RTX
-4090, 28 MiB per block); the full results and their explanation are in
-[nanovllm-benchmark.md](nanovllm-benchmark.md).
+Historical measurements on Qwen3-0.6B, bfloat16, one RTX 4090, with
+28 MiB per block:
 
 | Step | Time per block |
 | --- | --- |
@@ -342,4 +341,4 @@ that waits for L2 loads instead of blocking on them.
 | N1 | External prefix lookup over whole blocks, cache keys, and the model namespace (`integrations/nanovllm/layout.py`, `external_cache.py`) |
 | N2 | Restore: `ExternalBlockManager` and `attach()` (`integrations/nanovllm/engine.py`), rules 1 to 6 and 9 (done) |
 | N3 | Save: completed blocks exported in the `hash_blocks` hook and stored in L2, rules 7 and 8 (done) |
-| N4 | Correctness against a no-cache baseline, reuse across restarts, TTFT benchmarks (absorbs G3), done: [nanovllm-benchmark.md](nanovllm-benchmark.md) |
+| N4 | Correctness against a no-cache baseline, reuse across restarts, TTFT benchmarks (absorbs G3), done: [benchmarks/bench_nanovllm/](../benchmarks/bench_nanovllm/README.md) |

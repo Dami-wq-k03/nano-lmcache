@@ -707,7 +707,7 @@ bfloat16):
 
 At ~25 GB/s, loading one 28 MiB chunk takes about 1.1 ms. Whether that
 beats recomputing those 256 tokens depends on the model and GPU. The
-[TTFT experiment](nanovllm-benchmark.md) measures that trade-off in nano-vLLM
+[QMSum benchmark](qmsum-benchmark.md) measures that trade-off in nano-vLLM
 (task N4, which incorporated G3).
 
 The full LMCache-style hierarchy is a composition of these pieces:
@@ -744,7 +744,7 @@ format in `integrations/nanovllm/kv_blocks.py`, is in
 [nanovllm-integration.md](nanovllm-integration.md). Version 1 restores L2
 blocks before prefill and saves completed blocks. GPU export runs in the
 step; storage writes can be moved to a background worker with
-`AsyncWriteBehindStorage`. See the [TTFT report](nanovllm-benchmark.md)
+`AsyncWriteBehindStorage`. See the [QMSum benchmark report](qmsum-benchmark.md)
 for measured costs. The simplified integration does not record engine
 events; see [engine trace notes](engine-traces.md).
 

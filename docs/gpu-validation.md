@@ -77,6 +77,6 @@ These results verify the documented examples and correctness boundaries
 for this model and environment. Floating-point logit differences are small
 but nonzero. A cache hit is not a speedup guarantee, and demo TTFT includes
 tracing and synchronous writes. Use the controlled
-[TTFT experiment](nanovllm-benchmark.md) for performance comparisons.
+[QMSum benchmark](qmsum-benchmark.md) for performance comparisons.
 
 Return to the [documentation index](README.md).

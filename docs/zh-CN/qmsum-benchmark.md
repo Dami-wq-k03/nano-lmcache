@@ -7,7 +7,7 @@
 
 本实验使用真实会议的完整转录和不同问题，检验 **外部 L2 KV 恢复**是否减少
 重复 Prefill，而不是仅证明 Key 存在。运行方法见
-[`benchmarks/qmsum/README.md`](../../benchmarks/qmsum/README.md)。
+[`benchmarks/bench_nanovllm/README.md`](../../benchmarks/bench_nanovllm/README.md)。
 
 ## 固定实验设计
 
@@ -205,7 +205,7 @@ Off/On 严格 Token 一致条件改判为通过**。后续建议使用真正确�
 因此，真正 argmax 可以排除近贪心抽样噪声，**仍不能保证 BF16 完整/Prefix 路径
 生成逐 Token 相同**。这一步基于已保存 logits，不冒充另一轮 GPU 性能实验。
 
-可复用诊断脚本为 `benchmarks/qmsum/diagnose_qmsum.py`；它保存四条路径的首 Token
+可复用诊断脚本为 `benchmarks/bench_nanovllm/diagnose_qmsum.py`；它保存四条路径的首 Token
 logits、Top-5 和逐 Block 检查结果。为检查 CPU 存储副本会显式 drain 写队列，
 诊断运行不用于声称 C2 等待时间，也不把其计时计入性能结果。
 

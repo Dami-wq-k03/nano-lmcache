@@ -182,14 +182,10 @@ GPU work has its own benchmark, which needs a CUDA GPU:
 uv run python benchmarks/bench_offload.py --device cuda:0
 ```
 
-The nano-vLLM time-to-first-token benchmark (roadmap N4) needs the
-`nanovllm` group and a local model; results and how to read them are in
-`docs/nanovllm-benchmark.md`:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 uv run python benchmarks/bench_nanovllm.py \
-    --model /path/to/Qwen3-0.6B --json results.json
-```
+The real-engine benchmark (roadmap N4) replays QMSum meetings through
+nano-vLLM; it needs the `nanovllm` group, a CUDA GPU, and a local model.
+Reproduction steps are in `benchmarks/bench_nanovllm/README.md`, and
+results are discussed in `docs/qmsum-benchmark.md`.
 
 Benchmarks are not part of CI, because timings vary between machines.
 

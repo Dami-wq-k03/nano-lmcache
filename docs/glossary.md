@@ -45,10 +45,10 @@ See: [PD disaggregation guide](pd-disaggregation.md)
 The time between submitting a request and receiving its first generated token. For long prompts, prefill is a large part of it, so skipping prefill work can lower TTFT, but only if loading the cached data costs less than the computation it replaces.
 
 The nano-vLLM integration includes a controlled TTFT comparison (N4). It
-measures recompute, GPU L1 reuse, pinned CPU L2, disk L2, and synchronous
-storage costs. A high hit rate alone does not establish a latency gain.
+measures recompute, GPU L1 reuse, pinned CPU L2, and synchronous storage
+costs. A high hit rate alone does not establish a latency gain.
 
-See: [When does nano-vLLM's L2 cache pay off?](nanovllm-benchmark.md)
+See: [QMSum prefix reuse benchmark](qmsum-benchmark.md)
 
 ### Token
 
@@ -143,8 +143,8 @@ Moving cached data from fast but small memory to larger but slower memory,
 and copying it back on a hit. `CPUOffloadKVCache` keeps chunk tensors in
 pinned (page-locked) CPU memory and returns them on the GPU. It adds
 capacity, but every hit pays a copy cost. The
-[TTFT experiment](nanovllm-benchmark.md) measures when loading beats recompute
-for one model and GPU. The former G3 task was incorporated into N4.
+[QMSum benchmark](qmsum-benchmark.md) measures cold and warm L2 restore
+costs for real meeting transcripts. The former G3 task was incorporated into N4.
 
 See: [`offload.py`](../src/nano_lmcache/tensor/offload.py), [GPU to CPU offload](architecture.md#gpu-to-cpu-offload)
 
@@ -198,13 +198,10 @@ See: [`test_hf_reuse.py`](../tests/tensor/test_hf_reuse.py), [Real KV tensors](a
 
 Loading is not free. Looking up chunks, copying them between memory tiers, and rebuilding the model's cache from chunk tensors all take time, and for a short prefix that can exceed the cost of recomputing it.
 
-The [nano-vLLM benchmark](nanovllm-benchmark.md) found that pinned CPU L2
-became at least 10% faster than recompute at 4,096 reused tokens for
-Qwen3-0.6B on one RTX 4090. Disk L2 did not beat recompute in that experiment,
-through 8,192 reused tokens. These thresholds depend on the model, storage,
-hardware, and measurement method; they are not general guarantees.
+Whether reuse pays off depends on the model, storage, hardware, and
+measurement method; it is not a general guarantee.
 
-See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py), [TTFT results and limits](nanovllm-benchmark.md)
+See: [`demo_kv_reuse.py`](../examples/demo_kv_reuse.py)
 
 ### 5. What happens when the cache is full?
 
